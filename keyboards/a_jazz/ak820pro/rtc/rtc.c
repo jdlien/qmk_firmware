@@ -387,6 +387,12 @@ static void rtc_clock_discipline(void)
      * Phase snap. Independent of the trim, and deliberately does NOT restart the
      * calibration window -- see above.
      */
+#ifdef RTC_LOG_EVERY_PASS
+    /* The snap log below fires only when |error| > threshold, so errors of 0, 1
+     * and 2 s -- exactly the regime worth watching -- cannot be seen at all.
+     * Behind a flag because at RTC_CHECK_INTERVAL_S 60 this is ~1440 lines/day. */
+    printf("[rtc] error %ld s\n", (long)error);
+#endif
     if ((error > RTC_DRIFT_THRESHOLD_S) || (error < -RTC_DRIFT_THRESHOLD_S)) {
         rtcSetTime(&RTCD1, &target);
         printf("[rtc] corrected drift of %ld seconds\n", (long)error);

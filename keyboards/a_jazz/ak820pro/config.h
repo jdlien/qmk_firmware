@@ -143,6 +143,10 @@
  * NOTE this only disciplines the SN32 RTC *to the PCF8563*. If the PCF itself is
  * off -- and this unit's is a CHMC D8563F clone -- no calibration interval helps;
  * that needs a host resync (ak820ctl clock). */
+/* Log the phase error on EVERY discipline pass, not just when it exceeds the
+ * snap threshold. ~1440 lines/day at a 60 s interval -- for debug sessions. */
+// #define RTC_LOG_EVERY_PASS
+
 #define RTC_CHECK_INTERVAL_S 60
 
 /* NO_USB_STARTUP_CHECK is enabled automatically by BLUETOOTH_ENABLE (custom

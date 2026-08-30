@@ -415,6 +415,16 @@ enum {
     RTC_UNHANDLED = 0xFF, // == VIA id_unhandled
     RTC_CHANNEL   = 0x10,
     RTC_SET_TIME  = 0x01,
+    /* Read the live clock back. Exists so post-set phase error is MEASURABLE:
+     * without it the only way to see the offset is to film the panel next to a
+     * screen showing `date` and step frames. Reply reuses the request buffer:
+     *   [SET_VALUE, RTC_CHANNEL, RTC_GET_TIME, ok, yy, mm, dd, wday, hh, mm, ss]
+     * `ok` is 1 when rtc_get_time() succeeded.
+     *
+     * Whole seconds only, deliberately -- the sub-second phase is recovered by
+     * POLLING this fast and watching for the increment, which needs no extra
+     * protocol and no sub-second field on the wire. */
+    RTC_GET_TIME  = 0x02,
 };
 
 // ---------------------------------------------------------------------------
@@ -604,11 +614,34 @@ static inline bool rtc_is_set_time_cmd(const uint8_t *data, uint8_t length) {
            data[1] == RTC_CHANNEL && data[2] == RTC_SET_TIME;
 }
 
+static inline bool rtc_is_get_time_cmd(const uint8_t *data, uint8_t length) {
+    return length >= 3 && data[0] == RTC_SET_VALUE &&
+           data[1] == RTC_CHANNEL && data[2] == RTC_GET_TIME;
+}
+
+/* Fill the reply in place with the live clock. */
+static void rtc_read_into(uint8_t *data) {
+    rtc_time_t t;
+    bool ok = rtc_get_time(&t);
+    data[3] = ok ? 1 : 0;
+    data[4] = (uint8_t)(t.year >= 2000 ? t.year - 2000 : 0);
+    data[5] = t.month;
+    data[6] = t.day;
+    data[7] = t.weekday;
+    data[8] = t.hours;
+    data[9] = t.minutes;
+    data[10] = t.seconds;
+}
+
 #if defined(VIA_ENABLE)
 
 // VIA owns raw_hid_receive() and dispatches custom-value commands here. VIA echoes
 // the buffer back itself -- do NOT call raw_hid_send().
 void via_custom_value_command_kb(uint8_t *data, uint8_t length) {
+    if (rtc_is_get_time_cmd(data, length)) {
+        rtc_read_into(data);
+        return;
+    }
     if (rtc_is_set_time_cmd(data, length)) {
         rtc_apply_bytes(&data[3]); // leave data[0] = SET_VALUE -> "handled"
         return;
@@ -627,7 +660,9 @@ void via_custom_value_command_kb(uint8_t *data, uint8_t length) {
 #else // no VIA: handle the same packet directly and echo it back like VIA would.
 
 void raw_hid_receive(uint8_t *data, uint8_t length) {
-    if (rtc_is_set_time_cmd(data, length)) {
+    if (rtc_is_get_time_cmd(data, length)) {
+        rtc_read_into(data);
+    } else if (rtc_is_set_time_cmd(data, length)) {
         rtc_apply_bytes(&data[3]);
     } else if (is_flash_cmd(data, length)) {
         flash_command(data, length);
