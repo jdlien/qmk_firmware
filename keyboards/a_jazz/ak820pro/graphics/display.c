@@ -992,7 +992,11 @@ static void draw_text_slot(bool force) {
          * like. Every case stays inside the band, so the clear rect still
          * covers it (the mistake that stranded the padlock). */
         uint16_t icon_y;
-        if (text_buf[1][0])                       icon_y = TEXT_Y + 1;
+        /* TEXT_Y, not TEXT_Y+1: centring the 12-row icon on the 14-row cell
+         * lands it half a row below the 13px face's cap-to-baseline mass
+         * (rows 0..12), which reads as low. Sitting it on the cap line is the
+         * better half-pixel to spend. */
+        if (text_buf[1][0])                       icon_y = TEXT_Y;
         else if (strlen(text_buf[0]) <= TEXT_BIG_MAX)
                                                   icon_y = TEXT_Y + TEXT_BIG_DY + 5;
         else                                      icon_y = TEXT_Y + TEXT_FONT_DY + 1;
