@@ -153,10 +153,21 @@ bool process_record_user(uint16_t keycode, keyrecord_t *record) {
 
 
 #if defined(ENCODER_MAP_ENABLE)
+/* The knob does quarter-step volume on the Mac layers and whole steps on the
+ * Windows ones, because Shift+Alt+Volume is an APPLE convention -- macOS reads it
+ * as "fine adjustment", Windows ignores the modifiers and its step size is fixed
+ * regardless. The mode slider already selects the base layer, so the knob follows
+ * the platform with no extra configuration.
+ *
+ * Modified consumer keycodes on an encoder NEED a non-zero ENCODER_MAP_KEY_DELAY
+ * (see config.h). At the default of 0 the press and release are adjacent
+ * instructions and the host can miss the modifier state entirely -- measured as
+ * ~1/3 of clicks doing full steps, and occasionally Alt-only, which opens the
+ * macOS Sound settings dialog. */
 const uint16_t PROGMEM encoder_map[][NUM_ENCODERS][NUM_DIRECTIONS] = {
     [WINBASE] = {ENCODER_CCW_CW(KC_VOLD, KC_VOLU) },
-    [WINFN] = {ENCODER_CCW_CW(KC_VOLD, KC_VOLU) },
-    [MACBASE] = {ENCODER_CCW_CW(KC_VOLD, KC_VOLU) },
-    [MACFN] = {ENCODER_CCW_CW(KC_VOLD, KC_VOLU) }
+    [WINFN]   = {ENCODER_CCW_CW(KC_VOLD, KC_VOLU) },
+    [MACBASE] = {ENCODER_CCW_CW(LSA(KC_VOLD), LSA(KC_VOLU)) },
+    [MACFN]   = {ENCODER_CCW_CW(LSA(KC_VOLD), LSA(KC_VOLU)) }
 };
 #endif

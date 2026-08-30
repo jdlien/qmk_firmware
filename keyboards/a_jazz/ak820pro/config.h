@@ -254,6 +254,38 @@
  * SELF-CONTAINED AND REMOVABLE: comment out this one define and every part of
  * the feature compiles out (poll task and key handlers in ak820pro.c, string
  * slot in display.c). Nothing else depends on it. */
+/* Encoder press/release gap. ENCODER_MAP_KEY_DELAY defaults to TAP_CODE_DELAY,
+ * which defaults to 0 -- and at 0 the delay is #if'd OUT of quantum/encoder.c
+ * entirely, so an encoder press and its release are adjacent instructions.
+ *
+ * That breaks MODIFIED consumer keycodes on the knob. LSA(KC_VOLU) registers
+ * Shift+Alt into the KEYBOARD report, sends the volume usage in the CONSUMER
+ * report, then clears the modifiers -- and with no gap all of that can fall
+ * inside one USB poll interval, so the host may sample a partial or already-
+ * cleared modifier state. Measured on macOS with the knob set to LSA(KC_VOLD/U):
+ *
+ *   both mods seen  -> quarter-step volume (correct)     ~2/3 of clicks
+ *   no mods seen    -> full-step volume                  ~1/3
+ *   Alt only seen   -> opens the Sound settings dialog   rare
+ *
+ * Three different results from one gesture is the signature of a host sampling a
+ * transient state, not of a mapping error.
+ *
+ * 10 ms follows QMK's own encoder fallback in the same file, which uses
+ * tap_code_delay(KC_VOLU, 10) for exactly this reason. COST: wait_ms BLOCKS the
+ * main loop and is applied after BOTH the press and the release, so a detent
+ * costs ~20 ms and a fast spin will stall matrix scanning. Lower it if spinning
+ * feels sluggish; raise it if modified encoder keycodes are still unreliable. */
+#define ENCODER_MAP_KEY_DELAY 10
+
+/* Gap between the MODIFIER report and the CONSUMER usage for a modified consumer
+ * keycode such as LSA(KC_VOLU). See process_modified_consumer() in ak820pro.c --
+ * they travel on DIFFERENT USB ENDPOINTS and the host does not guarantee ordering
+ * between them, so back-to-back sends let the host sample the wrong modifier
+ * state. Raise if full-step volume still slips through; lower if the knob feels
+ * sluggish (each detent costs 2x this plus 2x ENCODER_MAP_KEY_DELAY). */
+#define MODIFIED_CONSUMER_GAP_MS 8
+
 #define PARAM_OVERLAY
 #define PARAM_OVERLAY_HOLD_MS 2000   /* how long a change stays on screen */
 
