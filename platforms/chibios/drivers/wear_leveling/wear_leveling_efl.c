@@ -118,8 +118,23 @@ bool backing_store_init(void) {
     return true;
 }
 
+/* Board hook, called before any flash program/erase sequence begins.
+ *
+ * Exists because on some MCUs an internal-flash program/erase STALLS INSTRUCTION
+ * FETCH, which can make the core miss an interrupt from unrelated in-flight DMA.
+ * A board that streams DMA from external flash (e.g. to an LCD) needs to drain
+ * that traffic first, or the completion interrupt is lost and the transfer never
+ * finishes. Default is an empty no-op, so nothing changes for other boards.
+ *
+ * Placed on unlock rather than on each write: unlock brackets the whole
+ * program/erase sequence, so every writer is covered -- eeconfig, VIA's dynamic
+ * keymap, wear-levelling consolidation -- rather than only the one that happened
+ * to be noticed. */
+__attribute__((weak)) void backing_store_pre_write_hook(void) {}
+
 bool backing_store_unlock(void) {
     bs_dprintf("Unlock\n");
+    backing_store_pre_write_hook();
     return eflStart(&EFLD1, NULL) == HAL_RET_SUCCESS;
 }
 

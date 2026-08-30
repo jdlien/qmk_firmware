@@ -319,6 +319,13 @@ static void draw_conn_number(bool force) {
     uint8_t slot  = ch582_get_target_slot();               // 1-3, or 0
     char    digit = (slot >= 1 && slot <= 3) ? (char)('0' + slot) : 0;
 
+    /* No digit in 2.4G: ch582_get_target_slot() reports 1 there so the rest of
+     * the driver has something to work with, but there is exactly ONE dongle and
+     * no slot concept at all -- a "1" implies "slot 1 of several" and is worse
+     * than nothing. State is not lost: the icon strip shows the radio, and the
+     * status band spells out every non-connected state in words. */
+    if (connection_mode == CONN_MODE_2_4G) digit = 0;
+
     char     c      = 0;   // the digit this state wants to show (0 = none)
     uint16_t period = 0;   // blink period; 0 = solid
     switch (ch582_get_conn_state()) {

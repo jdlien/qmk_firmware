@@ -954,6 +954,31 @@ void housekeeping_task_kb(void) {
  * DMA, and blocking on it would mean RGB settings never persist while an
  * animation is on. Blits are short, so per-blit gating still finds gaps.
  */
+/* Drain any flash->LCD DMA before the wear-levelling layer programs or erases
+ * internal flash. See backing_store_pre_write_hook() in
+ * platforms/chibios/drivers/wear_leveling/wear_leveling_efl.c.
+ *
+ * WHY THIS IS BROADER THAN rgb_matrix_eeprom_flush_allowed() BELOW: that hook
+ * only gates RGB's own eeconfig flush, which was the trigger we happened to
+ * notice first. VIA's dynamic-keymap writes take a completely different path and
+ * were never covered -- assigning keys in VIA reproduced the hang (one LED row
+ * stuck lit, board dead until a power cycle) on 2026-08-29. The bug was never
+ * about RGB; it is about ANY internal-flash write overlapping the LCD DMA.
+ *
+ * Waiting is sufficient rather than merely narrowing the window: flash writes are
+ * synchronous on the main loop, and blits are started from the main loop too, so
+ * once the in-flight blit has drained no new one can begin before the write
+ * completes.
+ *
+ * Bounded like every other blit wait here -- an unbounded spin would trade an
+ * intermittent hang for a guaranteed one if a completion interrupt is ever
+ * genuinely lost. */
+void backing_store_pre_write_hook(void) {
+    for (uint32_t i = 0; i < 4000000u && lcd_blit_busy(); i++) {
+        __asm__ volatile("nop");
+    }
+}
+
 bool rgb_matrix_eeprom_flush_allowed(void) {
     return !lcd_blit_busy();
 }

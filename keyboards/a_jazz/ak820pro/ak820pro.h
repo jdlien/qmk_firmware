@@ -15,7 +15,23 @@ enum ak820pro_keycodes {
     BT2,                   // Fn+W: BT slot 2 (BT mode)
     BT3,                   // Fn+E: BT slot 3 (BT mode)
     BT24G,                 // Fn+R: 2.4G       (2.4G mode)
-    BT_PAIR,               // Fn+P long-press: pair (BT/2.4G)
+    BT_PAIR,               /* Pair the CURRENTLY-SELECTED profile (A6 51).
+                            * UNBOUND in the default keymap as of 2026-08-29 --
+                            * kept here because this enum is INDEX-MATCHED to
+                            * via.json's customKeycodes[]; removing it would shift
+                            * every later keycode and corrupt existing VIA keymaps.
+                            * Assign it in VIA if you want it back.
+                            *
+                            * Dropped because it is redundant where it works and
+                            * destructive where it is unique: holding Fn+Q/W/E
+                            * already selects AND pairs a BT slot, while in 2.4G it
+                            * is the only pairing key but drops a working dongle
+                            * link -- and the dongle almost certainly cannot be put
+                            * into pairing mode without vendor software, so the
+                            * broadcast is half a handshake that never completes.
+                            * Confirmed on hardware: pressing it killed the link,
+                            * and toggling the slider restored it, which means the
+                            * dongle never lost its bond. */
     // RGB-matrix control wrappers, exposed to VIA as custom keycodes. VIA's
     // built-in "Lighting" picker only offers the underglow RGB_* keycodes
     // (0x7820), which do nothing on this matrix-only board; these forward to the
