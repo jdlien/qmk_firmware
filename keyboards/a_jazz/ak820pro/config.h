@@ -246,7 +246,19 @@
  *
  * RC oscillator: per-unit and temperature-dependent. This is a seed, not a
  * calibration -- RTC_AUTO_CALIBRATION still does the real work. */
-#define RTC_PERIOD_INITIAL 33400
+/* MEASURED ON THIS UNIT, 2026-08-30. Two independent estimates agree:
+ *   - the firmware's own trim computed 33587 from a 360-ticks / 358-s window
+ *   - a host phase measurement after that trim implied 33607
+ * The previous 33400 left the clock ~0.5% FAST from boot (~7 ms/s), taking
+ * about seven minutes of trimming to converge -- visible as the display
+ * drifting to the 2 s snap threshold and jumping back.
+ *
+ * PER-UNIT AND TEMPERATURE-DEPENDENT: the ILRC is an untrimmed on-chip RC
+ * oscillator that varies part to part. NEVER upstream this value -- it would
+ * start other units further off than the nominal does. Measure yours with
+ * hostagent/clock-phase.py, or read the value the trim converges to with
+ * RTC_LOG_EVERY_PASS enabled. */
+#define RTC_PERIOD_INITIAL 33600
 
 // LCD backlight level at boot: index into bkl_duty[] in graphics/display.c.
 // 1 = the dimmest lit step (1/64 duty, ~1.6%), chosen on hardware as "about
