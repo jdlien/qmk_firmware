@@ -46,6 +46,12 @@ enum display_text_icon {
 };
 
 void display_set_text(uint8_t icon, const char *s, uint8_t len);
+
+/* Two-line variant. line 0 = primary (song title), line 1 = secondary (artist).
+ * The icon belongs to the slot, not a line, so it is only read from line 0.
+ * Setting line 0 via display_set_text() clears line 1, so a single-line
+ * producer cannot strand a stale second line. */
+void display_set_text_line(uint8_t line, uint8_t icon, const char *s, uint8_t len);
 void display_clear_text(void);
 
 /* Hold-to-pair feedback. A slot key was pressed and the pair threshold has not

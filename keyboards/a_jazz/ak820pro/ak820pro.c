@@ -584,6 +584,12 @@ enum {
     TEXT_CHANNEL = 0x12,
     TEXT_SET     = 0x01,
     TEXT_CLEAR   = 0x02,
+    /* Per-line set: [.., TEXT_SET_LINE, line, icon, ASCII...].
+     * A second line does not fit in one packet -- 32 bytes leaves ~27 for text
+     * after framing, and two 16-char lines is 32 -- so each line gets its own
+     * report. Torn updates are harmless: the lines are independently meaningful
+     * (title / artist) and the producer polls every 3 s. */
+    TEXT_SET_LINE = 0x03,
 };
 
 static inline bool is_text_cmd(const uint8_t *data, uint8_t length) {
@@ -598,6 +604,13 @@ static void text_command(uint8_t *data, uint8_t length) {
             if (length >= 4) {
                 display_set_text(data[3], (const char *)&data[4],
                                  (uint8_t)(length - 4));
+            }
+            break;
+        case TEXT_SET_LINE:
+            /* data[3] = line, data[4] = icon, data[5..] = ASCII. */
+            if (length >= 5) {
+                display_set_text_line(data[3], data[4], (const char *)&data[5],
+                                      (uint8_t)(length - 5));
             }
             break;
         case TEXT_CLEAR:

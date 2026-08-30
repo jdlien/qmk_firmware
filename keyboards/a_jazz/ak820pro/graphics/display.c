@@ -48,13 +48,27 @@
  * Centring the CELL instead of the ink is what put it 2px high: the cell
  * includes descender space that is empty for most strings, so it pulls the
  * apparent centre downward and the text upward. */
-#define TEXT_FONT_DY    4    /* 13px face */
-#define TEXT_BIG_DY     0    /* 20px face */
+/* Line pitch for the two-line case: the 13px cell is 14 rows and a glyph blit
+ * paints its whole cell, so lines sit exactly one cell apart with no overlap.
+ * The cell's 14th row is blank, which is the inter-line gap. */
+#define TEXT_LINE_H     14
+
+/* The transport icon sits beside LINE 0 only (it is 12px tall in a 14px row),
+ * so line 1 starts at the panel edge and gains the gutter back -- 17 glyphs
+ * against 16. Small, but free. */
+#define TEXT_X2         2
+
+/* Single-line offsets. The transport icon spans TEXT_Y+8 .. TEXT_Y+19 (centre
+ * 38.5 absolute); each face is centred on that by its cap-to-baseline mass, not
+ * its cell, because the cell carries descender space that is empty for most
+ * strings. 20px: cap..baseline is cell rows 4..18. 13px (7x14): rows 0..9. */
+#define TEXT_FONT_DY    8    /* 13px face */
+#define TEXT_BIG_DY     2    /* 20px face */
 /* (128 - TEXT_X - 2) / 10px advance = 11 glyphs in the big face. */
 #define TEXT_BIG_MAX    11
 
 // Bottom row: y position of the wireless status line.
-#define STATUS_Y 106
+#define STATUS_Y 111
 
 static bool display_powered = true;
 static bool display_paused  = false;   // true while the flash-animation player owns the bus
@@ -181,7 +195,20 @@ static bool display_backlight_init(void) {
 }
 
 // y position of the big clock (top of the glyphs).
-#define CLOCK_Y 49
+/* Vertical budget, 128 rows total. The text band holds TWO lines of the 13px
+ * face, whose cell is 7x14 -- and a glyph blit paints its WHOLE cell including
+ * background, so cells cannot overlap: two lines need 2*14 = 28px exactly.
+ *
+ *   0..24    connection strip   25
+ *   25..52   text (2 lines)     28
+ *   53..86   clock              34   (Regular-30 cell, unchanged)
+ *   87..103  lock band          17   (13px face; CAPS/WIN/FN/SCR are short)
+ *   104..127 battery            24   (20px face kept: the % is glanced at)
+ *
+ * The 3px the text band needed came from the lock row, not the battery row --
+ * the battery percentage already clips one row off the bottom of the panel at
+ * the 20px cell height, so it had nothing to give. */
+#define CLOCK_Y 54
 
 // Clock format: 1 = HH:MM:SS (per-second redraw of the changed cells), 0 = HH:MM.
 #ifndef DISPLAY_CLOCK_SHOW_SECONDS
@@ -373,7 +400,12 @@ static void draw_conn_number(bool force) {
 // Battery icon, bottom-left. Body + terminal nub, with a proportional fill.
 // Geometry is inclusive coordinates (lcd_fill_rect takes x0,y0,x1,y1).
 #define BATT_X0    5   /* was 2: the LCD is recessed, so the bezel clips the outermost pixels */
-#define BATT_Y0    (STATUS_Y + 5)
+/* +4, not +3: rows 126-127 were dead space below the icon, which read as the
+ * battery row floating. LCD_OFF_Y is a controller offset, not lost rows, so the
+ * full 0..127 is visible. One row of bottom margin is kept deliberately -- the
+ * LCD is recessed and the bezel clips the outermost pixels, which is the same
+ * reason BATT_X0 is 5 rather than 0. */
+#define BATT_Y0    (STATUS_Y + 4)   /* 17px band: icon 115..126 */
 #define BATT_W     24
 #define BATT_H     12
 #define BATT_X1    (BATT_X0 + BATT_W - 1)
@@ -469,10 +501,10 @@ static void draw_battery(bool force) {
 
         char bbuf[8];
         snprintf(bbuf, sizeof(bbuf), "%u%%", batt);
-        uint16_t w = lcd_flash_text_width(FONT_STATUS, bbuf);
+        uint16_t w = lcd_flash_text_width(FONT_SMALL, bbuf);
         /* PANEL_WIDTH - 4, not - 1: viewed from the right the bezel hides the
          * last couple of columns, which was clipping the '%'. */
-        lcd_draw_flash_text(FONT_STATUS, PANEL_WIDTH - 4 - w, STATUS_Y, bbuf);
+        lcd_draw_flash_text(FONT_SMALL, PANEL_WIDTH - 4 - w, STATUS_Y + 2, bbuf);
     }
 }
 
@@ -498,9 +530,13 @@ static void draw_battery(bool force) {
 // disable most hotkeys and nobody would enable it on purpose -- so the label is
 // for the only context where the feature is meaningful. The padlock conveys
 // "disabled"; the label says which key.
-#define LOCK_Y      83
+#define LOCK_Y      88
 #define LOCK_PAD_X  4
-#define LOCK_PAD_Y  (LOCK_Y + 3)          // 16px glyph centred in the 23px band
+/* 16px padlock inside the 23px band -> LOCK_Y+3 .. LOCK_Y+18, which the clear
+ * rect (STATUS_Y - LOCK_Y = 23) fully covers. It did NOT while the band was
+ * 17px: the padlock ran to LOCK_Y+18 against a clear of LOCK_Y+16, leaving its
+ * bottom two rows on screen forever once the locks cleared. */
+#define LOCK_PAD_Y  (LOCK_Y + 3)
 #define LOCK_CAP_X  20                    // "CAPS" 4 glyphs = 40px -> 20..59
 #define LOCK_WIN_X  64                    // "WIN"  3 glyphs = 30px -> 64..93
 #define LOCK_SLOT3_X 96                   // shared: "FN" 20px, "SCR" 30px -> 96..125
@@ -571,7 +607,7 @@ static void draw_locks(bool force) {
 // The whole payload fits one raw-HID packet: 12 characters at a 10px advance
 // fills the 128px band, against ~27 usable bytes per packet. So there is no
 // framing, no offsets and no partial-render window to design around.
-#define TEXT_Y        25
+#define TEXT_Y        26
 #define TEXT_H        (CLOCK_Y - TEXT_Y)     // 24px, clock starts at 49
 #define TEXT_ICON_W   12
 #define TEXT_ICON_GAP 2   /* tightened with the denser face: one more glyph */
@@ -588,30 +624,37 @@ static void draw_locks(bool force) {
 #define COL_ICON_PAUSE 0xFFE0                 // amber
 #define COL_ICON_STOP  0xF800                 // red
 
-static char     text_buf[DISPLAY_TEXT_MAX + 1] = {0};
+/* TWO lines. Line 0 is the primary (song title); line 1 is secondary (artist).
+ * Kept as separate buffers rather than one wrapped string because the producer
+ * knows the semantic split and we do not -- wrapping "Bohemian Rhapsody" mid
+ * word would look worse than truncating it. */
+#define TEXT_LINES 2
+static char     text_buf[TEXT_LINES][DISPLAY_TEXT_MAX + 1] = {{0}};
 static uint8_t  text_icon    = DISPLAY_ICON_NONE;
 static uint32_t text_stamp   = 0;
 static bool     text_present = false;
 static bool     text_dirty   = false;
 
-void display_set_text(uint8_t icon, const char *s, uint8_t len) {
+void display_set_text_line(uint8_t line, uint8_t icon, const char *s, uint8_t len) {
+    if (line >= TEXT_LINES) return;
     if (len > DISPLAY_TEXT_MAX) len = DISPLAY_TEXT_MAX;
-
     uint8_t n = 0;
-    for (uint8_t i = 0; i < len; i++) {
+    for (uint8_t i = 0; i < len && s[i]; i++) {
         char c = s[i];
-        if (c == '\0') break;
-        // The atlases carry printable ASCII only; anything else would index off
-        // the end of the glyph table. Substitute rather than drop so the text
-        // keeps its shape.
-        text_buf[n++] = (c >= 0x20 && c < 0x7F) ? c : '?';
+        text_buf[line][n++] = (c >= 0x20 && c < 0x7F) ? c : '?';
     }
-    text_buf[n] = '\0';
-
-    text_icon    = (icon <= DISPLAY_ICON_STOP) ? icon : DISPLAY_ICON_NONE;
+    text_buf[line][n] = '\0';
+    if (line == 0) text_icon = (icon <= DISPLAY_ICON_STOP) ? icon : DISPLAY_ICON_NONE;
     text_stamp   = timer_read32();
-    text_present = (n > 0) || (text_icon != DISPLAY_ICON_NONE);
+    text_present = text_buf[0][0] || text_buf[1][0] || (text_icon != DISPLAY_ICON_NONE);
     text_dirty   = true;
+}
+
+void display_set_text(uint8_t icon, const char *s, uint8_t len) {
+    /* Legacy single-line entry point: line 0, and clear line 1 so a producer
+     * that only knows about one line cannot leave a stale artist behind. */
+    text_buf[1][0] = '\0';
+    display_set_text_line(0, icon, s, len);
 }
 
 /* Optimistic local flip when the user presses play/pause.
@@ -637,7 +680,8 @@ void display_toggle_play_icon(void) {
 }
 
 void display_clear_text(void) {
-    text_buf[0]  = '\0';
+    text_buf[0][0] = '\0';
+    text_buf[1][0] = '\0';
     text_icon    = DISPLAY_ICON_NONE;
     text_present = false;
     text_dirty   = true;
@@ -900,7 +944,7 @@ static void draw_text_slot(bool force) {
     /* Wireless status transiently outranks the host text slot. No icon: the
      * icon IDs are media transports and would misdescribe a link event. */
     if (conn_status_str) {
-        lcd_draw_flash_text(FONT_STATUS, CONN_STATUS_X, TEXT_Y, conn_status_str);
+        lcd_draw_flash_text(FONT_STATUS, CONN_STATUS_X, TEXT_Y + TEXT_BIG_DY, conn_status_str);
         return;
     }
 
@@ -908,23 +952,24 @@ static void draw_text_slot(bool force) {
 
     if (text_icon != DISPLAY_ICON_NONE)
         draw_text_icon(0, TEXT_Y + (TEXT_H - 12) / 2, text_icon);
-    if (text_buf[0]) {
-        /* Use the big face when the text FITS in it, and only drop to the dense
-         * one when it does not. Most titles are short -- "Everlong", "Wish You
-         * Were Here" -- and there is no reason to render those tiny just because
-         * "Bohemian Rhapsody" would not fit.
-         *
-         * Each face needs its own vertical nudge: both are centred on the
-         * transport icon (rows 31..42, centre 36.5) by their cap-to-baseline
-         * mass, not by their cell, because the cell includes descender space
-         * that is empty for most strings and drags the apparent centre down.
-         *   20px: cap..baseline is cell rows 4..18 (15 rows) -> DY 0
-         *   13px: cap..baseline is cell rows 3..12 (10 rows) -> DY 4 */
-        bool big = strlen(text_buf) <= TEXT_BIG_MAX;
-        lcd_draw_flash_text(big ? FONT_STATUS : FONT_SMALL,
-                            TEXT_X,
-                            TEXT_Y + (big ? TEXT_BIG_DY : TEXT_FONT_DY),
-                            text_buf);
+    if (text_buf[0][0] || text_buf[1][0]) {
+        if (text_buf[1][0]) {
+            /* TWO lines: both must use the 13px face -- a 20px cell is 23 rows
+             * and two of those need 46 in a 28px band. There is no mixed
+             * option, so a second line costs legibility on the first. */
+            lcd_draw_flash_text(FONT_SMALL, TEXT_X, TEXT_Y,              text_buf[0]);
+            lcd_draw_flash_text(FONT_SMALL, TEXT_X2, TEXT_Y + TEXT_LINE_H, text_buf[1]);
+        } else {
+            /* ONE line: keep the adaptive size. Short titles stay legible in
+             * the 20px face; only long ones drop to 13px. Each face is centred
+             * on the transport icon by its cap-to-baseline mass, so they need
+             * different offsets -- see TEXT_BIG_DY / TEXT_FONT_DY. */
+            bool big = strlen(text_buf[0]) <= TEXT_BIG_MAX;
+            lcd_draw_flash_text(big ? FONT_STATUS : FONT_SMALL,
+                                TEXT_X,
+                                TEXT_Y + (big ? TEXT_BIG_DY : TEXT_FONT_DY),
+                                text_buf[0]);
+        }
     }
 }
 
