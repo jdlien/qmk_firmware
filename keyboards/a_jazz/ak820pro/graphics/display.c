@@ -68,7 +68,7 @@
 #define TEXT_BIG_MAX    11
 
 // Bottom row: y position of the wireless status line.
-#define STATUS_Y 112
+#define STATUS_Y 105
 
 static bool display_powered = true;
 static bool display_paused  = false;   // true while the flash-animation player owns the bus
@@ -195,20 +195,49 @@ static bool display_backlight_init(void) {
 }
 
 // y position of the big clock (top of the glyphs).
-/* Vertical budget, 128 rows total. The text band holds TWO lines of the 13px
- * face, whose cell is 7x14 -- and a glyph blit paints its WHOLE cell including
- * background, so cells cannot overlap: two lines need 2*14 = 28px exactly.
+/* Vertical budget, 128 rows total. A glyph blit paints its WHOLE cell including
+ * background, so cells cannot overlap and a band costs exactly its cell height.
  *
  *   0..24    connection strip   25
- *   25..52   text (2 lines)     28
- *   53..86   clock              34   (Regular-30 cell, unchanged)
- *   87..103  lock band          17   (13px face; CAPS/WIN/FN/SCR are short)
- *   104..127 battery            24   (20px face kept: the % is glanced at)
+ *   25..26   gap                 2
+ *   27..54   text (2 lines)     28   two 7x14 cells, at 27 and 41
+ *   55       gap                 1
+ *   56..77   clock              22   Regular-30, CROPPED to its ink
+ *   78..81   gap                 4
+ *   82..104  lock band          23   20px face
+ *   105..127 battery            23   20px face
  *
- * The 3px the text band needed came from the lock row, not the battery row --
- * the battery percentage already clips one row off the bottom of the panel at
- * the 20px cell height, so it had nothing to give. */
-#define CLOCK_Y 55
+ * SPACING IS SET BY INK, NOT BY BANDS. The 20px cell carries 4 blank rows above
+ * its caps and 4 below its baseline, so a band boundary is nowhere near where
+ * the eye puts the edge. Measured ink-to-ink the rhythm is:
+ *
+ *   icons -> text   2
+ *   text  -> clock  2
+ *   clock -> lock   8
+ *   lock  -> batt   8
+ *
+ * Those last two read as one visual gap each side of the lock row, and they
+ * were 6 and 8 before -- visibly lopsided. Balancing them took THREE coupled
+ * moves, not one: the lock row down 1, the battery down 1 (the 20px cell needs
+ * all 23 rows, so the lock band cannot grow without pushing STATUS_Y), and the
+ * clock up 1 to make the two gaps exactly equal rather than 7 and 8.
+ *
+ * THE CLOCK ATLAS IS CROPPED TO 15x22 AND THAT IS WHERE THE SPACE CAME FROM.
+ * It was 15x34, cut for full ASCII with room for ascenders and descenders --
+ * but the clock only ever draws 0-9 and ':', which use neither, so 12 of its
+ * 34 rows were blank by construction (5 above the digits, 7 below). Cropping
+ * to the measured ink freed those 12 rows AND cut 34 KB off the asset blob.
+ * The glyphs themselves are untouched, pixel for pixel; only the cell moved.
+ *
+ * That is what paid for the 2px gaps and for keeping the battery percentage at
+ * 20px. Before the crop the panel was full to the row and every one of these
+ * was a trade against another.
+ *
+ * ⚠️ DESCENDERS ARE CLIPPED IN THAT ATLAS. g/p/q/y and friends lost their
+ * tails, because nothing but the clock draws with FONT_CLOCK. If you ever draw
+ * general text at this size, regenerate the atlas at its full 15x34 cell and
+ * hand these 12 rows back -- do not try to fix it by nudging offsets. */
+#define CLOCK_Y 56
 
 // Clock format: 1 = HH:MM:SS (per-second redraw of the changed cells), 0 = HH:MM.
 #ifndef DISPLAY_CLOCK_SHOW_SECONDS
@@ -405,7 +434,7 @@ static void draw_conn_number(bool force) {
  * full 0..127 is visible. One row of bottom margin is kept deliberately -- the
  * LCD is recessed and the bezel clips the outermost pixels, which is the same
  * reason BATT_X0 is 5 rather than 0. */
-#define BATT_Y0    (STATUS_Y + 3)   /* 16px band: icon 115..126, row 127 margin */
+#define BATT_Y0    (STATUS_Y + 5)   /* icon 110..121, centred on the 20px digits' ink (109..123) */
 #define BATT_W     24
 #define BATT_H     12
 #define BATT_X1    (BATT_X0 + BATT_W - 1)
@@ -501,10 +530,12 @@ static void draw_battery(bool force) {
 
         char bbuf[8];
         snprintf(bbuf, sizeof(bbuf), "%u%%", batt);
-        uint16_t w = lcd_flash_text_width(FONT_SMALL, bbuf);
+        /* 20px again: the clock crop freed the rows the small face was forced
+         * into. Cell 23 at STATUS_Y = 104..126, ink 108..122, row 127 margin. */
+        uint16_t w = lcd_flash_text_width(FONT_STATUS, bbuf);
         /* PANEL_WIDTH - 4, not - 1: viewed from the right the bezel hides the
          * last couple of columns, which was clipping the '%'. */
-        lcd_draw_flash_text(FONT_SMALL, PANEL_WIDTH - 4 - w, STATUS_Y + 1, bbuf);
+        lcd_draw_flash_text(FONT_STATUS, PANEL_WIDTH - 4 - w, STATUS_Y, bbuf);
     }
 }
 
@@ -530,7 +561,7 @@ static void draw_battery(bool force) {
 // disable most hotkeys and nobody would enable it on purpose -- so the label is
 // for the only context where the feature is meaningful. The padlock conveys
 // "disabled"; the label says which key.
-#define LOCK_Y      89
+#define LOCK_Y      82
 #define LOCK_PAD_X  4
 /* 16px padlock inside the 23px band -> LOCK_Y+3 .. LOCK_Y+18, which the clear
  * rect (STATUS_Y - LOCK_Y = 23) fully covers. It did NOT while the band was
