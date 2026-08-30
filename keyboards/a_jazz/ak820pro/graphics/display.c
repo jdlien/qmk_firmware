@@ -30,6 +30,7 @@
 // trap are gone.
 #define FONT_CLOCK      ASSET_IOSEVKA_REGULAR_30   // big clock
 #define FONT_STATUS     ASSET_IOSEVKA_MEDIUM_20    // small status text
+#define FONT_SMALL      ASSET_IOSEVKA_MEDIUM_14    // dense: 7px advance
 
 // Bottom row: y position of the wireless status line.
 #define STATUS_Y 106
@@ -552,7 +553,7 @@ static void draw_locks(bool force) {
 #define TEXT_Y        25
 #define TEXT_H        (CLOCK_Y - TEXT_Y)     // 24px, clock starts at 49
 #define TEXT_ICON_W   12
-#define TEXT_ICON_GAP 4
+#define TEXT_ICON_GAP 2   /* tightened with the denser face: one more glyph */
 #define TEXT_X        (TEXT_ICON_W + TEXT_ICON_GAP)
 
 // Blank after this long with no update. Without it the panel would happily show
@@ -887,7 +888,7 @@ static void draw_text_slot(bool force) {
     if (text_icon != DISPLAY_ICON_NONE)
         draw_text_icon(0, TEXT_Y + (TEXT_H - 12) / 2, text_icon);
     if (text_buf[0])
-        lcd_draw_flash_text(FONT_STATUS, TEXT_X, TEXT_Y, text_buf);
+        lcd_draw_flash_text(FONT_SMALL, TEXT_X, TEXT_Y, text_buf);
 }
 
 static void draw_status(bool force) {

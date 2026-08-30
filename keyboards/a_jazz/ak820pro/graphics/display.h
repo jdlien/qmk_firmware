@@ -30,7 +30,13 @@ void    display_brightness_down(void);
  *
  * icon: 0 none, 1 play, 2 pause, 3 stop. Deliberately an ICON ID rather than a
  * "media state" so other producers can reuse it without the name lying. */
-#define DISPLAY_TEXT_MAX 12          /* 128px band / 10px advance */
+/* Host text is drawn in the 14px face (7px advance) rather than the 20px one,
+ * because this is the slot where cramming matters -- song titles. From TEXT_X
+ * (14) that is (128 - 14 - 2) / 7 = 16 characters, up from 12.
+ *
+ * The wireless status overlay deliberately stays on the 20px face: those strings
+ * are short and want legibility, not density. */
+#define DISPLAY_TEXT_MAX 16
 
 enum display_text_icon {
     DISPLAY_ICON_NONE = 0,

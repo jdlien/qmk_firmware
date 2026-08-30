@@ -6,18 +6,19 @@
 
 #define FLASH_ASSET_MAGIC 0x53414B41
 #define FLASH_ASSET_VERSION 1
-#define FLASH_ASSET_COUNT 11
+#define FLASH_ASSET_COUNT 12
 
 enum {
     ASSET_2_4_G_ICON_24X24             = 0,   // 24x24
-    ASSET_IOSEVKA_MEDIUM_20            = 1,   // 10x23, font 10x23
-    ASSET_IOSEVKA_REGULAR_30           = 2,   // 15x34, font 15x34
-    ASSET_APPLE_ICON_24X24             = 3,   // 24x24
-    ASSET_BLUETOOTH_ICON_24X24         = 4,   // 24x24
-    ASSET_CABLE_ICON_24X24             = 5,   // 24x24
-    ASSET_CONN_ROW_24G                 = 6,   // 79x24
-    ASSET_CONN_ROW_BT                  = 7,   // 79x24
-    ASSET_CONN_ROW_CABLE               = 8,   // 79x24
-    ASSET_SONIXQMK                     = 9,   // 128x128
-    ASSET_WINDOWS_ICON_24X24           = 10,   // 24x24
+    ASSET_IOSEVKA_MEDIUM_14            = 1,   // 7x18, font 7x18
+    ASSET_IOSEVKA_MEDIUM_20            = 2,   // 10x23, font 10x23
+    ASSET_IOSEVKA_REGULAR_30           = 3,   // 15x34, font 15x34
+    ASSET_APPLE_ICON_24X24             = 4,   // 24x24
+    ASSET_BLUETOOTH_ICON_24X24         = 5,   // 24x24
+    ASSET_CABLE_ICON_24X24             = 6,   // 24x24
+    ASSET_CONN_ROW_24G                 = 7,   // 79x24
+    ASSET_CONN_ROW_BT                  = 8,   // 79x24
+    ASSET_CONN_ROW_CABLE               = 9,   // 79x24
+    ASSET_SONIXQMK                     = 10,   // 128x128
+    ASSET_WINDOWS_ICON_24X24           = 11,   // 24x24
 };
