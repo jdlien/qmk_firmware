@@ -190,7 +190,7 @@ void lcd_clear_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
     if (!w || !h) return;
     if ((uint32_t)w * h * 2u > 0x8000u) return;      // larger than the black frame
     lcd_blit_flash(FLASH_BLACK_FRAME, x, y, w, h);
-    for (uint32_t g = 0; g < 4000000u && lcd_blit_busy(); g++) { __asm__ volatile("nop"); }
+    lcd_blit_wait();
 }
 
 void lcd_blit_ram(const uint16_t *px, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
@@ -455,7 +455,7 @@ const flash_asset_t *flash_asset(uint16_t id) {
 // not wedge the caller. A 24x24 icon is ~0.5 ms; the 128x128 splash ~13 ms.
 static void blit_flash_sync(uint32_t src, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
     lcd_blit_flash(src, x, y, w, h);
-    for (uint32_t g = 0; g < 4000000u && lcd_blit_busy(); g++) { __asm__ volatile("nop"); }
+    lcd_blit_wait();
 }
 
 void lcd_draw_flash_image(uint16_t id, uint16_t x, uint16_t y) {
@@ -529,6 +529,48 @@ static inline void blit_arm(uint32_t addr) { lcd_blit_flash(addr, 0, 0, FRAME_W,
 // True once the in-flight DMA blit has completed (Vector58 sets it).
 bool lcd_blit_busy(void) { return !blit_done; }
 
+/* Bounded wait that RECOVERS instead of merely giving up.
+ *
+ * blit_done is cleared when a blit is armed and set only by blit_done_cb, off
+ * the SPI0 DMA completion IRQ. If that IRQ is ever missed the flag stays false
+ * FOREVER: every later wait spins its full bound, and SPI0 is left in DMA mode
+ * with FLASH_CS asserted, which then corrupts the next flash read.
+ *
+ * That is the "hang". Captured on the console 2026-08-30: an 8-second gap in
+ * the scan-rate stream, then 178 Hz against a normal ~400. The board was never
+ * dead -- it was spinning ~1 s per blit attempt, several times per housekeeping
+ * pass, and it could not recover because nothing else ever writes blit_done.
+ * From the outside that is indistinguishable from a parked CPU: raw HID times
+ * out, typing is lost, and only a power cycle clears it.
+ *
+ * On timeout: put the bus back exactly where a successful completion would have
+ * left it, then declare the blit done. One dropped frame beats a permanent
+ * crawl, and the count makes the failure visible instead of silent.
+ *
+ * BLIT_WAIT_SPINS is ~250 ms, generous against the worst real blit (a 32 KB
+ * full-screen animation frame is ~11 ms) and 4x tighter than the old 4,000,000
+ * that made each stall a full second. */
+#define BLIT_WAIT_SPINS 1000000u
+
+static uint16_t blit_timeouts = 0;
+
+bool lcd_blit_wait(void) {
+    for (uint32_t i = 0; i < BLIT_WAIT_SPINS && !blit_done; i++) {
+        __asm__ volatile("nop");
+    }
+    if (blit_done) return true;
+
+    gpio_write_pin(FLASH_CS, 1);          // same teardown as blit_done_cb
+    cs(1);
+    SN_SPI1->CTRL0_b.FRESET = 0b11;       // drop whatever the flash side held
+    blit_done = true;
+    if (blit_timeouts < 0xFFFFu) blit_timeouts++;
+    dprintf("[lcd] blit timeout #%u -- recovered\n", (unsigned)blit_timeouts);
+    return false;
+}
+
+uint16_t lcd_blit_timeouts(void) { return blit_timeouts; }
+
 // The RAM/CPU text and image helpers are gone: all art is flash-resident and
 // DMA-drawn now (lcd_draw_flash_*). lcd_blit_ram() stays for anything that
 // still needs to push a RAM tile.
@@ -571,7 +613,7 @@ void lcd_flash_init(void) {
 void lcd_blit_flash_probe(uint32_t src, uint16_t w, uint16_t h) {
     lcd_flash_init();
     lcd_blit_flash(src, 0, 0, w, h);
-    for (uint32_t i = 0; i < 4000000u && !blit_done; i++) { __asm__ volatile("nop"); }
+    lcd_blit_wait();
     // The DMA extension already restored SPI0 to the driver's 8-bit FIFO mode at
     // completion; nothing to tear down here.
     gpio_write_pin(FLASH_CS, 1); cs(1);
@@ -597,7 +639,11 @@ void anim_toggle(void) {
         blit_arm(ANIM_BASE + ANIM_HDR);
     } else {
         anim_on = false;
-        while (!blit_done) { /* let the in-flight frame finish */ }
+        /* Was an UNBOUNDED spin. A missed completion IRQ leaves blit_done
+         * false forever, so this would wedge the main loop with no way out at
+         * all -- strictly worse than the bounded waits elsewhere, and in the
+         * same failure. lcd_blit_wait() gives up and puts the bus back. */
+        lcd_blit_wait();
         gpio_write_pin(FLASH_CS, 1); cs(1);
         // The DMA extension restored SPI0 to the driver's 8-bit FIFO mode at the
         // last frame's completion, so the dashboard's spiSend path is ready again.

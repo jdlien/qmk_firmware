@@ -1106,9 +1106,10 @@ void housekeeping_task_kb(void) {
  * intermittent hang for a guaranteed one if a completion interrupt is ever
  * genuinely lost. */
 void backing_store_pre_write_hook(void) {
-    for (uint32_t i = 0; i < 4000000u && lcd_blit_busy(); i++) {
-        __asm__ volatile("nop");
-    }
+    /* lcd_blit_wait() rather than a bare spin: a blit whose completion IRQ was
+     * missed never clears, so the old loop burned its full second here on every
+     * single flash write and left the bus asserted. See lcd_blit_wait(). */
+    lcd_blit_wait();
 }
 
 bool rgb_matrix_eeprom_flush_allowed(void) {

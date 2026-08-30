@@ -1,8 +1,8 @@
 diff --git a/os/hal/ports/SN32/SN32F290/hal_efl_lld.c b/os/hal/ports/SN32/SN32F290/hal_efl_lld.c
-index cd257b325f..8cf49a60a0 100644
+index cd257b3..1c7297c 100644
 --- a/os/hal/ports/SN32/SN32F290/hal_efl_lld.c
 +++ b/os/hal/ports/SN32/SN32F290/hal_efl_lld.c
-@@ -27,6 +27,13 @@
+@@ -27,6 +27,39 @@
  
  #include "hal.h"
  
@@ -13,10 +13,36 @@ index cd257b325f..8cf49a60a0 100644
 + * wakeup on the flash-LCD branches. See keyboards/a_jazz/ak820pro readme. */
 +#define SN32_EFL_RAMFUNC __attribute__((section(".ramtext"), noinline, used))
 +
++/* Mask interrupts across the window where the flash array is BUSY.
++ *
++ * The .ramtext move above keeps these routines executing while the array is
++ * busy, but it does nothing for interrupt handlers -- the vector table and
++ * every ISR still live in flash. The AK820 Pro runs ~18,800 RGB row
++ * interrupts/s plus a 20 kHz GPT tick, so an interrupt landing inside a
++ * program window is not unlikely, it is essentially certain; the CPU then
++ * fetches a vector and handler out of an array that is mid-program.
++ *
++ * That is the residual hang: board dead, one LED row stuck lit (the row ISR
++ * being one of the victims), recoverable only by a power cycle. Draining the
++ * LCD DMA first -- backing_store_pre_write_hook() on the board side -- was
++ * necessary but not sufficient, because the DMA was never the whole story.
++ *
++ * SCOPE IS DELIBERATE: this masks the per-line PROGRAM window only, which is
++ * tens of microseconds. Sector ERASE is left alone on purpose -- it is
++ * milliseconds, and masking that long starves UART2, which on this board
++ * carries the CH582F link and is the one peripheral where being late means
++ * LOSING DATA (see the interrupt priority table). Trading a rare hang for
++ * routinely corrupted Bluetooth frames would be a bad deal.
++ *
++ * PRIMASK is saved and restored rather than blindly re-enabled, so this is
++ * safe if a caller is already inside a critical section. */
++#define SN32_EFL_CRIT_ENTER()  uint32_t _efl_primask = __get_PRIMASK(); __disable_irq()
++#define SN32_EFL_CRIT_EXIT()   __set_PRIMASK(_efl_primask)
++
  #if (HAL_USE_EFL == TRUE) || defined(__DOXYGEN__)
  
  /*===========================================================================*/
-@@ -82,7 +89,7 @@ static inline void sn32_flash_clear_status(EFlashDriver *eflp) {
+@@ -82,7 +115,7 @@ static inline void sn32_flash_clear_status(EFlashDriver *eflp) {
    eflp->flash->STATUS_b.ERR = 0;
  }
  
@@ -25,7 +51,7 @@ index cd257b325f..8cf49a60a0 100644
  
    /* Wait for busy bit clear.*/
    while ((eflp->flash->STATUS & SN32_FLASH_STATUS_BUSY) != 0U) {
-@@ -225,7 +232,7 @@ flash_error_t efl_lld_read(void *instance, flash_offset_t offset,
+@@ -225,7 +258,7 @@ flash_error_t efl_lld_read(void *instance, flash_offset_t offset,
   * @notapi
   */
  
@@ -34,7 +60,26 @@ index cd257b325f..8cf49a60a0 100644
                                size_t n, const uint8_t *pp) {
      EFlashDriver *devp = (EFlashDriver *)instance;
      flash_error_t err = FLASH_NO_ERROR;
-@@ -348,7 +355,7 @@ flash_error_t efl_lld_start_erase_all(void *instance) {
+@@ -294,9 +327,15 @@ flash_error_t efl_lld_program(void *instance, flash_offset_t offset,
+         devp->flash->DATA = word0;
+         devp->flash->DATA = word1;
+ 
+-        // Trigger programming
+-        sn32_flash_start_pgm(devp);
+-        sn32_flash_wait_busy(devp);
++        // Trigger programming. Interrupts are masked for exactly the busy
++        // window: any handler taken here would fetch from the array being
++        // programmed. See SN32_EFL_CRIT_ENTER above.
++        {
++            SN32_EFL_CRIT_ENTER();
++            sn32_flash_start_pgm(devp);
++            sn32_flash_wait_busy(devp);
++            SN32_EFL_CRIT_EXIT();
++        }
+ 
+         if (devp->flash->STATUS & SN32_FLASH_STATUS_ERROR) {
+             sn32_flash_clear_status(devp);
+@@ -348,7 +387,7 @@ flash_error_t efl_lld_start_erase_all(void *instance) {
   *
   * @notapi
   */

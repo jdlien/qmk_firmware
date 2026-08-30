@@ -28,6 +28,10 @@ bool anim_active(void);
 // DMA, non-blocking: flash tile -> panel rect. Poll lcd_blit_busy() for completion.
 void lcd_blit_flash(uint32_t src, uint16_t x, uint16_t y, uint16_t w, uint16_t h);
 bool lcd_blit_busy(void);
+/* Bounded wait that recovers a stuck blit rather than spinning forever.
+ * Returns false if it had to abandon one. */
+bool     lcd_blit_wait(void);
+uint16_t lcd_blit_timeouts(void);
 void lcd_blit_flash_probe(uint32_t src, uint16_t w, uint16_t h);
 // Brings up SPI1 (external flash). lcd_blit_flash does not do this itself, so
 // call it before any blit outside the animation path.
