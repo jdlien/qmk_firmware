@@ -314,7 +314,10 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
              * the host's next poll. Returns TRUE: the keypress must still reach
              * the host, we are only decorating it. Works wherever the key is
              * bound, since process_record_kb sees the resolved keycode. */
-            if (record->event.pressed) display_toggle_play_icon();
+            if (record->event.pressed) {
+                display_toggle_play_icon();
+                display_playback_key();   // freeze/resume the timer with it
+            }
             return true;
 #ifdef RGB_MATRIX_ENABLE
         // VIA-assignable RGB-matrix controls (see ak820pro.h). One step per press.
@@ -590,6 +593,10 @@ enum {
      * report. Torn updates are harmless: the lines are independently meaningful
      * (title / artist) and the producer polls every 3 s. */
     TEXT_SET_LINE = 0x03,
+    /* Playback position: [.., TEXT_PLAYBACK, state, pos_hi, pos_lo, dur_hi,
+     * dur_lo]. Seconds, big-endian, 16 bits -> 18.2 h, well past any track.
+     * state 0 hands the band back to the clock. */
+    TEXT_PLAYBACK = 0x04,
 };
 
 static inline bool is_text_cmd(const uint8_t *data, uint8_t length) {
@@ -611,6 +618,13 @@ static void text_command(uint8_t *data, uint8_t length) {
             if (length >= 5) {
                 display_set_text_line(data[3], data[4], (const char *)&data[5],
                                       (uint8_t)(length - 5));
+            }
+            break;
+        case TEXT_PLAYBACK:
+            if (length >= 8) {
+                display_set_playback(data[3],
+                                     (uint16_t)((data[4] << 8) | data[5]),
+                                     (uint16_t)((data[6] << 8) | data[7]));
             }
             break;
         case TEXT_CLEAR:

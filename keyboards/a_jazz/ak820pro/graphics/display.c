@@ -52,6 +52,11 @@
  * paints its whole cell, so lines sit exactly one cell apart with no overlap.
  * The cell's 14th row is blank, which is the inter-line gap. */
 #define TEXT_LINE_H     14
+/* The transport icon on line 1 sits one row above TEXT_Y so it centres on the
+ * cap band. The band's clear rect is widened by the same amount -- a drawn row
+ * outside the clear rect is never cleaned, which is what stranded the padlock's
+ * bottom rows. Row 26 is gap, so borrowing it costs nothing. */
+#define TEXT_ICON_LIFT  1
 
 /* The transport icon sits beside LINE 0 only (it is 12px tall in a 14px row),
  * so line 1 starts at the panel edge and gains the gutter back -- 17 glyphs
@@ -238,6 +243,11 @@ static bool display_backlight_init(void) {
  * general text at this size, regenerate the atlas at its full 15x34 cell and
  * hand these 12 rows back -- do not try to fix it by nudging offsets. */
 #define CLOCK_Y 56
+/* 23, not the clock cell's 22: the playback readout uses the 20px face, whose
+ * cell is 23 rows, borrowing one row from the 4-row gap below. The clear rect
+ * must cover everything either owner can draw, or switching between them
+ * leaves a row behind -- the padlock mistake again. */
+#define CLOCK_BAND_H 23
 
 // Clock format: 1 = HH:MM:SS (per-second redraw of the changed cells), 0 = HH:MM.
 #ifndef DISPLAY_CLOCK_SHOW_SECONDS
@@ -250,7 +260,127 @@ static bool clock_force_repaint = true;
 static void draw_status(bool force); // CH582F status: battery + channel digit
 static void draw_conn_row(void);      // three-transport strip, top row
 
+/* ---- Playback position ----------------------------------------------------
+ *
+ * Replaces the clock while media is playing, and hands the band straight back
+ * when it stops. Showing a FROZEN timer while paused would be worse than the
+ * time of day, which is why only the playing state takes the band.
+ *
+ * The host pushes an absolute position every few seconds and the firmware
+ * advances it locally on the 1 Hz tick in between. That is what makes it read
+ * as a running timer rather than a value that jumps every poll -- and it costs
+ * no extra panel work, because this band already repaints once a second for
+ * the clock's seconds.
+ *
+ * It expires on its own (PLAYBACK_TIMEOUT_MS). A stuck timer counting up
+ * forever after the agent dies or the machine sleeps is exactly the kind of
+ * confidently-wrong readout the text slot's expiry exists to prevent.  */
+#define PLAYBACK_TIMEOUT_MS 20000u
+#define PLAYBACK_MAX        24
+
+static bool     pb_active = false;
+static bool     pb_ticking = false;
+static uint16_t pb_pos = 0, pb_dur = 0;
+static uint32_t pb_stamp = 0;
+static char     pb_last[PLAYBACK_MAX + 1] = {0};
+static bool     pb_last_big = false;
+
+void display_set_playback(uint8_t state, uint16_t pos, uint16_t dur) {
+    bool want = (state != 0);
+    if (want != pb_active) {
+        pb_active = want;
+        clock_force_repaint = true;     // band changes owner: repaint it whole
+        pb_last[0] = '\0';
+    }
+    pb_pos     = pos;
+    pb_dur     = dur;
+    pb_ticking = want;      // the host only reports a position while PLAYING
+    pb_stamp   = timer_read32();
+}
+
+/* Freeze/unfreeze on the media key, the same optimistic trick the transport
+ * icon uses. Without it the timer kept counting for up to a poll after a pause,
+ * which is the one thing a paused timer must not do.
+ *
+ * Resume needs no guesswork about the position: it does not change while
+ * paused, so the value already held is still correct. Only whether it should be
+ * ADVANCING is in doubt, and the host settles that within a poll either way.
+ *
+ * Freezing rather than handing the band straight back to the clock is
+ * deliberate. The keypress may have gone to a browser tab this host agent
+ * cannot see, in which case the player is still going and the host will re-
+ * assert it -- a frozen timer that resumes is a much smaller lie than the clock
+ * flashing up and being replaced. */
+void display_playback_key(void) {
+    if (pb_active) pb_ticking = !pb_ticking;
+}
+
+void display_playback_tick(void) {
+    if (!pb_active) return;
+    if (timer_elapsed32(pb_stamp) > PLAYBACK_TIMEOUT_MS) {
+        pb_active = false;
+        clock_force_repaint = true;
+        pb_last[0] = '\0';
+        return;
+    }
+    if (!pb_ticking) return;    // paused: hold the value, do not advance it
+    /* Do not run past the end: at a track boundary the host's next push is up
+     * to a poll away, and a timer reading beyond the duration looks broken. */
+    if (!pb_dur || pb_pos < pb_dur) pb_pos++;
+}
+
+static uint8_t fmt_hms(char *out, uint16_t sec) {
+    uint16_t h = sec / 3600, m = (sec / 60) % 60, s = sec % 60;
+    return (uint8_t)(h ? snprintf(out, 9, "%u:%02u:%02u", h, m, s)
+                       : snprintf(out, 9, "%u:%02u", m, s));
+}
+
+static void draw_playback(void) {
+    char buf[PLAYBACK_MAX + 1];
+    uint8_t n = fmt_hms(buf, pb_pos);
+    if (pb_dur) {
+        buf[n++] = '/';
+        n = (uint8_t)(n + fmt_hms(buf + n, pb_dur));
+    }
+    buf[n] = '\0';
+
+    /* Same adaptive rule as the text slot: the big face unless the string is
+     * too wide for the panel, which only happens once a duration reaches an
+     * hour. A 20px cell is 23 rows against this band's 22, so it borrows one
+     * row from the 4-row gap below -- covered by the clear rect below. */
+    bool     big = (n * 10u) <= PANEL_WIDTH;
+    uint8_t  adv = big ? 10 : 7;
+    uint16_t x0  = (uint16_t)((PANEL_WIDTH - n * adv) / 2);
+    uint16_t y   = big ? CLOCK_Y : (CLOCK_Y + 4);
+
+    bool relayout = (big != pb_last_big) || (strlen(pb_last) != n) || clock_force_repaint;
+    if (relayout) {
+        lcd_clear_rect(0, CLOCK_Y, PANEL_WIDTH, CLOCK_BAND_H);
+        pb_last[0] = '\0';
+    }
+    /* Monospace, so redraw only the cells that changed -- usually just the
+     * seconds digit. Same reason as the clock: this runs every second. */
+    for (uint8_t i = 0; i < n; i++) {
+        if (relayout || buf[i] != pb_last[i]) {
+            char ch[2] = {buf[i], 0};
+            lcd_draw_flash_text(big ? FONT_STATUS : FONT_SMALL, x0 + i * adv, y, ch);
+        }
+    }
+    strcpy(pb_last, buf);
+    pb_last_big = big;
+}
+
 void draw_clock(void) {
+    if (pb_active) {
+        /* Leaving playback needs the band cleared of the wider/other-sized
+         * glyphs before the clock is laid back down; entering needs the
+         * clock's cells gone. Both are handled by clock_force_repaint, which
+         * display_set_playback() sets on every ownership change. */
+        draw_playback();
+        clock_force_repaint = false;
+        return;
+    }
+    if (clock_force_repaint) lcd_clear_rect(0, CLOCK_Y, PANEL_WIDTH, CLOCK_BAND_H);
     rtc_time_t shown;
     bool valid = rtc_get_time(&shown);
     if (!valid) memset(&shown, 0, sizeof(shown));
@@ -669,16 +799,29 @@ static bool     text_dirty   = false;
 void display_set_text_line(uint8_t line, uint8_t icon, const char *s, uint8_t len) {
     if (line >= TEXT_LINES) return;
     if (len > DISPLAY_TEXT_MAX) len = DISPLAY_TEXT_MAX;
+    char prev[DISPLAY_TEXT_MAX + 1];
+    strcpy(prev, text_buf[line]);          // for the change check below
     uint8_t n = 0;
     for (uint8_t i = 0; i < len && s[i]; i++) {
         char c = s[i];
         text_buf[line][n++] = (c >= 0x20 && c < 0x7F) ? c : '?';
     }
     text_buf[line][n] = '\0';
-    if (line == 0) text_icon = (icon <= DISPLAY_ICON_STOP) ? icon : DISPLAY_ICON_NONE;
+    uint8_t new_icon = (line == 0) ? ((icon <= DISPLAY_ICON_STOP) ? icon : DISPLAY_ICON_NONE)
+                                   : text_icon;
+
+    /* Redraw only on a real change. The host re-pushes on a keepalive to correct
+     * the optimistic play/pause guess (see process_record_kb), so identical
+     * pushes are routine -- repainting on each one would run the flash->LCD DMA
+     * for nothing, and that DMA is one half of the eeconfig-write freeze.
+     *
+     * text_stamp still advances on EVERY push: it is the liveness heartbeat
+     * behind DISPLAY_TEXT_TIMEOUT_MS, and gating it on change would expire the
+     * band mid-track whenever a track ran longer than the timeout. */
+    if (strcmp(text_buf[line], prev) != 0 || new_icon != text_icon) text_dirty = true;
+    text_icon    = new_icon;
     text_stamp   = timer_read32();
     text_present = text_buf[0][0] || text_buf[1][0] || (text_icon != DISPLAY_ICON_NONE);
-    text_dirty   = true;
 }
 
 void display_set_text(uint8_t icon, const char *s, uint8_t len) {
@@ -970,7 +1113,7 @@ static void draw_text_slot(bool force) {
     if (!force && !text_dirty) return;
     text_dirty = false;
 
-    lcd_clear_rect(0, TEXT_Y, PANEL_WIDTH, TEXT_H);
+    lcd_clear_rect(0, TEXT_Y - TEXT_ICON_LIFT, PANEL_WIDTH, TEXT_H + TEXT_ICON_LIFT);
 
     /* Wireless status transiently outranks the host text slot. No icon: the
      * icon IDs are media transports and would misdescribe a link event. */
@@ -992,14 +1135,24 @@ static void draw_text_slot(bool force) {
          * like. Every case stays inside the band, so the clear rect still
          * covers it (the mistake that stranded the padlock). */
         uint16_t icon_y;
-        /* TEXT_Y, not TEXT_Y+1: centring the 12-row icon on the 14-row cell
-         * lands it half a row below the 13px face's cap-to-baseline mass
-         * (rows 0..12), which reads as low. Sitting it on the cap line is the
-         * better half-pixel to spend. */
-        if (text_buf[1][0])                       icon_y = TEXT_Y;
+        /* Centre on the CAP band, not on the cell and not on the full ink
+         * extent. Measured, the 13px face puts caps and lining figures in rows
+         * 0..9 and descenders in 3..12: descenders appear on only some letters
+         * and do not define where the eye puts the line. Centring on the full
+         * 0..12 ink therefore sits the icon a row low against most strings,
+         * which is exactly how it looked.
+         *
+         *   icon_y = cell + cap_lo + (cap_height - ICON_H) / 2
+         *
+         * 13px: cap_lo 0, cap_height 10  ->  cell - 1
+         * 20px: cap_lo 4, cap_height 15  ->  cell + 5   (already right)
+         *
+         * The two-line case lifts the icon one row ABOVE TEXT_Y, which is why
+         * the band's clear rect starts at TEXT_Y - TEXT_ICON_LIFT. */
+        if (text_buf[1][0])                       icon_y = TEXT_Y - TEXT_ICON_LIFT;
         else if (strlen(text_buf[0]) <= TEXT_BIG_MAX)
                                                   icon_y = TEXT_Y + TEXT_BIG_DY + 5;
-        else                                      icon_y = TEXT_Y + TEXT_FONT_DY + 1;
+        else                                      icon_y = TEXT_Y + TEXT_FONT_DY - 1;
         draw_text_icon(0, icon_y, text_icon);
     }
     if (text_buf[0][0] || text_buf[1][0]) {
@@ -1057,6 +1210,9 @@ void display_housekeeping_task(void) {
         uint32_t sec = rtc_get_seconds();
         if (sec != last_shown_sec) {
             last_shown_sec = sec;
+            /* Advance the playback timer on the RTC second, so it runs at the
+             * same cadence the band already repaints at -- no extra DMA. */
+            display_playback_tick();
             draw_clock();
             draw_battery(false); // self-guards, only draws on change
         }

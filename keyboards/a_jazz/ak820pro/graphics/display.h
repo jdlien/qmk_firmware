@@ -54,6 +54,14 @@ void display_set_text(uint8_t icon, const char *s, uint8_t len);
 void display_set_text_line(uint8_t line, uint8_t icon, const char *s, uint8_t len);
 void display_clear_text(void);
 
+/* Playback position, drawn in place of the clock while media is PLAYING.
+ * pos/dur are whole seconds; state 0 hands the band back to the clock.
+ * The firmware advances pos itself once per second, so the host only has to
+ * re-assert it occasionally -- see display_playback_tick(). */
+void display_set_playback(uint8_t state, uint16_t pos, uint16_t dur);
+void display_playback_tick(void);
+void display_playback_key(void);
+
 /* Hold-to-pair feedback. A slot key was pressed and the pair threshold has not
  * elapsed yet, so the band says the hold is in progress. Without it the hold is
  * silent until it fires, and being 100ms short is indistinguishable from the
