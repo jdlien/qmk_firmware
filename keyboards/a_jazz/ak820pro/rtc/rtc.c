@@ -207,7 +207,34 @@ static bool rtc_valid;
 #    define RTC_DRIFT_THRESHOLD_S 2
 #endif
 
+/* Minimum rate-measurement window, in reference seconds. The PCF reads to 1 s,
+ * so this sets the best resolution a single trim can have (~0.3% at 300 s). */
+#ifndef RTC_CAL_MIN_WINDOW_S
+#    define RTC_CAL_MIN_WINDOW_S 300
+#endif
+
+/* Minimum tick-vs-real discrepancy worth acting on. Must be > 1 so reference
+ * quantisation alone cannot trigger a trim. */
+#ifndef RTC_CAL_MIN_DIFF_S
+#    define RTC_CAL_MIN_DIFF_S 2
+#endif
+
 static volatile uint32_t rtc_check_seconds;
+
+/* Rate-trim state. The SN32 RTC is clocked from the ILRC (see
+ * SN32_RTC_CLK_SOURCE in hal_rtc_lld.h), an untrimmed internal RC oscillator,
+ * against a hardcoded SN32_RTC_PERIOD_DEFAULT of 32000 that assumes exactly
+ * 32 kHz. Measured on this unit: ~34.3 kHz, i.e. the clock gains ~4 s per
+ * minute. Phase snapping alone therefore leaves a sawtooth as large as the
+ * check interval's worth of drift, which is what made the clock look "absolutely
+ * horrid" -- it was, but only between snaps.
+ *
+ * These open a rate-measurement window so the divider itself can be corrected.
+ * Both quantities are snap-immune -- a free-running tick count and the PCF's own
+ * absolute time -- so a phase correction mid-window does not invalidate it. */
+static uint32_t rtc_cal_ticks0;     /* rtc_seconds_count when the window opened */
+static int32_t  rtc_cal_ref0;       /* PCF epoch seconds when the window opened */
+static bool     rtc_cal_valid;      /* the two above are meaningful */
 
 #endif
 
@@ -281,10 +308,84 @@ static void rtc_clock_discipline(void)
     rtcConvertDateTimeToStructTm(&target, &ref_tm, NULL);
     rtcConvertDateTimeToStructTm(&current, &cur_tm, NULL);
 
-    int32_t error = (int32_t)(mktime(&ref_tm) - mktime(&cur_tm));
+    time_t  ref_epoch = mktime(&ref_tm);
+    int32_t error     = (int32_t)(ref_epoch - mktime(&cur_tm));
 
     /*
-     * Only correct when the SN32 RTC has actually drifted.
+     * Rate trim. Snapping the phase alone leaves the divider wrong, so the clock
+     * immediately re-drifts at the same rate; correcting SECCNTV is what actually
+     * makes it keep time.
+     *
+     * The measurement window is built from two snap-IMMUNE quantities:
+     * rtc_seconds_count (a free-running count of SN32 second IRQs, untouched by
+     * rtcSetTime) and the PCF's own absolute time (never written here). A phase
+     * snap therefore does NOT invalidate the window.
+     *
+     * An earlier version got exactly that wrong -- it restarted the span on every
+     * snap, and since the snap fires whenever drift exceeds the threshold, the
+     * trim never survived to collect a second sample and so never ran once.
+     *
+     * Self-refining: as the period converges, the window must grow longer before
+     * ticks and real seconds differ by a whole second, so each estimate is finer
+     * than the last with no hand-tuned constant.
+     */
+    uint32_t ticks_now = rtc_seconds_count;
+
+    if (!rtc_cal_valid) {
+        rtc_cal_ticks0 = ticks_now;
+        rtc_cal_ref0   = (int32_t)ref_epoch;
+        rtc_cal_valid  = true;
+    } else {
+        int32_t ticks = (int32_t)(ticks_now - rtc_cal_ticks0);
+        int32_t real  = (int32_t)ref_epoch - rtc_cal_ref0;
+
+        int32_t diff = ticks - real;
+
+        /* Two guards, both learned the hard way. The reference has 1 s
+         * resolution, so a short window ALWAYS shows |diff| == 1 whether or not
+         * the clock is wrong. An earlier version trimmed on any nonzero diff and
+         * restarted the window each time, so the window never grew past 60 ticks,
+         * resolution stayed at 1.7%, and it limit-cycled between the two adjacent
+         * quantised answers (33103 <-> 33664) indefinitely.
+         *
+         * Requiring a minimum window makes quantisation a small fraction of the
+         * measurement; requiring |diff| >= 2 means noise alone cannot trigger a
+         * trim. Together the window grows on its own as the period converges. */
+        if ((ticks > 0) && (real >= RTC_CAL_MIN_WINDOW_S) &&
+            ((diff >= RTC_CAL_MIN_DIFF_S) || (diff <= -RTC_CAL_MIN_DIFF_S))) {
+            uint32_t period = rtc_lld_get_period(&RTCD1);
+
+            if (period > 0) {
+                uint32_t np = (uint32_t)(((uint64_t)period * (uint64_t)ticks) /
+                                         (uint64_t)real);
+
+                /* Damp to half the computed step. The estimate carries up to a
+                 * quantum of error, and applying it in full is what lets an
+                 * overshoot become a standing oscillation; half-stepping turns
+                 * that into convergence at the cost of one extra window. */
+                np = (uint32_t)((int32_t)period + (((int32_t)np - (int32_t)period) / 2));
+
+                /* Clamp hard: one bad PCF read must not strand the divider
+                 * somewhere the clock cannot recover from. */
+                if (np < (SN32_RTC_PERIOD_DEFAULT / 2U)) np = SN32_RTC_PERIOD_DEFAULT / 2U;
+                if (np > (SN32_RTC_PERIOD_DEFAULT * 2U)) np = SN32_RTC_PERIOD_DEFAULT * 2U;
+
+                if (np != period) {
+                    rtc_lld_set_period(&RTCD1, np);
+                    printf("[rtc] trim %lu -> %lu (%ld ticks / %ld s)\n",
+                           (unsigned long)period, (unsigned long)np,
+                           (long)ticks, (long)real);
+                }
+            }
+            /* Period changed: ticks either side are different units. New window. */
+            rtc_cal_ticks0 = ticks_now;
+            rtc_cal_ref0   = (int32_t)ref_epoch;
+        }
+    }
+
+    /*
+     * Phase snap. Independent of the trim, and deliberately does NOT restart the
+     * calibration window -- see above.
      */
     if ((error > RTC_DRIFT_THRESHOLD_S) || (error < -RTC_DRIFT_THRESHOLD_S)) {
         rtcSetTime(&RTCD1, &target);
@@ -305,6 +406,22 @@ static void rtc_clock_discipline(void)
 void rtc_init(void)
 {
     i2cStart(&I2CD1, &i2ccfg);
+
+#ifdef RTC_PERIOD_INITIAL
+    /* Start from a measured divider rather than the LLD's nominal 32000.
+     *
+     * The trim below converges to the right value on its own, but only from
+     * whatever it boots with, and the divider is NOT persisted -- so every power
+     * cycle otherwise restarts a ~40 minute climb from 32000 with the clock
+     * visibly jumping the whole way. Seeding it lands within ~0.1% immediately
+     * and leaves the trim to do what it is actually good at: tracking drift.
+     *
+     * The value is per-unit and temperature-dependent (it is an RC oscillator),
+     * so this is a starting point, never a substitute for the trim. Re-measure
+     * by watching [rtc] trim lines converge from the stock 32000. */
+    rtc_lld_set_period(&RTCD1, RTC_PERIOD_INITIAL);
+#endif
+
     rtcSetCallback(&RTCD1, rtc_second_cb);
     rtc_seed_from_pcf();
 }

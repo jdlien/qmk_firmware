@@ -28,6 +28,87 @@
 // The per-key LED map (81 LEDs; knob at matrix [0][14] has none) and
 // RGB_MATRIX_LED_COUNT are defined by the rgb_matrix "layout" in keyboard.json.
 
+// --- Field rate vs PWM resolution ------------------------------------------
+// The 18 hardware rows (6 key rows x R,B,G) are lit one at a time, one row per
+// PWM period, so a key's three colour channels fire in separate time slots. The
+// full R->B->G cycle rate is:
+//
+//     freq / periodticks / SN32F2XX_RGB_MATRIX_ROWS_HW
+//
+// where drivers/led/sn32f2xx.c sets periodticks = RGB_MATRIX_MAXIMUM_BRIGHTNESS
+// and, oddly, derives the PWM clock from the UI step sizes:
+//     freq = HUE_STEP * SAT_STEP * VAL_STEP * SPD_STEP * LED_PROCESS_LIMIT
+//
+// Stock (8*16*16*16*17 = 557056, /255, /18) = 121 Hz. That clears flicker fusion
+// when the eyes are still, but the ~0.46 ms channel spacing smears into visible
+// colour fringes during a saccade -- the DLP "rainbow" artifact.
+//
+// There are two ways to raise the field rate, and they are NOT equivalent:
+//
+//   - Lower periodticks. Costs PWM resolution, because periodticks is also the
+//     val ceiling and the driver feeds the raw colour byte straight in as duty
+//     (pwmEnableChannel(..., led_state[i].b)). An earlier revision did this
+//     (128 -> 242 Hz) and it was the wrong trade: this board is run dim in a
+//     dark room, so coarsening the low end is exactly the wrong thing to spend.
+//     (Duty also sets how wide each colour's image is while the R->B->G spacing
+//     stays fixed, so a short pulse gives crisper, better-separated bars -- but
+//     that is a second-order effect. The reason the artifact stands out in a
+//     dark room is mostly dark adaptation and contrast, not the duty cycle.)
+//   - Raise freq. Costs only UI step granularity, and PWM_CLK is SN32_HCLK
+//     (48 MHz) against a current freq of ~0.56 MHz, so there is ample headroom.
+//
+// Raising freq is strictly better here, and SPD_STEP is the right factor to
+// spend: it sets only the animation-speed step, meaningless on solid_color.
+// SPD_STEP 16 -> 64 quadruples freq, which lets periodticks go back to the full
+// 255 (all 256 brightness levels restored, and VAL_STEP 8 now yields 31 dimming
+// steps instead of 16 -- finer low-end control, which is the point).
+//
+//   freq = 16*16*8*64*17 = 2228224
+//   psc  = 48e6/2228224 - 1 = 20  (integer division; hal_pwm_lld.c:293)
+//   effective freq = 48e6/21 = 2285714 Hz
+//   field rate = 2285714 / 256 / 18 = 496 Hz   (4.1x the 121 Hz stock)
+//
+// SPD_STEP 128 is the current setting: freq 4456448, psc 9, effective 4.8 MHz,
+// field rate 4.8e6/255/18 = 1046 Hz, row ISR ~18800/s. This is the highest
+// field rate reachable without spending periodticks (i.e. without giving up
+// dimming resolution), and the rainbow artifact is at its least visible here.
+//
+// IT WAS PREVIOUSLY BACKED OUT because it broke Bluetooth -- you could out-type
+// the link. That diagnosis was half right and the stated mechanism was WRONG:
+//
+//   - WRONG: "the RX FIFO is DISABLED, so a byte must be serviced within ~87us."
+//     The FIFO is enabled. UART_RxFIFOThreshold_1 is 0x00 and the LLD
+//     unconditionally ORs UART_FIFO_Enable, so the threshold is a trigger level,
+//     not a disable. The real budget is the FIFO depth, not one byte time.
+//
+//   - RIGHT: the row ISR really was stealing UART servicing. But that was an
+//     interrupt PRIORITY inversion, not a raw rate problem: SN32_SERIAL_UART2
+//     defaulted to priority 3 while the PWM row ISR sat at 2, so the row scan
+//     could preempt byte servicing no matter how fast or slow it ran.
+//
+// mcuconf.h now sets UART2 to priority 1, GPT CT16B3 to 2, and the PWM row ISR
+// to 3. The row ISR can no longer preempt the UART at any rate, which is what
+// makes 128 safe again. If Bluetooth throughput ever regresses, verify that
+// ordering FIRST -- do not reflexively drop SPD_STEP.
+//
+// The old coupling to BKL_PWM_TICKS / IND_PWM_TICKS IS GONE. The backlight and
+// indicator software PWM used to tick from the row ISR, so their switching
+// rates moved with this constant. They now run from a dedicated 20 kHz GPT
+// (CT16B3/GPTD4, see pwm_tick_init in ak820pro.c), measured at 20000 Hz. This
+// constant no longer affects them at all.
+//
+// Reference points: matrix scan 1396 Hz at 2189/s, ~1050 Hz at 8963/s, ~585 Hz
+// at 18800/s. Measure with `qmk console` (DEBUG_MATRIX_SCAN_RATE is on).
+//
+// NOTE: changing periodticks reinterprets every STORED val -- EEPROM survives a
+// flash, so the board comes back at a different brightness and needs re-dimming
+// by hand. Keep RGB_MATRIX_DEFAULT_VAL in keyboard.json scaled to the ceiling
+// (64/255 ~= the same 25% output as the old 32/128).
+#define RGB_MATRIX_MAXIMUM_BRIGHTNESS 255
+#define RGB_MATRIX_HUE_STEP 16
+#define RGB_MATRIX_VAL_STEP 8
+#define RGB_MATRIX_SPD_STEP 128  /* 1046 Hz LED field rate; safe now UART2 outranks the row ISR */
+
 // Columns are shared between the key matrix and the (column-active-LOW) LED matrix.
 // Drive unselected key-rows HIGH (instead of leaving them high-Z): a pressed switch
 // then pulls its shared column to INACTIVE (high) rather than active (low), so a
@@ -50,12 +131,36 @@
 /* Auto-calibration: periodically read the PCF8563 (crystal) and discipline the
  * SN32 RTC to it -- snap the phase and trim the divider so the clock self-locks
  * on any hardware (no hardcoded SECCNTV) and tracks temperature drift. Costs one
- * I2C read per RTC_CAL_INTERVAL_S (~1/min). Comment out to free-run the RTC. */
+ * I2C read per RTC_CHECK_INTERVAL_S. Comment out to free-run the RTC. */
 #define RTC_AUTO_CALIBRATION
+
+/* rtc.c defaults this to 3600 -- once an HOUR. (The comment above used to claim
+ * "~1/min" and name a nonexistent RTC_CAL_INTERVAL_S; both were wrong.) An hour
+ * of free-running SN32 RTC between corrections is a lot of rope, and the
+ * correction only fires past RTC_DRIFT_THRESHOLD_S anyway, so error can sit
+ * uncorrected well past a minute. One bit-banged I2C read per minute is cheap.
+ *
+ * NOTE this only disciplines the SN32 RTC *to the PCF8563*. If the PCF itself is
+ * off -- and this unit's is a CHMC D8563F clone -- no calibration interval helps;
+ * that needs a host resync (ak820ctl clock). */
+#define RTC_CHECK_INTERVAL_S 60
 
 /* NO_USB_STARTUP_CHECK is enabled automatically by BLUETOOTH_ENABLE (custom
  * driver); it keeps the main loop (matrix scan + key processing) running when
- * USB is suspended/unplugged so wireless typing works on battery. */
+ * USB is suspended/unplugged so wireless typing works on battery.
+ *
+ * SIDE EFFECT, and it is a real one: QMK's ENTIRE remote-wakeup path lives
+ * inside that same `#if !defined(NO_USB_STARTUP_CHECK)` block in
+ * tmk_core/protocol/chibios/chibios.c. So enabling Bluetooth silently removes
+ * the ability to WAKE A SLEEPING HOST BY TYPING -- on USB, permanently, even in
+ * wired mode. The hardware is fine: the SN32 LLD implements usb_lld_wakeup_host()
+ * and drives the K-state correctly; QMK just never calls it.
+ *
+ * QMK cannot keep its version, because it wakes the host from inside a BLOCKING
+ * `while (USB_SUSPENDED)` loop -- exactly the loop that must not exist here, or
+ * the main loop stalls and the wireless link dies. So we request the wakeup
+ * ourselves from a keypress instead. See usb_wakeup_try() in ak820pro.c. */
+#define USB_WAKEUP_ON_KEYPRESS
 
 /* The mode slider drives the connection host explicitly (dip_switch_update_user),
  * but define a sane boot default before the first slider callback fires. */
@@ -74,10 +179,44 @@
 // vector fetch long enough that the SPI0 DMA completion IRQ is missed and the
 // WFI-idle wakeup is lost -> hang. RAM-resident flash ops keep IRQs serviced.
 // (If you drop efl_ramtext.diff, set this back to FALSE.)
-#define CORTEX_ENABLE_WFI_IDLE TRUE
+//
+// SET TO FALSE 2026-08-28: efl_ramtext.diff narrows that race but does NOT close
+// it. Reproduced on this unit while stepping RGB values (each step writes
+// eeconfig to flash), and caught live on the console:
+//
+//   16:58:37  console attached to an already-hung board
+//   16:58:37..17:00:51  TOTAL silence -- no "matrix scan frequency" line
+//   17:00:51  unplugged; 17:00:54 back to ~1130 Hz immediately
+//
+// During the hang: USB still enumerated (0x8009, all 6 HID interfaces), but a
+// raw-HID round-trip returned "no reply" and the LED row mux was frozen with one
+// hardware row still energised. So the USB peripheral was alive while nothing at
+// the application level ran -- the signature of the CPU parked in WFI with no
+// pending interrupt left to wake it. Only a power cycle recovered it.
+//
+// Spinning in the idle thread cannot lose a wakeup, so this removes the failure
+// mode rather than narrowing it. Cost is power: the MCU never sleeps, which is
+// irrelevant on USB but shortens BT/2.4G battery life. Accepted deliberately --
+// this board lives plugged in, and a freeze beats a shorter runtime.
+//
+// UPDATE, same day: this did NOT fix the hang. It reproduced again on the very
+// next build, with the console log ending on "rgb matrix set hsv [EEPROM]". The
+// failure config.h describes above has two halves -- a missed SPI0 DMA completion
+// IRQ *and* a lost WFI wakeup -- and only the second is addressed here. The first
+// is the one that actually bites. The working fix is the eeconfig flush guard in
+// ak820pro.c (rgb_matrix_eeprom_flush_allowed) plus RGB_MATRIX_EEPROM_WRITE_DELAY.
+//
+// Kept FALSE anyway: it removes one of the two failure halves for free on a board
+// that lives plugged in. Do not mistake it for the fix.
+#define CORTEX_ENABLE_WFI_IDLE FALSE
 
 #define DEBUG_MATRIX_SCAN_RATE
-#define DISPLAY_CLOCK_SHOW_SECONDS  FALSE
+// HH:MM:SS rather than HH:MM. display.c defaults this ON; the board shipped it
+// off with no stated reason. The per-second path is already cheap -- it redraws
+// only the character cells that actually changed, which the monospace clock font
+// makes exact -- so in practice this is one extra glyph blit per second.
+// Also makes RTC drift measurable by eye against a reference clock.
+#define DISPLAY_CLOCK_SHOW_SECONDS  TRUE
 
 // Persist a small keyboard-specific config block in EEPROM. On SN32F290 QMK's
 // default "vendor" EEPROM driver is wear-leveling backed by MCU internal flash.
@@ -85,3 +224,44 @@
 // switches. Bump EECONFIG_KB_DATA_VERSION if the layout changes.
 #define EECONFIG_KB_DATA_SIZE    4
 #define EECONFIG_KB_DATA_VERSION 1
+
+// Debounce eeconfig flushes from RGB adjustment. Without this QMK writes MCU
+// flash on every single step (~8/s while a key is held), which is both needless
+// wear and a wide window for the LCD-DMA collision documented in ak820pro.c.
+#define RGB_MATRIX_EEPROM_WRITE_DELAY 750
+
+/* Measured ILRC divider for THIS unit, seeding the RTC so it does not have to
+ * climb from the LLD's nominal 32000 on every boot (the trimmed value is not
+ * persisted). Three independent windows on 2026-08-28 gave 33391 / 33343 / 33484
+ * -- mean ~33400, spread 0.2% -- i.e. the ILRC runs ~34.3 kHz, not the 32 kHz
+ * hal_rtc_lld.h assumes.
+ *
+ * Starting here lands within ~0.2% instead of 4%, so the clock is usable within
+ * a minute of boot rather than after a ~40 minute convergence with the display
+ * jumping several seconds every few minutes throughout.
+ *
+ * RC oscillator: per-unit and temperature-dependent. This is a seed, not a
+ * calibration -- RTC_AUTO_CALIBRATION still does the real work. */
+#define RTC_PERIOD_INITIAL 33400
+
+// LCD backlight level at boot: index into bkl_duty[] in graphics/display.c.
+// 1 = the dimmest lit step (1/64 duty, ~1.6%), chosen on hardware as "about
+// right for a dark room". 0 would be off; BKL_MAX_LEVEL (11) is full.
+// Not persisted deliberately -- see display_set_brightness().
+/* --- Parameter readout overlay --------------------------------------------
+ * Show a setting in the LCD info band while you adjust it: RGB brightness, hue,
+ * saturation, speed and effect, plus LCD backlight level.
+ * SELF-CONTAINED AND REMOVABLE: comment out this one define and every part of
+ * the feature compiles out (poll task and key handlers in ak820pro.c, string
+ * slot in display.c). Nothing else depends on it. */
+#define PARAM_OVERLAY
+#define PARAM_OVERLAY_HOLD_MS 2000   /* how long a change stays on screen */
+
+#define DISPLAY_BRIGHTNESS_DEFAULT 1
+
+// Indicator LED brightness (Caps Lock, Win Lock, Charging) -- index into
+// ind_duty[] in ak820pro.c. These are software-PWM'd on the same tick as the
+// LCD backlight; at full drive they are searchlights on a dark desk, and the
+// charging one is not under user control at all. 1 = dimmest lit step (1/64).
+// 0 would turn them off entirely.
+#define INDICATOR_BRIGHTNESS_DEFAULT 1

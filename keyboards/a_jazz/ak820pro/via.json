@@ -147,7 +147,8 @@
       ],
       [
         {
-          "y": -0.25,"w": 1.25
+          "y": -0.25,
+          "w": 1.25
         },
         "5,0",
         {
@@ -265,6 +266,16 @@
       "name": "ANIM_TOG",
       "title": "Toggle the flash-animation player",
       "shortName": "Anim"
+    },
+    {
+      "name": "SCR_UP",
+      "title": "LCD backlight brighter",
+      "shortName": "SCR+"
+    },
+    {
+      "name": "SCR_DN",
+      "title": "LCD backlight dimmer",
+      "shortName": "SCR-"
     }
   ]
 }

@@ -110,7 +110,18 @@ static matrix_row_t  shared_matrix[MATRIX_ROWS]; // scan values
 static volatile bool matrix_locked  = false;     // matrix update check
 static volatile bool matrix_scanned = false;
 #endif // SHARED MATRIX
-static const uint32_t periodticks                               = RGB_MATRIX_MAXIMUM_BRIGHTNESS;
+/* +1 so a channel at FULL brightness still has a match to hit.
+ *
+ * pwm_lld_start writes the period match as (period - 1), and pwm_lld_mr_value is
+ * identity, so with periodticks == RGB_MATRIX_MAXIMUM_BRIGHTNESS the counter
+ * resets at 254 while a full-value colour channel writes MR = 255. That match
+ * never fires, the channel never asserts, and the LED goes DARK at exactly 100%
+ * -- which reads as the colour lurching when brightness reaches maximum, and as
+ * brief colour flashes while stepping through it.
+ *
+ * Costs one extra tick per PWM period (field rate 498 -> 496 Hz on the AK820 Pro,
+ * i.e. nothing) and makes full duty actually mean full duty. */
+static const uint32_t periodticks                               = RGB_MATRIX_MAXIMUM_BRIGHTNESS + 1;
 static const uint32_t freq                                      = (RGB_MATRIX_HUE_STEP * RGB_MATRIX_SAT_STEP * RGB_MATRIX_VAL_STEP * RGB_MATRIX_SPD_STEP * RGB_MATRIX_LED_PROCESS_LIMIT);
 static const pin_t    led_row_pins[SN32F2XX_RGB_MATRIX_ROWS_HW] = SN32F2XX_RGB_MATRIX_ROW_PINS; // We expect a R,B,G order here
 static const pin_t    led_col_pins[SN32F2XX_RGB_MATRIX_COLS]    = SN32F2XX_RGB_MATRIX_COL_PINS;

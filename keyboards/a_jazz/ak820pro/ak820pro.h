@@ -32,5 +32,9 @@ enum ak820pro_keycodes {
     RGBM_SPI,              // speed +
     RGBM_SPD,              // speed -
     ANIM_TOG,              // toggle the flash-animation player
+    // NOTE: order here is index-matched to via.json customKeycodes[]. Append
+    // only; inserting shifts every later keycode and silently breaks VIA maps.
+    SCR_UP,                // LCD backlight brighter
+    SCR_DN,                // LCD backlight dimmer
     AK820PRO_SAFE_RANGE
 };

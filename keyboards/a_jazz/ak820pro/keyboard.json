@@ -48,7 +48,7 @@
             "jellybean_raindrops": true,
             "typing_heatmap": true
         },
-        "default": { "animation": "solid_color" },
+        "default": { "animation": "solid_color", "hue": 21, "sat": 140, "val": 64 },
         "layout": [
             { "flags": 4, "matrix": [0, 0], "x": 7, "y": 5 },
             { "flags": 4, "matrix": [0, 1], "x": 24, "y": 5 },

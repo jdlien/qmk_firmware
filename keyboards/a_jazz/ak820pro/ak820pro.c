@@ -11,6 +11,9 @@
 #include "bluetooth/ch582f_ajazz.h"
 #include "rtc/rtc.h"
 #include "raw_hid.h"
+#ifdef USB_WAKEUP_ON_KEYPRESS
+#    include "usb_main.h"   /* USB_DRIVER */
+#endif
 
 // Current wireless mode, derived from the tri-state slider. The Fn BT controls
 // are only meaningful in the matching mode (e.g. Fn+Q selects a BT slot only
@@ -46,7 +49,14 @@ static void save_bt_profile(ch582_profile_t p) {
 
 // Fn+P long-press tracking: pairing only starts after a sustained hold, and
 // only while in a wireless mode.
-#define BT_PAIR_HOLD_MS 1000
+/* 2 s, not 1 s. A slot-key press ALSO issues a select/reconnect, so a merely
+ * slow tap at 1 s would drop a live link and start advertising -- recovering
+ * needs a re-select. Pairing is rare and deliberate; reconnecting is the common
+ * action, so the gesture must sit well clear of any tap. The progress bar makes
+ * the longer hold legible rather than annoying. Measured caveat: the hold task
+ * runs on the 10 Hz tick and the band redraws on the same tick, so the PERCEIVED
+ * threshold is ~200 ms longer than this number. */
+#define BT_PAIR_HOLD_MS 2000
 static uint16_t bt_pair_timer = 0;
 static bool     bt_pair_armed = false;
 
@@ -63,9 +73,15 @@ void early_hardware_init_post(void) {
     SN_PFPA->UART_b.URXD2 = 0b11;
 }
 
+/* Defined with the PWM tick machinery further down; the config it needs lives
+ * beside indicators_tick(), which is well below this init hook. */
+static void pwm_tick_init(void);
+
  void keyboard_post_init_kb(void) {
     // Windows Lock and Charging LEDs: outputs, off initially. update_leds() then
     // tracks their real state, writing only on a change.
+    pwm_tick_init();
+
     gpio_set_pin_output(LED_WINLOCK_PIN);
     gpio_write_pin(LED_WINLOCK_PIN, false);
     gpio_set_pin_output(LED_CHARGING_PIN);
@@ -147,7 +163,40 @@ void early_hardware_init_post(void) {
     return true;
  }
 
+#ifdef USB_WAKEUP_ON_KEYPRESS
+/* Ask a sleeping host to wake. QMK's own version is compiled out here -- see the
+ * NO_USB_STARTUP_CHECK note in config.h -- and we cannot restore it, because it
+ * wakes the host from inside a blocking `while (USB_SUSPENDED)` loop that would
+ * stall the main loop and drop the wireless link.
+ *
+ * Gated on the host having ENABLED remote wakeup (bit 1 of the USB status): a
+ * host that does not want to be woken by this device never sets it, so this is
+ * self-limiting rather than something to police ourselves.
+ *
+ * Rate-limited because usbWakeupHost() sleeps SN32_USB_HOST_WAKEUP_DURATION (2 ms)
+ * driving the K-state. Costs nothing in normal use -- it returns immediately
+ * unless USB is actually suspended. */
+#define USB_STATUS_REMOTE_WAKEUP 2U   /* USB_GETSTATUS_REMOTE_WAKEUP_ENABLED; that
+                                       * define is private to chibios.c */
+#define USB_WAKEUP_RETRY_MS      500
+
+static void usb_wakeup_try(void) {
+    if (USB_DRIVER.state != USB_SUSPENDED) return;
+    if (!(USB_DRIVER.status & USB_STATUS_REMOTE_WAKEUP)) return;
+
+    static uint16_t last_try = 0;
+    static bool     tried    = false;
+    if (tried && timer_elapsed(last_try) < USB_WAKEUP_RETRY_MS) return;
+    last_try = timer_read();
+    tried    = true;
+    usbWakeupHost(&USB_DRIVER);
+}
+#endif
+
 bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
+#ifdef USB_WAKEUP_ON_KEYPRESS
+    if (record->event.pressed) usb_wakeup_try();   // typing should wake a sleeping host
+#endif
     // Let the keymap handle/override keycodes first (e.g. Mac media keys).
     if (!process_record_user(keycode, record)) {
         return false;
@@ -155,11 +204,49 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
 
     switch (keycode) {
         case SCR_TOG:
-            if (record->event.pressed) display_toggle_power();
+            if (record->event.pressed) {
+                display_toggle_power();
+#ifdef PARAM_OVERLAY
+                /* Only the "On" case is ever legible -- turning the panel off
+                 * takes the message with it. Pushed anyway so the action is
+                 * consistent with every other adjustment, and so switching back
+                 * on confirms itself rather than just appearing. */
+                if (display_get_power()) display_set_param_status("LCD On");
+#endif
+            }
             return false;
         case ANIM_TOG:
             if (record->event.pressed) anim_toggle();
             return false;
+        case SCR_UP:
+        case SCR_DN:
+            if (record->event.pressed) {
+                if (keycode == SCR_UP) display_brightness_up();
+                else                   display_brightness_down();
+#ifdef PARAM_OVERLAY
+                /* Percentage of the LEVEL INDEX, not of the duty cycle. The 10
+                 * levels are perceptually spaced, so duty runs 2/4/6/10/17/25/
+                 * 38/56/100% and reads as erratic; the index divides evenly and
+                 * answers the question actually being asked -- how far up the
+                 * range am I. Buffer is oversized because the compiler cannot
+                 * prove %u is short (-Werror=format-truncation); the slot
+                 * truncates to the band width anyway. */
+                char buf[24];
+                uint8_t lvl = display_get_brightness();
+                uint8_t mx  = display_get_brightness_max();
+                snprintf(buf, sizeof(buf), "LCD    %3u%%",
+                         (unsigned)(mx ? (lvl * 100u + mx / 2u) / mx : 0u));
+                display_set_param_status(buf);
+#endif
+            }
+            return false;
+        case KC_MEDIA_PLAY_PAUSE:
+            /* Guess the new state so the icon flips instantly instead of after
+             * the host's next poll. Returns TRUE: the keypress must still reach
+             * the host, we are only decorating it. Works wherever the key is
+             * bound, since process_record_kb sees the resolved keycode. */
+            if (record->event.pressed) display_toggle_play_icon();
+            return true;
 #ifdef RGB_MATRIX_ENABLE
         // VIA-assignable RGB-matrix controls (see ak820pro.h). One step per press.
         case RGBM_TOG:  if (record->event.pressed) rgb_matrix_toggle();         return false;
@@ -193,11 +280,18 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
                     display_draw_bluetooth_logo();
                     bt_pair_timer = timer_read();                // arm hold-to-pair
                     bt_pair_armed = true;
+                    display_set_pair_hint(0);      // progress bar until it fires
                 }
-            } else if (bt_pair_armed) {
+            } else {
+                /* Release only disarms. Pairing now fires from
+                 * bt_pair_hold_task() the instant BT_PAIR_HOLD_MS elapses while
+                 * the key is STILL DOWN -- previously it fired here, on key-up,
+                 * so holding the key did nothing visible until you let go and
+                 * there was no way to tell whether the hold had "taken". That
+                 * also contradicted the comment above, which describes firing at
+                 * the threshold. */
+                display_set_pair_hint(-1);      // released early: hold abandoned
                 bt_pair_armed = false;
-                if (timer_elapsed(bt_pair_timer) >= BT_PAIR_HOLD_MS)
-                    ch582_enter_pairing();                        // hold action: pair active slot
             }
             return false;
         case BT24G:  // Fn+R -> select 2.4G (2.4G mode only)
@@ -212,11 +306,10 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
                 // Arm a long-press only in a wireless mode; ignore in USB.
                 bt_pair_armed = (wireless_mode != WL_MODE_USB);
                 bt_pair_timer = timer_read();
-            } else if (bt_pair_armed) {
-                bt_pair_armed = false;
-                if (timer_elapsed(bt_pair_timer) >= BT_PAIR_HOLD_MS) {
-                    ch582_enter_pairing();
-                }
+                if (bt_pair_armed) display_set_pair_hint(0);
+            } else {
+                display_set_pair_hint(-1);
+                bt_pair_armed = false;   /* fired from bt_pair_hold_task() */
             }
             return false;
         default:
@@ -399,6 +492,44 @@ static inline bool is_flash_cmd(const uint8_t *data, uint8_t length) {
     return length >= 4 && data[0] == RTC_SET_VALUE && data[1] == FLASH_CHANNEL;
 }
 
+/* --- Host text channel ----------------------------------------------------
+ *   [SET_VALUE, TEXT_CHANNEL, TEXT_SET,   icon, bytes...]   up to 12 bytes
+ *   [SET_VALUE, TEXT_CHANNEL, TEXT_CLEAR]
+ *
+ * One packet carries the whole payload: the band fits 12 glyphs and a raw-HID
+ * report has ~27 usable bytes, so there is no framing to design. The firmware
+ * assigns no meaning to the text -- a host script decides what it says.
+ * Platform-agnostic on purpose: a launchd agent on macOS and a Task Scheduler
+ * script on Windows produce the same bytes, so moving machines needs no reflash. */
+enum {
+    TEXT_CHANNEL = 0x12,
+    TEXT_SET     = 0x01,
+    TEXT_CLEAR   = 0x02,
+};
+
+static inline bool is_text_cmd(const uint8_t *data, uint8_t length) {
+    return length >= 3 && data[0] == RTC_SET_VALUE && data[1] == TEXT_CHANNEL;
+}
+
+static void text_command(uint8_t *data, uint8_t length) {
+    switch (data[2]) {
+        case TEXT_SET:
+            /* data[3] = icon id, data[4..] = ASCII. Length is whatever the host
+             * sent; display_set_text() clamps and sanitises. */
+            if (length >= 4) {
+                display_set_text(data[3], (const char *)&data[4],
+                                 (uint8_t)(length - 4));
+            }
+            break;
+        case TEXT_CLEAR:
+            display_clear_text();
+            break;
+        default:
+            data[0] = RTC_UNHANDLED;
+            break;
+    }
+}
+
 static inline bool rtc_is_set_time_cmd(const uint8_t *data, uint8_t length) {
     return length >= 10 && data[0] == RTC_SET_VALUE &&
            data[1] == RTC_CHANNEL && data[2] == RTC_SET_TIME;
@@ -417,6 +548,10 @@ void via_custom_value_command_kb(uint8_t *data, uint8_t length) {
         flash_command(data, length);
         return;
     }
+    if (is_text_cmd(data, length)) {
+        text_command(data, length);
+        return;
+    }
     data[0] = RTC_UNHANDLED;
 }
 
@@ -427,6 +562,8 @@ void raw_hid_receive(uint8_t *data, uint8_t length) {
         rtc_apply_bytes(&data[3]);
     } else if (is_flash_cmd(data, length)) {
         flash_command(data, length);
+    } else if (is_text_cmd(data, length)) {
+        text_command(data, length);
     } else {
         data[0] = RTC_UNHANDLED;
     }
@@ -436,26 +573,342 @@ void raw_hid_receive(uint8_t *data, uint8_t length) {
 #endif
 
 
-static void update_leds(void) {
-    // Charging LED: on only while actively charging -- CHRG low (active) AND
-    // STDBY high (not "done").
-    static bool last_chrg = false;
-    bool is_charging = !gpio_read_pin(CHARGE_CHRG_PIN) && gpio_read_pin(CHARGE_STDBY_PIN);
-    if (is_charging != last_chrg) {
-        gpio_write_pin(LED_CHARGING_PIN, is_charging);
-        last_chrg = is_charging;
-    }
+/* --- Indicator LEDs -------------------------------------------------------
+ *
+ * Caps Lock (D15), Win Lock (C15) and Charging (B18) are plain GPIOs, and at
+ * full drive they are painfully bright on a desk in a dark room -- the charging
+ * one especially, since it is not under user control at all.
+ *
+ * So they are software-PWM'd rather than switched, sharing the 20 kHz CT16B3
+ * tick the LCD backlight uses (pwm_tick_cb below). Same duty curve and the same
+ * reasoning: perceptually spaced, because a linear ramp wastes its steps at the
+ * top and gives nothing usable at the bottom. Level 0 is fully off, if you would
+ * rather lose an indicator than see it.
+ *
+ * These functions only record desired state now; the ISR drives the pins. */
+/* 96 rather than the backlight's 64, tuned on hardware.
+ *
+ * Minimum brightness is always 1 tick, so a dimmer floor needs a longer period
+ * -- which lowers the switching frequency, since one pulse per period IS the
+ * fundamental. At a given low brightness and tick rate the flicker frequency is
+ * therefore fixed; the only real lever is the tick rate, and raising that costs
+ * matrix scan rate.
+ *
+ * Measured on this unit:
+ * Measured at the OLD 18750/s ISR rate:
+ *   64 ticks  -> 293 Hz, 1/64 (1.6%)   no flicker, slightly too bright
+ *   128 ticks -> 146 Hz, 1/128 (0.78%) good brightness, Caps visibly flickered
+ *   96 ticks  -> 195 Hz, 1/96 (1.0%)   the compromise
+ *
+ * This no longer rides the RGB row ISR. It ticks from CT16B3 (GPTD4) at a
+ * measured 20000 Hz, so RGB_MATRIX_SPD_STEP does not affect it and the old
+ * three-way coupling between LED field rate, backlight and indicators is gone.
+ *
+ * If flicker reappears, shorten this (brighter, faster) rather than reaching for
+ * the ISR rate. */
+#define IND_PWM_TICKS 48   /* 20000/48 = 417 Hz, floor 1/48 = 2.1%. The earlier
+                            * flicker at 96 ticks was measured against a tick
+                            * that was dropping 23% of its interrupts; with a
+                            * steady 20000 the same period is now 208 Hz. */
+static const uint8_t ind_duty[] = { 0, 1, 2, 3, 5, 8, 12, 18, 28, 48 };
 
-    // Windows Lock LED: mirrors the GUI-lock flag.
-    static bool last_winlock = false;
-    bool winlock = keymap_config.no_gui;
-    if (winlock != last_winlock) {
-        gpio_write_pin(LED_WINLOCK_PIN, winlock);
-        last_winlock = winlock;
+/* Per-LED levels: the charging LED is not under user control and duplicates
+ * what the battery icon already shows, so it defaults to 0 (off) while the
+ * locks stay dimly lit. */
+#ifndef INDICATOR_BRIGHTNESS_DEFAULT
+#    define INDICATOR_BRIGHTNESS_DEFAULT 1
+#endif
+#ifndef CHARGING_LED_BRIGHTNESS
+#    define CHARGING_LED_BRIGHTNESS 0
+#endif
+
+static volatile uint8_t ind_phase = 0;
+static volatile bool    ind_caps     = false;
+static volatile bool    ind_winlock  = false;
+static volatile bool    ind_scroll   = false;   /* host-reported; no key on this board */
+static volatile bool    ind_charging = false;
+
+static volatile uint8_t ind_lvl_caps     = INDICATOR_BRIGHTNESS_DEFAULT;
+static volatile uint8_t ind_lvl_winlock  = INDICATOR_BRIGHTNESS_DEFAULT;
+static volatile uint8_t ind_lvl_charging = CHARGING_LED_BRIGHTNESS;
+
+/* ISR context. `phase < duty` handles both ends without special-casing: duty 0
+ * is never true (always off) and duty == IND_PWM_TICKS is always true (full on).
+ * Writes are suppressed unless an output actually changes, so a steady indicator
+ * costs two pin writes per PWM period rather than one per tick. */
+static void indicators_tick(void) {
+    uint8_t phase = ind_phase + 1;
+    if (phase >= IND_PWM_TICKS) phase = 0;
+    ind_phase = phase;
+
+    uint8_t out = 0;
+    if (ind_caps     && phase < ind_duty[ind_lvl_caps])     out |= 1u;
+    if (ind_winlock  && phase < ind_duty[ind_lvl_winlock])  out |= 2u;
+    if (ind_charging && phase < ind_duty[ind_lvl_charging]) out |= 4u;
+
+    static uint8_t last_out = 0xFFu;
+    if (out == last_out) return;
+    last_out = out;
+
+    gpio_write_pin(LED_CAPS_LOCK_PIN, (out & 1u) != 0u);
+    gpio_write_pin(LED_WINLOCK_PIN, (out & 2u) != 0u);
+    gpio_write_pin(LED_CHARGING_PIN, (out & 4u) != 0u);
+}
+
+/* Backlight + indicator software PWM tick, on its OWN timer (CT16B3/GPTD4).
+ *
+ * This used to hang off a weak hook in the RGB row-scan ISR (since removed from
+ * drivers/led/sn32f2xx.c), which coupled the PWM rate to RGB_MATRIX_SPD_STEP.
+ * That was a mistake: raising
+ * SPD_STEP for a dimmer backlight starved the CH582F UART and Bluetooth typing
+ * collapsed to ~7 characters/second (measured: 3.7 ACK retransmits per frame at
+ * an 8963/s row ISR, versus 0.38 at the stock 2180/s).
+ *
+ * The two jobs want opposite things, so they get separate timers. What made the
+ * row ISR harmful was its WORK -- it reloads 15 PWM channels per invocation --
+ * not merely its rate. This handler is a counter, a compare and a few GPIO
+ * writes, roughly a microsecond, so it can run fast without denying the UART.
+ *
+ * 1 MHz timebase / 50 = 20 kHz tick. Keep this comfortably shorter than the
+ * ~87us UART byte time at 115200. */
+#define PWM_TICK_HZ       20000U
+#define PWM_TICK_TIMEBASE 1000000U   /* 48 MHz / 48, an exact prescaler */
+
+/* The configured tick rate and the real one have diverged before (the GPT LLD
+ * never enabled reset-on-match, giving ~15 Hz instead of 20 kHz), and a slow
+ * tick is also the first sign the MCU is out of CPU. To measure it again, add a
+ * `static volatile uint32_t pwm_tick_count` incremented here, and print the
+ * delta once a second from housekeeping_task_kb():
+ *
+ *     [pwmtick] 20000 Hz   -- healthy
+ *     [pwmtick] 15385 Hz   -- ticks being lost (priority inversion; see mcuconf.h)
+ *     [pwmtick] 20250 Hz   -- CANNOT speed up: the ms timebase has slowed, i.e.
+ *                             systick is being lost under interrupt load
+ *
+ * Removed from the shipped build because it prints every second. */
+static void pwm_tick_cb(GPTDriver *gptp) {
+    (void)gptp;
+    display_backlight_tick();
+    indicators_tick();
+}
+
+static const GPTConfig pwm_tick_cfg = {
+    .frequency = PWM_TICK_TIMEBASE,
+    .callback  = pwm_tick_cb,
+};
+
+static void pwm_tick_init(void) {
+    gptStart(&GPTD4, &pwm_tick_cfg);
+    gptStartContinuous(&GPTD4, PWM_TICK_TIMEBASE / PWM_TICK_HZ);
+
+    /* WORKAROUND: the SN32 GPT LLD's continuous mode enables the MR0 match
+     * INTERRUPT but never reset-on-match, so the counter free-runs the full
+     * 16-bit range and the callback fires once per wrap instead of once per
+     * interval -- 1 MHz / 65536 = 15 Hz, not the 20 kHz asked for. Observed as
+     * the backlight blinking at full brightness every ~4.5 s.
+     *
+     * Enable MR0RST ourselves. MCTRL on every CT16 except CT16B1 ignores writes
+     * without 0x5A in bits[31:24] (see docs/HARDWARE_PWM.md "Register-model
+     * gotchas"), hence the unlock -- the same trap that bit the PWM driver.
+     *
+     * Belongs upstream in hal_gpt_lld.c; kept here to avoid another ChibiOS
+     * working-tree patch to reapply after every submodule update. */
+    SN_CT16B3->MCTRL = CT16_PWM_UNLOCK(SN_CT16B3->MCTRL | mskCT16_MRnRST_EN(0));
+}
+
+/* The row-scan hook is now unused; leave the weak no-op in the driver. */
+
+/* Claim Caps Lock from QMK core: returning false skips led_update_ports(), so
+ * the pin is ours to PWM. keyboard.json keeps the `indicators` entry, which is
+ * what defines LED_CAPS_LOCK_PIN and configures it as an output at init. */
+bool led_update_kb(led_t led_state) {
+    if (!led_update_user(led_state)) return false;
+    ind_caps   = led_state.caps_lock;
+    ind_scroll = led_state.scroll_lock;
+    /* NOTE: led_state comes from whichever host driver is active
+     * (host_keyboard_leds -> host_get_active_driver). In cable mode that is the
+     * USB LED report and it is reliable. In BT/2.4G it is the CH582F's
+     * host_leds, which ch582f_ajazz.c gates on is_module_connected and zeroes on
+     * every 5B link-down -- so a wrong link state silently drops LED reports and
+     * this LED goes dark while the host thinks Caps is on. Confirmed on hardware
+     * 2026-08-28: flaky over BT, reliable wired. Same root cause as the BT
+     * channel-digit bug. */
+    return false;
+}
+
+bool charge_is_charging(void) {
+    return ind_charging;
+}
+
+/* Lock states for the LCD indicator band. Caps and Scroll are host-reported (and
+ * so unreliable over BT -- see led_update_kb); GUI lock is a local QMK flag and
+ * is always trustworthy. */
+/* Fn-layer state. Layer indices rather than the keymap's enum (WINFN=1,
+ * MACFN=3) because that enum lives in keymap.c and is not visible here. */
+#define FN_LAYER_MASK ((layer_state_t)((1UL << 1) | (1UL << 3)))
+
+static volatile bool ind_fn = false;
+
+layer_state_t layer_state_set_kb(layer_state_t state) {
+    state  = layer_state_set_user(state);
+    ind_fn = (state & FN_LAYER_MASK) != 0;
+    return state;
+}
+
+bool lock_state_fn(void)      { return ind_fn; }
+bool lock_state_caps(void)    { return ind_caps; }
+bool lock_state_gui(void)     { return ind_winlock; }
+bool lock_state_scroll(void)  { return ind_scroll; }
+
+uint8_t indicator_get_brightness(void) {
+    return ind_lvl_caps;
+}
+
+void indicator_set_brightness(uint8_t level) {
+    if (level > (uint8_t)(sizeof(ind_duty) / sizeof(ind_duty[0])) - 1) {
+        level = (uint8_t)(sizeof(ind_duty) / sizeof(ind_duty[0])) - 1;
     }
+    ind_lvl_caps    = level;
+    ind_lvl_winlock = level;
+}
+
+static void update_leds(void) {
+    // Charging: on only while actively charging -- CHRG low (active) AND
+    // STDBY high (not "done").
+    ind_charging = !gpio_read_pin(CHARGE_CHRG_PIN) && gpio_read_pin(CHARGE_STDBY_PIN);
+
+    // Windows Lock: mirrors the GUI-lock flag.
+    ind_winlock = keymap_config.no_gui;
 }
 
 __attribute__((weak)) void display_housekeeping_task(void) {}
+
+/* Fire hold-to-pair the moment the threshold passes, while the key is still
+ * held, so the LCD reacts under your finger instead of on release. Shared by the
+ * BT slot keys and Fn+P; both only ARM here and are disarmed on key-up. */
+static void bt_pair_hold_task(void) {
+    if (!bt_pair_armed) return;
+    uint16_t held = timer_elapsed(bt_pair_timer);
+    if (held < BT_PAIR_HOLD_MS) {
+        display_set_pair_hint((int16_t)((held * 100u) / BT_PAIR_HOLD_MS));
+        return;
+    }
+    bt_pair_armed = false;      /* one-shot: do not re-enter pairing while held */
+    display_set_pair_hint(-1);      // resolved: the band now shows PAIRING
+    ch582_enter_pairing();
+}
+
+#ifdef PARAM_OVERLAY
+/* Short effect names for the 12-character band.
+ *
+ * NOT rgb_matrix_get_mode_name(): that is gated behind RGB_MATRIX_MODE_NAME_ENABLE,
+ * costs flash for all ~40 effect names, and returns the raw enum spelling --
+ * "RAINBOW_MOVING_CHEVRON" is 22 characters against a 12-character band. Only 10
+ * animations are enabled here (keyboard.json), so a hand-written table is both
+ * smaller and far more readable. Each case is #ifdef'd on the effect's own enable
+ * so this still builds if the animation list changes; anything unlisted falls
+ * through to the mode number. */
+static const char *rgb_mode_short(uint8_t mode) {
+    switch (mode) {
+        case RGB_MATRIX_NONE:                    return "Off";
+#ifdef ENABLE_RGB_MATRIX_SOLID_COLOR
+        case RGB_MATRIX_SOLID_COLOR:             return "Solid";
+#endif
+#ifdef ENABLE_RGB_MATRIX_BREATHING
+        case RGB_MATRIX_BREATHING:               return "Breathing";
+#endif
+#ifdef ENABLE_RGB_MATRIX_BAND_SAT
+        case RGB_MATRIX_BAND_SAT:                return "Band Sat";
+#endif
+#ifdef ENABLE_RGB_MATRIX_CYCLE_ALL
+        case RGB_MATRIX_CYCLE_ALL:               return "Cycle All";
+#endif
+#ifdef ENABLE_RGB_MATRIX_CYCLE_LEFT_RIGHT
+        case RGB_MATRIX_CYCLE_LEFT_RIGHT:        return "Cycle L-R";
+#endif
+#ifdef ENABLE_RGB_MATRIX_CYCLE_UP_DOWN
+        case RGB_MATRIX_CYCLE_UP_DOWN:           return "Cycle U-D";
+#endif
+#ifdef ENABLE_RGB_MATRIX_CYCLE_PINWHEEL
+        case RGB_MATRIX_CYCLE_PINWHEEL:          return "Pinwheel";
+#endif
+#ifdef ENABLE_RGB_MATRIX_RAINBOW_MOVING_CHEVRON
+        case RGB_MATRIX_RAINBOW_MOVING_CHEVRON:  return "Chevron";
+#endif
+#ifdef ENABLE_RGB_MATRIX_JELLYBEAN_RAINDROPS
+        case RGB_MATRIX_JELLYBEAN_RAINDROPS:     return "Jellybean";
+#endif
+#ifdef ENABLE_RGB_MATRIX_TYPING_HEATMAP
+        case RGB_MATRIX_TYPING_HEATMAP:          return "Heatmap";
+#endif
+        default:                                 return NULL;
+    }
+}
+
+/* Poll the adjustable state and surface any change in the info band.
+ *
+ * POLLED, not hooked into process_record_kb: that catches the Fn hotkeys, the
+ * RGBM_* custom keycodes, anything VIA changes AND the magic-key toggles, none
+ * of which share a code path. A handful of byte comparisons on the 10 Hz tick.
+ *
+ * Percentages rather than raw 0-255 because the band is 12 characters and "53%"
+ * is legible where "136" needs you to know the scale. Hue is the exception --
+ * it is circular, so degrees are the meaningful unit. */
+static void param_status_task(void) {
+    static uint8_t last_mode = 0, last_h = 0, last_s = 0, last_v = 0, last_sp = 0;
+    static bool    last_on = false, last_nkro = false;
+    static bool    primed    = false;
+
+    uint8_t mode = rgb_matrix_get_mode();
+    uint8_t h    = rgb_matrix_get_hue();
+    uint8_t sa   = rgb_matrix_get_sat();
+    uint8_t v    = rgb_matrix_get_val();
+    uint8_t sp   = rgb_matrix_get_speed();
+    bool    on   = rgb_matrix_is_enabled();
+    /* NKRO has NO other feedback anywhere on the board, and it is toggled by a
+     * magic key (both shifts + N) that is easy to hit by accident. Finding out
+     * what state it was in previously meant attaching a console -- see the Caps
+     * Lock investigation in CLAUDE.md. */
+    bool    nkro = keymap_config.nkro;
+
+    /* First pass only records the baseline -- otherwise the band would flash a
+     * readout at every boot for a change that never happened. */
+    if (!primed) {
+        primed = true;
+        last_mode = mode; last_h = h; last_s = sa; last_v = v; last_sp = sp;
+        last_on = on; last_nkro = nkro;
+        return;
+    }
+
+    char buf[24];
+    if (nkro != last_nkro) {
+        snprintf(buf, sizeof(buf), "NKRO %s", nkro ? "On" : "Off");
+    } else if (on != last_on) {
+        /* Checked before the colour parameters: toggling RGB off leaves hue and
+         * val untouched, so nothing else would report it -- and it explains why
+         * the brightness keys appear to do nothing while it is off. */
+        snprintf(buf, sizeof(buf), "RGB %s", on ? "On" : "Off");
+    } else if (mode != last_mode) {
+        const char *name = rgb_mode_short(mode);
+        if (name) snprintf(buf, sizeof(buf), "%s", name);
+        else      snprintf(buf, sizeof(buf), "Mode %u", (unsigned)mode);
+    } else if (v != last_v) {
+        snprintf(buf, sizeof(buf), "Bright %3u%%", (unsigned)((v * 100u + 127u) / 255u));
+    } else if (h != last_h) {
+        snprintf(buf, sizeof(buf), "Hue    %3u", (unsigned)((h * 360u) / 256u));
+    } else if (sa != last_s) {
+        snprintf(buf, sizeof(buf), "Sat    %3u%%", (unsigned)((sa * 100u + 127u) / 255u));
+    } else if (sp != last_sp) {
+        snprintf(buf, sizeof(buf), "Speed  %3u%%", (unsigned)((sp * 100u + 127u) / 255u));
+    } else {
+        return;
+    }
+
+    last_mode = mode; last_h = h; last_s = sa; last_v = v; last_sp = sp;
+    last_on = on; last_nkro = nkro;
+    display_set_param_status(buf);
+}
+#endif // PARAM_OVERLAY
 
 void housekeeping_task_kb(void) {
 
@@ -465,6 +918,11 @@ void housekeeping_task_kb(void) {
         last_t = timer_read32();
 
         update_leds();
+        bt_pair_hold_task();   // hold-to-pair fires under the finger, not on release
+#ifdef PARAM_OVERLAY
+        param_status_task();   // surface setting changes in the info band
+#endif
+
         if (!anim_active()) rtc_task();   // RTC I2C (port A) glitches the flash SPI1 pins (A12/A13) mid-DMA
         anim_task();                      // one animation frame per 100 ms
         display_housekeeping_task();
@@ -472,4 +930,30 @@ void housekeeping_task_kb(void) {
 
     // Chain the user hook
     housekeeping_task_user();
+}
+
+/*
+ * Defer eeconfig flushes away from LCD DMA activity.
+ *
+ * Confirmed failure: adjusting RGB writes eeconfig on every step, and an SN32 EFL
+ * program/erase overlapping an in-flight flash->LCD DMA blit wedges the board --
+ * LED row mux frozen mid-cycle, raw HID dead, USB still enumerated, recoverable
+ * only by a power cycle. Console capture caught it ending on
+ * "rgb matrix set hsv [EEPROM]" with the next line never arriving.
+ *
+ * efl_ramtext.diff (flash routines in SRAM) narrows this but does not close it,
+ * and CORTEX_ENABLE_WFI_IDLE FALSE does not fix it either -- that only removed
+ * the lost-wakeup half of the failure described in config.h; the missed SPI0 DMA
+ * completion is the half that actually bites.
+ *
+ * So simply do not start a flash write while a blit is in flight. Paired with
+ * RGB_MATRIX_EEPROM_WRITE_DELAY this also cuts the write rate from ~8/s while a
+ * key is held to at most one per interval, which matters for flash wear too.
+ *
+ * Deliberately NOT gated on anim_active(): the animation player runs continuous
+ * DMA, and blocking on it would mean RGB settings never persist while an
+ * animation is on. Blits are short, so per-blit gating still finds gaps.
+ */
+bool rgb_matrix_eeprom_flush_allowed(void) {
+    return !lcd_blit_busy();
 }

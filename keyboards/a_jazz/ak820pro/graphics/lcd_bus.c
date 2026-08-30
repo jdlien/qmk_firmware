@@ -30,10 +30,13 @@ extern void display_set_paused(bool paused);   // graphics/display.c
 #define LCD_OFF_Y 2
 #define FLASH_CMD_READ 0x03
 
-// GC9107 MADCTL. Rotation 270 = BGR(0x08) | MV(0x20) | MY(0x80) = 0xA8. The dashboard
-// and the animation share this orientation.
-#define MADCTL_270  0xA8
-#define MADCTL_ANIM MADCTL_270
+// GC9107 MADCTL. fpb's units want rotation 270 = BGR(0x08) | MV(0x20) | MY(0x80)
+// = 0xA8. This unit (shipped on stock v1.10) has the panel mounted 180 deg from
+// that and rendered the dashboard upside down, so trade MY for MX:
+// BGR(0x08) | MV(0x20) | MX(0x40) = 0x68. The dashboard and the animation share
+// this orientation.
+#define MADCTL_DASH 0x68
+#define MADCTL_ANIM MADCTL_DASH
 
 // Animation slot. The header at ANIM_BASE is the stock format we reverse-engineered:
 //   byte 0        = frame count
@@ -226,9 +229,13 @@ void lcd_init(void) {
         0xAB, 0, 1, 0x0E,
         0xA8, 0, 1, 0x19,           // frame rate
         0x3A, 0, 1, 0x05,           // pixel format: 16bpp RGB565
+        0x21, 0, 0,                 // display inversion ON. Without it this panel
+                                    // renders the assets' white-on-black artwork as
+                                    // black-on-white. Set before sleep-out so the
+                                    // very first frame is already correct.
         0x11, 120, 0,               // sleep out
         0x29, 20, 0,                // display on
-        0x36, 0, 1, MADCTL_270,     // memory access ctl: rotation 270
+        0x36, 0, 1, MADCTL_DASH,    // memory access ctl: see MADCTL_DASH above
     };
     send_seq(seq, sizeof(seq));
 }
@@ -491,7 +498,7 @@ static void blit_done_cb(void) {
 // Interrupt-driven and NON-BLOCKING: arms the SPI1(flash)->SPI0(LCD) engine and returns;
 // Vector58 signals completion via blit_done. Animation frames are just the full-frame case.
 // NOTE: the panel's MADCTL orientation is the caller's business -- flash art authored for
-// the animation orientation (MADCTL_ANIM) will not match the dashboard's (MADCTL_270).
+// the animation orientation (MADCTL_ANIM) will not match the dashboard's (MADCTL_DASH).
 void lcd_blit_flash(uint32_t src, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
     if (!w || !h) return;
     // SPI1 must be up or the DMA has a dead source: it never completes, the
@@ -573,13 +580,19 @@ void lcd_blit_flash_probe(uint32_t src, uint16_t w, uint16_t h) {
 void anim_toggle(void) {
     lcd_flash_init();
     if (!anim_on) {
+        /* Check the slot BEFORE disturbing anything. This used to pause the
+         * dashboard and flip the panel orientation first, then discover there
+         * were no frames and undo both -- and display_set_paused(false) forces a
+         * FULL REPAINT, so an empty slot blinked the whole screen black for
+         * about a second and did nothing. On this board the stock header reads
+         * zero frames, so that was the ONLY thing Fn+Delete ever did.
+         *
+         * Safe to read here: it is a 1-byte SPI1 flash read, and the dashboard
+         * reads flash constantly anyway (every glyph comes from there via
+         * lcd_draw_flash_text). */
+        if (!anim_read_header()) return;    // empty slot: true no-op
         display_set_paused(true);           // stop QP touching the bus
         set_madctl(MADCTL_ANIM);            // frames authored for this orientation
-        if (!anim_read_header()) {          // empty slot: nothing to play
-            set_madctl(MADCTL_270);         // undo the orientation change
-            display_set_paused(false);
-            return;
-        }
         anim_on = true; anim_idx = 0;
         blit_arm(ANIM_BASE + ANIM_HDR);
     } else {
@@ -588,7 +601,7 @@ void anim_toggle(void) {
         gpio_write_pin(FLASH_CS, 1); cs(1);
         // The DMA extension restored SPI0 to the driver's 8-bit FIFO mode at the
         // last frame's completion, so the dashboard's spiSend path is ready again.
-        set_madctl(MADCTL_270);             // restore dashboard orientation
+        set_madctl(MADCTL_DASH);             // restore dashboard orientation
         display_set_paused(false);          // resume + full repaint
     }
 }

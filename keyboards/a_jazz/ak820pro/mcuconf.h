@@ -39,5 +39,47 @@
 #undef SN32_PWM_USE_CT16B2
 #define SN32_PWM_USE_CT16B2 TRUE
 
+/* CT16B3 (GPTD4) drives the backlight/indicator PWM tick. B0/B1/B2 are RGB
+ * hardware PWM and B5 is the OS-tick counter; B3 and B4 are the only free
+ * timers, and this needs just a counter and an interrupt. */
+#undef SN32_GPT_USE_CT16B3
+#define SN32_GPT_USE_CT16B3 TRUE
 
+/* Outrank the RGB row-scan ISR (SN32_PWM_CT16B*_IRQ_PRIORITY = 2). The row ISR
+ * is long -- it reloads 15 PWM channels -- and at priority 3 our 50us PWM tick
+ * was being blocked by it: measured 15385 Hz against 20000 configured, i.e. 23%
+ * of ticks lost. Lost ticks make the pulse train irregular, which reads as
+ * backlight flicker regardless of the nominal switching rate.
+ *
+ * Safe to put above it: this handler is a counter, a compare and a few GPIO
+ * writes, on the order of a microsecond, so it cannot meaningfully delay
+ * anything else -- including the CH582F UART, whose byte time is ~87us. */
+/* Interrupt priority ordering (lower number = higher priority). Getting this
+ * wrong is what caused both the Bluetooth throughput collapse and the backlight
+ * flicker, so the reasoning is spelled out:
+ *
+ *   1  UART2 (CH582F)  -- byte-loss critical. A missed ACK stalls a TX frame for
+ *                         CH582_TX_ACK_TIMEOUT_MS; at 3.7 retries per frame that
+ *                         is ~7 characters/second and you can out-type the link.
+ *   2  GPT CT16B3      -- the backlight/indicator PWM tick. Tiny (a counter, a
+ *                         compare, a few GPIO writes) but must be REGULAR:
+ *                         dropped ticks make the pulse train uneven, which reads
+ *                         as flicker. At the stock priority 3 it sat below the
+ *                         row scan and lost 23% of its ticks (measured 15385 Hz
+ *                         against 20000 configured).
+ *   3  RGB row scan    -- long (reloads 15 PWM channels) but latency-tolerant;
+ *                         a few microseconds of delay is invisible on an LED.
+ *
+ * The defaults had this inverted: UART 3, PWM 2, GPT 3. */
+#undef SN32_SERIAL_UART2_PRIORITY
+#define SN32_SERIAL_UART2_PRIORITY 1
 
+#undef SN32_GPT_CT16B3_IRQ_PRIORITY
+#define SN32_GPT_CT16B3_IRQ_PRIORITY 2
+
+#undef SN32_PWM_CT16B0_IRQ_PRIORITY
+#define SN32_PWM_CT16B0_IRQ_PRIORITY 3
+#undef SN32_PWM_CT16B1_IRQ_PRIORITY
+#define SN32_PWM_CT16B1_IRQ_PRIORITY 3
+#undef SN32_PWM_CT16B2_IRQ_PRIORITY
+#define SN32_PWM_CT16B2_IRQ_PRIORITY 3

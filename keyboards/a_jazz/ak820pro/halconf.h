@@ -21,4 +21,17 @@
 #define SW_I2C_USE_OPENDRAIN FALSE  // emulate open-drain by input/output switching
 #define SW_I2C_USE_OSAL_DELAY FALSE // use rtc.c's busy-wait delay (non-yielding)
 
+/* Dedicated timer for the LCD-backlight and indicator software PWM (CT16B3 /
+ * GPTD4). It used to ride the RGB row-scan ISR, which welded the PWM switching
+ * rate to RGB_MATRIX_SPD_STEP -- so tuning the LED field rate for the rainbow
+ * artifact silently retuned the backlight into or out of flicker.
+ *
+ * NOTE: an earlier version of this comment said the row ISR "has to stay SLOW or
+ * the CH582F UART starves". That was WRONG, and is now exactly the wrong lesson
+ * to carry: the UART starved because SN32_SERIAL_UART2 sat at the LOWEST
+ * interrupt priority, not because the row ISR was fast. With the ordering in
+ * mcuconf.h (UART 1, GPT 2, row scan 3) the row ISR runs at ~18800/s and
+ * Bluetooth measures BETTER than it ever did at the stock rate. */
+#define HAL_USE_GPT TRUE
+
 #include_next <halconf.h>

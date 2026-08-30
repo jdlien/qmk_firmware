@@ -36,6 +36,89 @@
 #    define CH582_BATTERY_POLL_MS 5000
 #endif
 
+/* Fallback for a MISSED `5B 32`. That frame is the only "connected" signal the
+ * module ever sends, it is sent once at link-up, and the RX line is silent at
+ * idle -- so dropping it strands conn_state in LINKING forever while the link is
+ * actually live (observed: channel digit blinks indefinitely after a successful
+ * pair, cleared only by toggling the mode slider).
+ *
+ * A `5A` host-LED frame is decent evidence of a live link, since a host only
+ * sends LED state to a device it is connected to. But `5A` is exactly what the
+ * power-up / 2.4G link-up burst forges (see the 5A case below), so promoting on
+ * it naively would trade a stuck-blinking digit for a false "connected".
+ * Requiring the LINKING state to have persisted this long first steps past that
+ * burst: a genuine `5B 32` arrives at link-up and would already have won, so
+ * anything still LINKING after this window is a frame we missed, not one in
+ * flight. Delay is cosmetic-only -- the digit is the sole consumer. */
+/* Pairing is CONFIRMED by a `5B 31`, not by having sent `A6 51`. The module
+ * appears to IGNORE the pair command while a connect attempt it started is still
+ * in flight (`5B 33`/`34`), and only accepts it once that attempt is abandoned
+ * (`5B 36`) or otherwise settles. Pressing a slot key issues a connect, so a
+ * hold-to-pair fires straight into exactly that window and the single `A6 51`
+ * is silently dropped.
+ *
+ * Symptom this caused: hold 1 s -> nothing, hold 2 s -> nothing, hold 3 s ->
+ * works. It reads as a timing threshold and is not one; by the third attempt the
+ * module has simply given up on connecting and is finally listening. A one-shot
+ * capture happened to catch it already-abandoned and "confirmed" 1 s, which is
+ * how this hid.
+ *
+ * So retry `A6 51` until the module actually says `5B 31`. */
+/* A select (`A6 <slot>`) issued while the module is ADVERTISING is DECLINED.
+ * Captured on the wire 2026-08-29:
+ *
+ *   [tx] A6 51 pair      -> [rx] 5B 31   module advertising
+ *   [tx] A6 32 select    -> [rx] 5B 23   idle. No 33 (attempting), no 32.
+ *   [tx] A6 33 select    -> [rx] 5B 36
+ *   [tx] A6 32 select    -> [rx] 5B 32   works after the back-and-forth
+ *
+ * Note it is NOT a lost frame: the module answers, with `5B 23`. It stops
+ * advertising and simply never starts connecting. Symptom: after entering
+ * pairing and going back to a paired device, it will not reconnect until you
+ * switch slots back and forth.
+ *
+ * The select is otherwise NEVER re-issued once module_alive is set (see the
+ * cold-boot retry below), so a declined select is unrecoverable by design.
+ *
+ * Retry ONLY while the module has not started an attempt. A working select is
+ * answered with 33/34/32 inside a second (measured), so absence of any of those
+ * is a reliable "it declined". This deliberately does NOT re-issue once 33/34
+ * has arrived -- that is exactly the slow macOS directed-advertising case the
+ * cold-boot guard protects, where re-selecting restarts advertising and starves
+ * a reconnect that was progressing fine.
+ *
+ * SECOND MEASUREMENT (the first fix was too impatient and did NOT work):
+ *
+ *   5B 31            advertising starts
+ *   A6 32   +2s      declined
+ *   reselect +3s     declined
+ *   reselect +4s     declined      <- gave up here
+ *   5B 23    +6s     module goes IDLE, one second too late
+ *
+ * The module ignores a select for as long as it is advertising, and only becomes
+ * receptive once it emits `5B 23` (idle/finalize). Three tries over ~3.6 s all
+ * landed inside the advertising window. So the retry is now driven by that
+ * EVENT, not only by the clock: a `5B 23` while a select is pending re-issues it
+ * immediately, which is the exact moment the module is free. The timed retry
+ * remains as a backstop and the try budget is wider (8). */
+#ifndef CH582_SELECT_CONFIRM_MS
+#    define CH582_SELECT_CONFIRM_MS 1500
+#endif
+#ifndef CH582_SELECT_MAX_TRIES
+#    define CH582_SELECT_MAX_TRIES 8
+#endif
+
+#ifndef CH582_PAIR_RETRY_MS
+#    define CH582_PAIR_RETRY_MS 400
+#endif
+#ifndef CH582_PAIR_MAX_TRIES
+#    define CH582_PAIR_MAX_TRIES 12   /* ~4.8 s of trying, then give up */
+#endif
+
+#ifndef CH582_5A_PROMOTE_MS
+#    define CH582_5A_PROMOTE_MS 3000
+#endif
+
 static volatile bool    is_module_connected = false;
 /* Active BT slot 1-3. Derived from the selected 0xA6 profile, NOT from the 5B
  * stream: a logic-analyzer capture proved the 5B second byte is a handshake-STAGE
@@ -46,6 +129,11 @@ static volatile uint8_t connected_slot = 0;
 static volatile bool    is_pairing = false;
 /* Detailed connection state for the LCD indicator (superset of the two bools). */
 static volatile ch582_conn_state_t conn_state = CH582_CONN_IDLE;
+/* When conn_state last became CH582_CONN_LINKING, for the 5A promotion window
+ * above. Deliberately NOT last_attempt_time, which the connect retry resets
+ * every CH582_CONNECT_RETRY_MS and so never accumulates. 32-bit so a long stall
+ * in LINKING cannot wrap back under the window. */
+static volatile uint32_t linking_since = 0;
 /* Battery percentage (0-100) from 5C frames; 0xFF until the module first reports. */
 static volatile uint8_t battery_level = 0xFF;
 /* Host keyboard LED bitmap from 5A frames (USB LED bits; bit1 = caps lock). */
@@ -65,6 +153,25 @@ static volatile bool    usb_mode = false;
  * re-selecting a live module restarts its advertising and starves slow (macOS)
  * reconnects, which need the peripheral to keep advertising uninterrupted. */
 static volatile bool    module_alive = false;
+
+/* Set while an A6 51 has been sent but no 5B 31 has confirmed it yet. */
+/* Set while an A6 <slot> has been sent but the module has not acknowledged it by
+ * actually doing something (5B 33/34 attempting, or 32 connected). */
+/* Cancel-pairing bounce: see ch582_set_profile(). */
+static bool     bounce_pending     = false;
+static uint16_t bounce_time        = 0;
+static uint8_t  bounce_target      = 0;
+#ifndef CH582_BOUNCE_MS
+#    define CH582_BOUNCE_MS 700
+#endif
+
+static bool     select_pending     = false;
+static uint16_t select_last_try    = 0;
+static uint8_t  select_tries       = 0;
+
+static bool     pairing_pending    = false;
+static uint16_t pairing_last_try   = 0;
+static uint8_t  pairing_tries      = 0;
 static uint16_t         last_attempt_time = 0;
 /* Last time a battery poll (A6 53) was sent. */
 static uint16_t         last_battery_poll = 0;
@@ -95,13 +202,6 @@ static const SerialConfig serial_cfg = {
     .UART_Oversampling   = 16,
     .UART_HalfDuplexMode = 0,
 };
-
-/* True when key reports should be forwarded to the module over UART: a BT/2.4G
- * profile is selected (dip switch in a wireless position) AND the link is up.
- * In USB mode connect_requested is cleared, so we never double-type. */
-static bool ch582_kbd_output_active(void) {
-    return connect_requested && is_module_connected;
-}
 
 void ch582_send_keyboard_report(report_keyboard_t *report) {
     /* Boot keyboard report = [mods][reserved][key1..key6]; this matches the
@@ -161,9 +261,18 @@ void bluetooth_send_mouse(report_mouse_t *report) {}
 /* Consumer control (volume/media, e.g. the encoder) over the wireless link.
  * The encoder emits HID consumer usages; without forwarding them here they only
  * work over USB. Frame is 0xA3 + 2-byte little-endian usage, mirroring the A1
- * keyboard framing -- confirmed working on hardware over both BT and 2.4G. */
+ * keyboard framing -- confirmed working on hardware over both BT and 2.4G.
+ *
+ * Gated on connect_requested ONLY -- deliberately NOT on is_module_connected.
+ * `5B 32` is the single, never-repeated "connected" announcement, so one lost
+ * frame strands conn_state in LINKING forever (see CH582_5A_PROMOTE_MS). While
+ * stranded, is_module_connected is false and this used to silently drop every
+ * media keypress -- volume dead over BT while typing kept working, because
+ * bluetooth_send_keyboard() has no such gate. That asymmetry was the bug: the
+ * keyboard path already sends regardless, and a consumer frame sent to a link
+ * that is genuinely down simply goes nowhere. Match the keyboard path. */
 void bluetooth_send_consumer(uint16_t usage) {
-    if (!ch582_kbd_output_active()) return;
+    if (!connect_requested) return;
     uint8_t buf[2];
     buf[0] = usage & 0xFF;
     buf[1] = (usage >> 8) & 0xFF;
@@ -201,6 +310,13 @@ static bool             tx_in_flight = false;
 static uint16_t         tx_sent_time = 0;
 static uint8_t          tx_retries   = 0;
 
+/* TX health counters. The UART runs at 115200 with the RX FIFO DISABLED
+ * (serial_cfg above), so a byte must be serviced within ~87us or it is lost.
+ * A lost ACK stalls the in-flight frame for the full CH582_TX_ACK_TIMEOUT_MS,
+ * and a keystroke is two frames -- so ACK loss shows up as throughput collapse
+ * (you can out-type the link), not as mild latency. These make that visible. */
+static uint32_t tx_stat_sent = 0, tx_stat_timeout = 0, tx_stat_drop = 0;
+
 static inline uint8_t tx_next(uint8_t i) { return (uint8_t)((i + 1) % CH582_TXQ_LEN); }
 
 /* Drop the head frame (ACKed or given up) and stop waiting on it. */
@@ -216,6 +332,7 @@ static void ch582_tx_pop(void) {
 static void ch582_tx_pump(void) {
     if (tx_in_flight) {
         if (timer_elapsed(tx_sent_time) < CH582_TX_ACK_TIMEOUT_MS) return;   /* still waiting for ACK */
+        tx_stat_timeout++;
         if (++tx_retries > CH582_TX_MAX_RETRIES) { ch582_tx_pop(); return; } /* give up, move on */
         sdWrite(&CH582_SERIAL_DRIVER, tx_q[tx_head].data, tx_q[tx_head].len); /* retransmit */
         tx_sent_time = timer_read();
@@ -225,6 +342,7 @@ static void ch582_tx_pump(void) {
     sdWrite(&CH582_SERIAL_DRIVER, tx_q[tx_head].data, tx_q[tx_head].len);
     tx_sent_time = timer_read();
     tx_in_flight = true;
+    tx_stat_sent++;
 }
 
 /* The module ACKed the in-flight frame -> drop it and let the next one go. Also
@@ -238,7 +356,7 @@ void ch582_send_command(uint8_t cmd, const uint8_t *params, uint8_t param_len) {
     if (param_len > TX_MAX_PAYLOAD) return;
 
     uint8_t nxt = tx_next(tx_tail);
-    if (nxt == tx_head) return;                 /* queue full -> drop (should not happen at typing rates) */
+    if (nxt == tx_head) { tx_stat_drop++; return; }  /* queue full -> DROPPED KEYSTROKE */
 
     ch582_tx_frame_t *f = &tx_q[tx_tail];
     uint16_t sum = cmd;
@@ -262,13 +380,50 @@ static void ch582_send_ack(void) {
 #endif
 
 void ch582_set_profile(ch582_profile_t profile) {
-    uint8_t param       = (uint8_t)profile;
+    uint8_t param        = (uint8_t)profile;
+    bool    was_pairing  = (conn_state == CH582_CONN_PAIRING);
+
+    pairing_pending     = false;   /* a new selection supersedes a pending pair */
     requested_profile   = param;
     connect_requested   = true;
     usb_mode            = false;
     is_module_connected = false;
     conn_state          = CH582_CONN_LINKING;   /* attempting until 5B says otherwise */
+    linking_since       = timer_read32();
     last_attempt_time   = timer_read();
+
+    /* CANCEL-PAIRING BOUNCE.
+     *
+     * Selecting the slot that is CURRENTLY ADVERTISING is a flat no-op -- the
+     * module appears to read it as "you are already on that slot". MEASURED
+     * 2026-08-29: eight `A6 32` sent over 10 s while advertising on slot 2 drew
+     * ZERO responses; the module is entirely silent until it finally emits one
+     * `5B 23`. Retrying, on a timer or on that idle event, cannot fix it -- both
+     * were tried and both failed.
+     *
+     * Naming a DIFFERENT slot does force a state change, which is exactly why
+     * the manual workaround (Fn+Q then Fn+W) works. So do that: send another
+     * slot, wait CH582_BOUNCE_MS, then send the real target.
+     *
+     * The bounce slot may itself be bonded, so this can briefly attempt a link
+     * to the wrong device. It is bounded -- the real select follows 700 ms later
+     * and, being a DIFFERENT slot from the bounce, is honoured normally. Only
+     * reachable when cancelling pairing, never on an ordinary slot change. */
+    if (was_pairing && param >= CH582_PROFILE_BT_1 && param <= CH582_PROFILE_BT_3) {
+        uint8_t other = (param == CH582_PROFILE_BT_1)
+                            ? (uint8_t)CH582_PROFILE_BT_2
+                            : (uint8_t)CH582_PROFILE_BT_1;
+        bounce_target  = param;
+        bounce_pending = true;
+        bounce_time    = timer_read();
+        select_pending = false;      /* no retries until the real select goes out */
+        ch582_send_command(0xA6, &other, 1);
+        return;
+    }
+
+    select_pending      = true;
+    select_tries        = 1;
+    select_last_try     = timer_read();
     ch582_send_command(0xA6, &param, 1);
 }
 
@@ -281,10 +436,18 @@ void ch582_set_profile(ch582_profile_t profile) {
 #define CH582_PAIR_PARAM 0x51
 
 void ch582_enter_pairing(void) {
+    select_pending      = false;   /* pairing supersedes a pending select */
+    bounce_pending      = false;
     uint8_t param       = CH582_PAIR_PARAM;
     is_module_connected = false;
     is_pairing          = true;
+    /* Optimistic: show pairing immediately for feedback, and let the retry below
+     * make it true. Waiting for 5B 31 to update the display would leave the band
+     * showing "Link failed" for seconds after the user did the right thing. */
     conn_state          = CH582_CONN_PAIRING;
+    pairing_pending     = true;
+    pairing_tries       = 1;
+    pairing_last_try    = timer_read();
     /* Sent ONCE, matching the @isuua/edthu reference. Stock repeated it, but the
      * ACK/retry queue now guarantees delivery, so one is enough. */
     ch582_send_command(0xA6, &param, 1);
@@ -392,11 +555,65 @@ void ch582_task(void) {
         ch582_send_command(0xA6, &param, 1);
     }
 
+    /* Resend A6 51 until the module confirms with 5B 31 -- see CH582_PAIR_RETRY_MS.
+     * Cleared on 5B 31 (confirmed), 5B 32 (connected instead), or when the slot
+     * is re-selected. Bounded so a module that never answers does not retry
+     * forever. */
+    /* Second half of the cancel-pairing bounce: the real select. */
+    if (bounce_pending && timer_elapsed(bounce_time) >= CH582_BOUNCE_MS) {
+        bounce_pending  = false;
+        select_pending  = true;
+        select_tries    = 1;
+        select_last_try = timer_read();
+        uint8_t p = bounce_target;
+        ch582_send_command(0xA6, &p, 1);
+    }
+
+    if (select_pending) {
+        if (select_tries >= CH582_SELECT_MAX_TRIES) {
+            select_pending = false;
+        } else if (timer_elapsed(select_last_try) >= CH582_SELECT_CONFIRM_MS) {
+            select_last_try = timer_read();
+            select_tries++;
+            uint8_t param = requested_profile;
+            ch582_send_command(0xA6, &param, 1);
+        }
+    }
+
+    if (pairing_pending) {
+        if (pairing_tries >= CH582_PAIR_MAX_TRIES) {
+            pairing_pending = false;
+        } else if (timer_elapsed(pairing_last_try) >= CH582_PAIR_RETRY_MS) {
+            pairing_last_try = timer_read();
+            pairing_tries++;
+            uint8_t param = CH582_PAIR_PARAM;
+            ch582_send_command(0xA6, &param, 1);
+        }
+    }
+
     /* Periodically poll the module for battery level. The module only emits 5C
      * battery frames in response to an A6 53 request (the stock firmware polls the
      * same way). Poll regardless of connection mode: the gauge is valid in BT,
      * 2.4G and USB-charging states, and A6 53 is a status query that doesn't touch
      * the link. */
+    /* Report TX health alongside the battery poll (every 5 s), and only when
+     * something went wrong -- silence means the link is clean. */
+    {
+        static uint32_t seen_timeout = 0, seen_drop = 0;
+        static uint16_t stat_timer = 0;
+        if (timer_elapsed(stat_timer) >= 5000) {
+            stat_timer = timer_read();
+            if (tx_stat_timeout != seen_timeout || tx_stat_drop != seen_drop) {
+                printf("[ch582] sent=%lu ack-timeouts=%lu dropped=%lu\n",
+                       (unsigned long)tx_stat_sent,
+                       (unsigned long)tx_stat_timeout,
+                       (unsigned long)tx_stat_drop);
+                seen_timeout = tx_stat_timeout;
+                seen_drop    = tx_stat_drop;
+            }
+        }
+    }
+
     if (timer_elapsed(last_battery_poll) >= CH582_BATTERY_POLL_MS) {
         last_battery_poll = timer_read();
         ch582_poll_status();
@@ -439,17 +656,36 @@ void ch582_task(void) {
                      *   - require a plausible HID LED bitmap (low 5 bits only:
                      *     num/caps/scroll/compose/kana). Random garbage that happens
                      *     to pass the checksum usually has high bits set. */
-                    if (is_module_connected && (d & ~0x1F) == 0) host_leds = d;
+                    if (is_module_connected && (d & ~0x1F) == 0) {
+                        host_leds = d;
+                    } else if ((d & ~0x1F) == 0 && conn_state == CH582_CONN_LINKING &&
+                               timer_elapsed32(linking_since) >= CH582_5A_PROMOTE_MS) {
+                        /* Recovery for a missed `5B 32` -- see CH582_5A_PROMOTE_MS.
+                         * Adopt the link, but deliberately NOT this frame's LED bits:
+                         * the reason 5A is distrusted here at all is that a forged
+                         * frame can pass the weak checksum, and lighting Caps off the
+                         * very frame that establishes the link is the failure the
+                         * guard above exists to prevent. A real host repeats its LED
+                         * state, so the next 5A takes the normal path. */
+                        is_module_connected = true;
+                        is_pairing          = false;
+                        conn_state          = CH582_CONN_CONNECTED;
+                        connected_slot      = profile_to_slot(requested_profile);
+                    }
                     break;
                 case 0x5B: /* connection state code (NOT a slot number) */
                     switch (d) {
                         case 0x32: /* link established - the only "connected" signal */
+                            select_pending      = false;   /* module acted */
+                            pairing_pending     = false;   /* connected instead */
                             is_module_connected = true;
                             is_pairing          = false;
                             conn_state          = CH582_CONN_CONNECTED;
                             connected_slot      = profile_to_slot(requested_profile);
                             break;
                         case 0x31: /* advertising / pairing, waiting for a device */
+                            select_pending      = false;   /* module acted */
+                            pairing_pending     = false;   /* confirmed: stop retrying */
                             is_pairing          = true;
                             is_module_connected = false;
                             conn_state          = CH582_CONN_PAIRING;
@@ -458,21 +694,50 @@ void ch582_task(void) {
                             break;
                         case 0x33: /* connect ATTEMPT - link is down and retrying */
                         case 0x34:
+                            /* The module IS attempting: never re-issue the select
+                             * now, or a slow (macOS directed-advertising)
+                             * reconnect gets restarted and never completes. */
+                            select_pending      = false;
                             is_module_connected = false;
                             is_pairing          = false;
+                            if (conn_state != CH582_CONN_LINKING) linking_since = timer_read32();
                             conn_state          = CH582_CONN_LINKING;
                             connected_slot      = 0;
                             host_leds           = 0; /* no link -> drop stale LED state */
                             break;
-                        case 0x36: /* host REFUSED the connection (edthu MD_REV REJECT) */
+                        /* 0x36: connect attempt ABANDONED. Absent from
+                         * CH582F_PROTOCOL.md's state table; the disassembly's
+                         * "host refused" reading is a guess. CAPTURED ON THE WIRE
+                         * 2026-08-29 selecting an unreachable slot:
+                         *   5B 33, 5B 33, 5B 36, then 5B 23 (idle, ignored)
+                         * so it follows failed attempts and then PERSISTS -- the
+                         * module never retracts it. Note this is "the attempt
+                         * failed", NOT "not paired": a bonded but powered-off
+                         * host would look identical. Do not label it as bonding. */
+                        case 0x36:
                             is_module_connected = false;
                             is_pairing          = false;
                             conn_state          = CH582_CONN_REJECTED;
                             connected_slot      = 0;
                             host_leds           = 0;
                             break;
-                        default:   /* 0x23 idle/finalize: periodic, appears both
-                                    * connected and disconnected -> leave state */
+                        default:
+                            /* 0x23 idle/finalize: periodic, appears both
+                             * connected and disconnected -> leave state.
+                             *
+                             * But it IS the moment the module stops advertising
+                             * and becomes receptive again, so a select it
+                             * declined can be re-issued right here. Measured: a
+                             * select sent while advertising is ignored, and the
+                             * 5B 23 lands ~6 s later. Retrying on the clock
+                             * alone kept missing this window. */
+                            if (select_pending && d == 0x23 &&
+                                select_tries < CH582_SELECT_MAX_TRIES) {
+                                select_last_try = timer_read();
+                                select_tries++;
+                                uint8_t p = requested_profile;
+                                ch582_send_command(0xA6, &p, 1);
+                            }
                             break;
                     }
                     break;

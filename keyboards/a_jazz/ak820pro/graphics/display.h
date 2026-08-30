@@ -13,6 +13,57 @@ void display_set_power(bool on);
 bool display_get_power(void);
 void display_toggle_power(void);
 
+/* Backlight brightness, 0..BKL_MAX_LEVEL (perceptually spaced; 0 = off).
+ * Software PWM from the RGB row ISR -- see display.c. Not persisted. */
+/* Backlight PWM tick. ISR context; called once per row-scan interrupt. */
+void    display_backlight_tick(void);
+
+uint8_t display_get_brightness(void);
+void    display_set_brightness(uint8_t level);
+void    display_brightness_up(void);
+void    display_brightness_down(void);
+
+/* --- Host text slot -------------------------------------------------------
+ * A single line the host pushes over raw HID, drawn in the band above the
+ * clock. The firmware attaches no meaning to the text; it is whatever the host
+ * script decided to send.
+ *
+ * icon: 0 none, 1 play, 2 pause, 3 stop. Deliberately an ICON ID rather than a
+ * "media state" so other producers can reuse it without the name lying. */
+#define DISPLAY_TEXT_MAX 12          /* 128px band / 10px advance */
+
+enum display_text_icon {
+    DISPLAY_ICON_NONE = 0,
+    DISPLAY_ICON_PLAY,
+    DISPLAY_ICON_PAUSE,
+    DISPLAY_ICON_STOP,
+};
+
+void display_set_text(uint8_t icon, const char *s, uint8_t len);
+void display_clear_text(void);
+
+/* Hold-to-pair feedback. A slot key was pressed and the pair threshold has not
+ * elapsed yet, so the band says the hold is in progress. Without it the hold is
+ * silent until it fires, and being 100ms short is indistinguishable from the
+ * feature not working -- which reads as "the hold must be ~3s". */
+void display_set_pair_hint(int16_t pct);   /* 0-100 = progress, <0 = off */
+
+#ifdef PARAM_OVERLAY
+/* Transient parameter readout for the info band. Pass a string to show it for
+ * PARAM_OVERLAY_HOLD_MS, or NULL to clear early. The CALLER owns the formatting;
+ * display.c only stores and renders, which keeps the RGB API out of the graphics
+ * layer and lets any producer use the slot. */
+void display_set_param_status(const char *s);
+#endif
+
+/* Number of backlight steps (levels are 0..this). Perceptually spaced, so the
+ * index is the meaningful figure, not the duty percentage. */
+uint8_t display_get_brightness_max(void);
+
+/* Flip play<->pause immediately on a local keypress; the next host update
+ * corrects it. No-op when no transport icon is showing. */
+void display_toggle_play_icon(void);
+
 void display_draw_mac_logo(void);
 void display_draw_windows_logo(void);
 void display_draw_usb_logo(void);

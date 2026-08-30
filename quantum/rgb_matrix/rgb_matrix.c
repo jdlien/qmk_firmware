@@ -296,8 +296,22 @@ static void rgb_task_timers(void) {
 #endif // RGB_MATRIX_KEYREACTIVE_ENABLED
 }
 
+#ifndef RGB_MATRIX_EEPROM_WRITE_DELAY
+#    define RGB_MATRIX_EEPROM_WRITE_DELAY 0
+#endif
+
+/* Board hook: return false to defer the eeconfig flush. Exists because on some
+ * boards an internal-flash program/erase cannot safely overlap other activity
+ * (see keyboards/a_jazz/ak820pro). Default allows it always, so behaviour is
+ * unchanged for every other keyboard. */
+__attribute__((weak)) bool rgb_matrix_eeprom_flush_allowed(void) {
+    return true;
+}
+
 static void rgb_task_sync(void) {
-    eeconfig_flush_rgb_matrix(false);
+    if (rgb_matrix_eeprom_flush_allowed()) {
+        eeconfig_flush_rgb_matrix_task(RGB_MATRIX_EEPROM_WRITE_DELAY);
+    }
     // next task
     if (sync_timer_elapsed32(g_rgb_timer) >= RGB_MATRIX_LED_FLUSH_LIMIT) rgb_task_state = STARTING;
 }
