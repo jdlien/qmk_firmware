@@ -1041,7 +1041,38 @@ static void param_status_task(void) {
 }
 #endif // PARAM_OVERLAY
 
+/* Blit rate, once a second, printed only when it CHANGES.
+ *
+ * The missed-completion failure scales with how many DMA blits run, so this is
+ * the number that says whether a display change raised the risk. Reported
+ * alongside the recovery count: rate tells you the exposure, timeouts tell you
+ * whether it is actually biting.
+ *
+ * Printed on change only, like the [ch582] counters -- a per-second line would
+ * bury the very events it exists to surface. Delete the block to remove it; it
+ * has no other callers. */
+#ifdef CONSOLE_ENABLE
+static void blit_stat_task(void) {
+    static uint32_t last_at = 0;
+    static uint32_t last_rate = UINT32_MAX;
+    static uint16_t last_to = 0;
+    if (timer_elapsed32(last_at) < 1000) return;
+    last_at = timer_read32();
+
+    uint32_t rate = lcd_blit_count_take();
+    uint16_t to   = lcd_blit_timeouts();
+    if (rate != last_rate || to != last_to) {
+        dprintf("[lcd] blits/s=%lu timeouts=%u\n", (unsigned long)rate, (unsigned)to);
+        last_rate = rate;
+        last_to   = to;
+    }
+}
+#endif
+
 void housekeeping_task_kb(void) {
+#ifdef CONSOLE_ENABLE
+    blit_stat_task();
+#endif
 
     // Throttle the housekeeping to 10 Hz
     static uint32_t last_t = 0;

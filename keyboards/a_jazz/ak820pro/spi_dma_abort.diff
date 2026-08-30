@@ -1,0 +1,58 @@
+--- a/os/hal/ports/SN32/LLD/SN32F2xx/SPI/hal_spi_v2_lld.c
++++ b/os/hal/ports/SN32/LLD/SN32F2xx/SPI/hal_spi_v2_lld.c
+@@ -212,6 +212,45 @@
+   return sn32_dma_busy;
+ }
+ 
++/* Abort an in-flight flash->LCD DMA and put BOTH controllers back exactly where
++ * a normal completion would leave them.
++ *
++ * A caller that has waited out its bound cannot simply declare the blit done:
++ * spiSN32FlashDmaPrepare() DISABLES SPI1's NVIC vector for the DMA window, and
++ * only the completion path re-enables it. Tearing down without that leaves SPI1
++ * permanently deaf, so the next flash read never completes and the board wedges
++ * harder than the stall being recovered from -- observed on hardware
++ * 2026-08-30, total silence within two seconds of an otherwise-successful
++ * recovery.
++ *
++ * Order matters: stop the DMA engine BEFORE resetting the source FIFO, or the
++ * sink is left armed waiting on data that will never arrive. */
++void spiSN32FlashDmaAbort(SPIDriver *lcd) {
++  (void)lcd;
++  if (!sn32_dma_busy) {
++    return;
++  }
++  SN_SPI0->DMACTRL_b.DMAEN = 0;              /* engine off first */
++  SN_SPI0->IC = 0x3F;
++  nvicClearPending(SN32_SPI0_NUMBER);
++  SN_SPI0->CTRL0_b.DL = 7;                   /* back to 8-bit */
++  /* Same hand-back to FIFO mode the completion path performs, or a subsequent
++     spiSend on the panel would never complete. */
++  SN_SPI0->CTRL0_b.RXFIFOTH = 0;
++  SN_SPI0->IE = 0b0100;                      /* RXFIFOTHIE */
++#if SN32_SPI_USE_SPI1 == TRUE
++  if (sn32_dma_flash == &SPID1) {
++    SN_SPI1->CTRL0_b.FRESET = 0b11;
++    SN_SPI1->IC = 0x3F;
++    nvicClearPending(SN32_SPI1_NUMBER);
++    nvicEnableVector(SN32_SPI1_NUMBER, SN32_SPI_SPI1_IRQ_PRIORITY);
++  }
++#endif
++  sn32_dma_flash = NULL;
++  sn32_dma_busy  = false;
++  sn32_dma_cb    = NULL;                     /* the caller does its own teardown */
++}
++
+ /* Dispatched from the SPI0 handler when a DMA flag is pending. Returns true if
+  * it consumed the interrupt (so the FIFO handler is skipped). */
+ static bool sn32_flash_dma_isr(void) {
+--- a/os/hal/ports/SN32/LLD/SN32F2xx/SPI/hal_spi_v2_lld.h
++++ b/os/hal/ports/SN32/LLD/SN32F2xx/SPI/hal_spi_v2_lld.h
+@@ -206,6 +206,7 @@
+   void spiSN32FlashDmaPrepare(SPIDriver *lcd, SPIDriver *flash, uint32_t len);
+   void spiSN32FlashDmaFire(SPIDriver *lcd, spi_sn32_dma_cb_t cb);
+   bool spiSN32FlashDmaBusy(SPIDriver *lcd);
++  void spiSN32FlashDmaAbort(SPIDriver *lcd);
+ #endif
+   msg_t spi_lld_start(SPIDriver *spip);
+   void spi_lld_stop(SPIDriver *spip);

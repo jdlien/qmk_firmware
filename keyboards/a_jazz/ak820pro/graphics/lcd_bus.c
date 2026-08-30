@@ -486,6 +486,13 @@ uint16_t lcd_flash_text_width(uint16_t font_id, const char *s) {
 
 static volatile bool blit_done = true;
 
+/* Blits armed since the last read. The missed-completion failure scales with
+ * how many blits run, so this is the number that says whether a display change
+ * raised the risk -- and it is the only way to check that without guessing. */
+static uint32_t blit_count = 0;
+
+uint32_t lcd_blit_count_take(void) { uint32_t n = blit_count; blit_count = 0; return n; }
+
 // DMA completion is serviced by the driver's SPI0 handler (the spiSN32FlashDma
 // extension); it calls blit_done_cb below. No Vector58 here anymore.
 static void blit_done_cb(void) {
@@ -507,6 +514,7 @@ void lcd_blit_flash(uint32_t src, uint16_t x, uint16_t y, uint16_t w, uint16_t h
     // caller's job and the ordering was load-bearing but invisible (it only
     // worked because flash_assets_init() happened to run first). Cheap: a bool.
     lcd_flash_init();
+    blit_count++;
     uint32_t bytes = (uint32_t)w * (uint32_t)h * 2u;
     blit_done = false;
     // SPI0 (sink) into DMA config + counts; SPI1 (source) recorded for Step 2.
@@ -560,9 +568,14 @@ bool lcd_blit_wait(void) {
     }
     if (blit_done) return true;
 
-    gpio_write_pin(FLASH_CS, 1);          // same teardown as blit_done_cb
+    /* Abort through the LLD, which restores BOTH controllers -- crucially it
+     * re-enables SPI1's NVIC vector, which Prepare() disabled for the DMA
+     * window. An earlier version of this recovery reset the flash FIFO by hand
+     * and skipped that, leaving SPI1 deaf: the board went totally silent within
+     * two seconds of the "recovery", which was far worse than the stall. */
+    spiSN32FlashDmaAbort(&SPID0);
+    gpio_write_pin(FLASH_CS, 1);          // then the CS lines, as blit_done_cb does
     cs(1);
-    SN_SPI1->CTRL0_b.FRESET = 0b11;       // drop whatever the flash side held
     blit_done = true;
     if (blit_timeouts < 0xFFFFu) blit_timeouts++;
     dprintf("[lcd] blit timeout #%u -- recovered\n", (unsigned)blit_timeouts);
