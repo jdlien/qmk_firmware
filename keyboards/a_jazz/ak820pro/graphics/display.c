@@ -68,7 +68,7 @@
 #define TEXT_BIG_MAX    11
 
 // Bottom row: y position of the wireless status line.
-#define STATUS_Y 111
+#define STATUS_Y 112
 
 static bool display_powered = true;
 static bool display_paused  = false;   // true while the flash-animation player owns the bus
@@ -208,7 +208,7 @@ static bool display_backlight_init(void) {
  * The 3px the text band needed came from the lock row, not the battery row --
  * the battery percentage already clips one row off the bottom of the panel at
  * the 20px cell height, so it had nothing to give. */
-#define CLOCK_Y 54
+#define CLOCK_Y 55
 
 // Clock format: 1 = HH:MM:SS (per-second redraw of the changed cells), 0 = HH:MM.
 #ifndef DISPLAY_CLOCK_SHOW_SECONDS
@@ -405,7 +405,7 @@ static void draw_conn_number(bool force) {
  * full 0..127 is visible. One row of bottom margin is kept deliberately -- the
  * LCD is recessed and the bezel clips the outermost pixels, which is the same
  * reason BATT_X0 is 5 rather than 0. */
-#define BATT_Y0    (STATUS_Y + 4)   /* 17px band: icon 115..126 */
+#define BATT_Y0    (STATUS_Y + 3)   /* 16px band: icon 115..126, row 127 margin */
 #define BATT_W     24
 #define BATT_H     12
 #define BATT_X1    (BATT_X0 + BATT_W - 1)
@@ -504,7 +504,7 @@ static void draw_battery(bool force) {
         uint16_t w = lcd_flash_text_width(FONT_SMALL, bbuf);
         /* PANEL_WIDTH - 4, not - 1: viewed from the right the bezel hides the
          * last couple of columns, which was clipping the '%'. */
-        lcd_draw_flash_text(FONT_SMALL, PANEL_WIDTH - 4 - w, STATUS_Y + 2, bbuf);
+        lcd_draw_flash_text(FONT_SMALL, PANEL_WIDTH - 4 - w, STATUS_Y + 1, bbuf);
     }
 }
 
@@ -530,7 +530,7 @@ static void draw_battery(bool force) {
 // disable most hotkeys and nobody would enable it on purpose -- so the label is
 // for the only context where the feature is meaningful. The padlock conveys
 // "disabled"; the label says which key.
-#define LOCK_Y      88
+#define LOCK_Y      89
 #define LOCK_PAD_X  4
 /* 16px padlock inside the 23px band -> LOCK_Y+3 .. LOCK_Y+18, which the clear
  * rect (STATUS_Y - LOCK_Y = 23) fully covers. It did NOT while the band was
@@ -607,7 +607,7 @@ static void draw_locks(bool force) {
 // The whole payload fits one raw-HID packet: 12 characters at a 10px advance
 // fills the 128px band, against ~27 usable bytes per packet. So there is no
 // framing, no offsets and no partial-render window to design around.
-#define TEXT_Y        26
+#define TEXT_Y        27
 #define TEXT_H        (CLOCK_Y - TEXT_Y)     // 24px, clock starts at 49
 #define TEXT_ICON_W   12
 #define TEXT_ICON_GAP 2   /* tightened with the denser face: one more glyph */
@@ -950,8 +950,23 @@ static void draw_text_slot(bool force) {
 
     if (!text_present) return;
 
-    if (text_icon != DISPLAY_ICON_NONE)
-        draw_text_icon(0, TEXT_Y + (TEXT_H - 12) / 2, text_icon);
+    if (text_icon != DISPLAY_ICON_NONE) {
+        /* Align to the FIRST line, not the band. Centring on the band put the
+         * icon between the two lines, which read as belonging to neither; and
+         * with a single line it floated below the text entirely.
+         *
+         * The icon is 12 rows against a 14-row cell, so it centres on the CELL
+         * rather than the 10-row cap-to-baseline mass -- it spans the letters
+         * plus their descender space, which is what "level with the line" looks
+         * like. Every case stays inside the band, so the clear rect still
+         * covers it (the mistake that stranded the padlock). */
+        uint16_t icon_y;
+        if (text_buf[1][0])                       icon_y = TEXT_Y + 1;
+        else if (strlen(text_buf[0]) <= TEXT_BIG_MAX)
+                                                  icon_y = TEXT_Y + TEXT_BIG_DY + 5;
+        else                                      icon_y = TEXT_Y + TEXT_FONT_DY + 1;
+        draw_text_icon(0, icon_y, text_icon);
+    }
     if (text_buf[0][0] || text_buf[1][0]) {
         if (text_buf[1][0]) {
             /* TWO lines: both must use the 13px face -- a 20px cell is 23 rows
