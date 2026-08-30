@@ -281,6 +281,38 @@ void bluetooth_send_consumer(uint16_t usage) {
 
 void bluetooth_send_system(uint16_t usage) {}
 
+#ifdef RAW_ENABLE
+/* Raw-HID replies go back over USB even in wireless mode.
+ *
+ * The default is a WEAK NO-OP in drivers/bluetooth/bluetooth.c, and
+ * tmk_core/protocol/host.c wires it in as the Bluetooth driver's .send_raw_hid.
+ * So in BT/2.4G mode host_raw_hid_send() hands every reply to an empty function
+ * and they are SILENTLY DISCARDED -- the CH582F protocol has no concept of raw
+ * HID and there is nowhere for them to go.
+ *
+ * Consequences, all of which read as "the tool is broken":
+ *   - VIA cannot complete its handshake, so it will not connect at all
+ *   - every round-trip ak820ctl command fails (info, flash write, flash crc)
+ *   - and it fails EVEN WITH THE USB CABLE PLUGGED IN, because the dip switch,
+ *     not the cable, is what selects the active host driver
+ *
+ * Inbound reports are unaffected: they arrive on the USB OUT endpoint whatever
+ * the dip switch says, which is why the request lands and only the answer
+ * disappears. That asymmetry is what makes it look like a tooling bug.
+ *
+ * Raw HID is a HOST-TOOL channel, not a typing channel. There is no reason for
+ * it to follow the keyboard's output route -- send it back the way it came.
+ *
+ * Safe when USB is down: send_report() is bounded at 100 ms, and a reply can
+ * only exist in response to a request that arrived over USB in the first place,
+ * so on battery this is never reached. */
+extern void send_raw_hid(uint8_t *data, uint8_t length);  /* chibios/usb_main.c */
+
+void bluetooth_send_raw_hid(uint8_t *data, uint8_t length) {
+    send_raw_hid(data, length);
+}
+#endif
+
 /* --- reliable (ACK'd, retrying) TX queue --------------------------------------
  * The module ACKs every frame we send with `61 0D 0A`. Sending once and ignoring
  * that ACK means a dropped/checksum-rejected frame is simply lost -- for a key
