@@ -45,3 +45,9 @@ uint32_t rtc_get_seconds(void);
  * auto-calibration pass when one is due. Cheap no-op otherwise. Call every
  * housekeeping pass from thread context. */
 void rtc_task(void);
+
+/* How many PCF8563 transactions would have collided with a live flash->LCD DMA.
+ * See the bus-guard note in rtc.c: the bit-banged I2C shares port A with the
+ * flash SPI1 pins, so an overlap glitches the transfer. Nonzero means the
+ * hazard is real on this unit. */
+uint16_t rtc_i2c_overlaps(void);

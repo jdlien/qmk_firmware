@@ -5,6 +5,7 @@
 #include "rtc.h"
 #include "quantum.h"
 #include "hal.h"
+#include "../graphics/lcd_bus.h"
 
 #include <time.h>
 
@@ -69,8 +70,42 @@ static inline uint8_t dec2bcd(uint8_t v)
  */
 
 
+
+/* ---- Bus guard: never bit-bang I2C while a flash->LCD DMA is in flight ----
+ *
+ * lcd_bus.c states the hazard outright: "The bit-banged RTC I2C (SCL=A14,
+ * SDA=A15) shares port A with the flash SPI1 pins (SCK=A12, CS=A13); its
+ * open-drain pin-mode toggling glitches A12/A13 mid-DMA and corrupts the flash
+ * read. Callers must suspend RTC polling while this is true."
+ *
+ * That contract was enforced ONLY for the animation player, via anim_active().
+ * The dashboard blits constantly -- clock, text, battery, playback -- and had no
+ * guard at all, so every PCF transaction was free to land in the middle of one.
+ * A glitched SPI1 starves the DMA, the completion IRQ never arrives, and
+ * blit_done is stuck false forever: the hang.
+ *
+ * Draining first is sufficient rather than merely narrowing: both the I2C and
+ * every blit are started from the main loop, so once the in-flight blit is done
+ * no new one can begin before this transaction finishes. Same argument as
+ * backing_store_pre_write_hook().
+ *
+ * The counter is the evidence. It records how often a transaction WOULD have
+ * landed on a live blit, so it measures the hazard rate even now that it is
+ * prevented -- if it climbs while timeouts stay at zero, this was the cause. */
+static uint16_t i2c_blit_overlap = 0;
+
+uint16_t rtc_i2c_overlaps(void) { return i2c_blit_overlap; }
+
+static void rtc_bus_guard(void) {
+    if (lcd_blit_busy() && i2c_blit_overlap < 0xFFFFu) {
+        i2c_blit_overlap++;
+    }
+    lcd_blit_wait();
+}
+
 static bool pcf_read(rtc_time_t *out)
 {
+    rtc_bus_guard();
     uint8_t reg = PCF8563_REG_SECONDS;
     uint8_t buf[7];
 
@@ -118,6 +153,7 @@ static bool pcf_read(rtc_time_t *out)
 
 static bool pcf_write(const rtc_time_t *t)
 {
+    rtc_bus_guard();
     uint8_t buf[8] = {
         PCF8563_REG_SECONDS,
         dec2bcd(t->seconds),

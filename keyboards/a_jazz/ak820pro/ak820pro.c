@@ -1056,15 +1056,19 @@ static void blit_stat_task(void) {
     static uint32_t last_at = 0;
     static uint32_t last_rate = UINT32_MAX;
     static uint16_t last_to = 0;
+    static uint16_t last_ov = 0;
     if (timer_elapsed32(last_at) < 1000) return;
     last_at = timer_read32();
 
     uint32_t rate = lcd_blit_count_take();
     uint16_t to   = lcd_blit_timeouts();
-    if (rate != last_rate || to != last_to) {
-        dprintf("[lcd] blits/s=%lu timeouts=%u\n", (unsigned long)rate, (unsigned)to);
+    uint16_t ov = rtc_i2c_overlaps();
+    if (rate != last_rate || to != last_to || ov != last_ov) {
+        dprintf("[lcd] blits/s=%lu timeouts=%u i2c-overlap=%u\n",
+                (unsigned long)rate, (unsigned)to, (unsigned)rtc_i2c_overlaps());
         last_rate = rate;
         last_to   = to;
+        last_ov   = ov;
     }
 }
 #endif

@@ -14,6 +14,7 @@
 #include "quantum.h"
 #include "gpio.h"
 #include "lcd_bus.h"
+#include "../rtc/rtc.h"
 
 extern void display_set_paused(bool paused);   // graphics/display.c
 
@@ -490,6 +491,7 @@ static volatile bool blit_done = true;
  * how many blits run, so this is the number that says whether a display change
  * raised the risk -- and it is the only way to check that without guessing. */
 static uint32_t blit_count = 0;
+static uint32_t blit_len_words = 0;   // programmed DMACNT, for the timeout report
 
 uint32_t lcd_blit_count_take(void) { uint32_t n = blit_count; blit_count = 0; return n; }
 
@@ -516,6 +518,7 @@ void lcd_blit_flash(uint32_t src, uint16_t x, uint16_t y, uint16_t w, uint16_t h
     lcd_flash_init();
     blit_count++;
     uint32_t bytes = (uint32_t)w * (uint32_t)h * 2u;
+    blit_len_words = bytes - 1;      // what Prepare() loads into DMACNT
     blit_done = false;
     // SPI0 (sink) into DMA config + counts; SPI1 (source) recorded for Step 2.
     // SPI0 stays 8-bit so the command phase (window) can go out first.
@@ -578,7 +581,25 @@ bool lcd_blit_wait(void) {
     cs(1);
     blit_done = true;
     if (blit_timeouts < 0xFFFFu) blit_timeouts++;
-    dprintf("[lcd] blit timeout #%u -- recovered\n", (unsigned)blit_timeouts);
+    /* Capture BEFORE the abort clears anything. DMACNT is the discriminator and
+     * distinguishes three completely different faults with three different fixes:
+     *
+     *   cnt == the programmed length  -> the transfer never started
+     *   cnt somewhere in between      -> the SOURCE starved mid-transfer, which
+     *                                    is what an SPI1 glitch looks like (see
+     *                                    the RTC I2C / port-A note below)
+     *   cnt == 0, ris DMATCIF set     -> it finished and the IRQ was LOST, i.e.
+     *                                    an interrupt-delivery problem, not a bus one
+     *
+     * ris bit5 = DMATCIF (transfer complete), bit4 = DMAHTIF (half). */
+    dprintf("[lcd] blit timeout #%u ris=%02lx cnt=%lu/%lu s0=%lx s1=%lx i2c=%u\n",
+            (unsigned)blit_timeouts,
+            (unsigned long)(SN_SPI0->RIS & 0x3F),
+            (unsigned long)SN_SPI0->DMACNT_b.CNT,
+            (unsigned long)blit_len_words,
+            (unsigned long)SN_SPI0->STAT,
+            (unsigned long)SN_SPI1->STAT,
+            (unsigned)rtc_i2c_overlaps());
     return false;
 }
 
