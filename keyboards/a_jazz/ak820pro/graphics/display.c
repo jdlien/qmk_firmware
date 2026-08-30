@@ -30,7 +30,28 @@
 // trap are gone.
 #define FONT_CLOCK      ASSET_IOSEVKA_REGULAR_30   // big clock
 #define FONT_STATUS     ASSET_IOSEVKA_MEDIUM_20    // small status text
-#define FONT_SMALL      ASSET_IOSEVKA_MEDIUM_14    // dense: 7px advance
+/* 13px, not 14: at 14 the lowercase 't' quantises to a 2px stem while every
+ * other lowercase stem is 1px, which reads as a bold 't' in the middle of a
+ * word. 13 gives the SAME 7px advance and 17 chars, with every stem uniform.
+ * Same class of defect as the capital P at size 20 -- see CLAUDE.md. */
+#define FONT_SMALL      ASSET_IOSEVKA_MEDIUM_13    // dense: 7px advance
+
+/* Align the text with the TRANSPORT ICON, not with the band.
+ *
+ * The icon is 12px tall drawn at TEXT_Y + (TEXT_H - 12)/2 = 31, so it spans rows
+ * 31..42 with its centre at 36.5. The 7x17 cell carries cap-to-baseline in rows
+ * 3..12 (descenders go below), so that visual mass must land centred on 36.5:
+ *
+ *   cap..baseline is 10 rows -> top = 36.5 - 5 = 31.5
+ *   cell top      = 31.5 - 3 = 28.5  ->  TEXT_Y + 4  (25 + 4 = 29)
+ *
+ * Centring the CELL instead of the ink is what put it 2px high: the cell
+ * includes descender space that is empty for most strings, so it pulls the
+ * apparent centre downward and the text upward. */
+#define TEXT_FONT_DY    4    /* 13px face */
+#define TEXT_BIG_DY     0    /* 20px face */
+/* (128 - TEXT_X - 2) / 10px advance = 11 glyphs in the big face. */
+#define TEXT_BIG_MAX    11
 
 // Bottom row: y position of the wireless status line.
 #define STATUS_Y 106
@@ -887,8 +908,24 @@ static void draw_text_slot(bool force) {
 
     if (text_icon != DISPLAY_ICON_NONE)
         draw_text_icon(0, TEXT_Y + (TEXT_H - 12) / 2, text_icon);
-    if (text_buf[0])
-        lcd_draw_flash_text(FONT_SMALL, TEXT_X, TEXT_Y, text_buf);
+    if (text_buf[0]) {
+        /* Use the big face when the text FITS in it, and only drop to the dense
+         * one when it does not. Most titles are short -- "Everlong", "Wish You
+         * Were Here" -- and there is no reason to render those tiny just because
+         * "Bohemian Rhapsody" would not fit.
+         *
+         * Each face needs its own vertical nudge: both are centred on the
+         * transport icon (rows 31..42, centre 36.5) by their cap-to-baseline
+         * mass, not by their cell, because the cell includes descender space
+         * that is empty for most strings and drags the apparent centre down.
+         *   20px: cap..baseline is cell rows 4..18 (15 rows) -> DY 0
+         *   13px: cap..baseline is cell rows 3..12 (10 rows) -> DY 4 */
+        bool big = strlen(text_buf) <= TEXT_BIG_MAX;
+        lcd_draw_flash_text(big ? FONT_STATUS : FONT_SMALL,
+                            TEXT_X,
+                            TEXT_Y + (big ? TEXT_BIG_DY : TEXT_FONT_DY),
+                            text_buf);
+    }
 }
 
 static void draw_status(bool force) {
