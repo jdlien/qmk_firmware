@@ -276,7 +276,30 @@
  * main loop and is applied after BOTH the press and the release, so a detent
  * costs ~20 ms and a fast spin will stall matrix scanning. Lower it if spinning
  * feels sluggish; raise it if modified encoder keycodes are still unreliable. */
-#define ENCODER_MAP_KEY_DELAY 10
+/* wait_ms() here BLOCKS THE MAIN LOOP, which stops the encoder being sampled --
+ * so this delay does not merely slow the knob down, it makes fast spins DROP
+ * DETENTS outright. At 10 it was ~36 ms per click and the knob had to be turned
+ * very slowly; at 5 it was still noticeably behind.
+ *
+ * It turns out to be largely unnecessary. usb_endpoint_in_send() writes into an
+ * OUTPUT BUFFER QUEUE (obqWriteTimeout), so consecutive consumer reports are
+ * already serialised and drain on successive USB frames -- they cannot coalesce
+ * the way a same-frame overwrite would. QMK's own comment says these delays
+ * "cater for Windows", so 1 keeps a token gap rather than compiling the delay
+ * out entirely (at 0 the whole block is #if'd away).
+ *
+ * Modifier ORDERING is a separate problem and is handled properly by
+ * process_modified_consumer() in ak820pro.c -- do not put that job back here. */
+#define ENCODER_MAP_KEY_DELAY 1
+
+/* The encoder event queue defaults to MAX(4, NUM_ENCODERS_MAX_PER_SIDE + 1) = 4,
+ * and it is a RING buffer, so the usable depth is 3. Events past that are DROPPED
+ * OUTRIGHT, not delayed -- which is why a fast spin lost a lot of clicks while a
+ * moderate one was fine.
+ *
+ * Deepening it is nearly free: each event is an index plus a direction, so 32
+ * costs tens of bytes of RAM and absorbs any burst a hand can produce. */
+#define MAX_QUEUED_ENCODER_EVENTS 32
 
 /* Gap between the MODIFIER report and the CONSUMER usage for a modified consumer
  * keycode such as LSA(KC_VOLU). See process_modified_consumer() in ak820pro.c --
@@ -285,6 +308,19 @@
  * state. Raise if full-step volume still slips through; lower if the knob feels
  * sluggish (each detent costs 2x this plus 2x ENCODER_MAP_KEY_DELAY). */
 #define MODIFIED_CONSUMER_GAP_MS 8
+
+/* How long the modifiers stay held after the last modified-consumer event.
+ *
+ * Paying MODIFIED_CONSUMER_GAP_MS on EVERY detent made a fast spin unusable --
+ * ~36 ms of blocked main loop per click, which also overflowed the encoder queue
+ * and dropped clicks outright. The modifiers do not need re-sending per detent:
+ * hold them across the spin, exactly as a person holds Shift+Alt and taps volume
+ * repeatedly. Only the FIRST click pays the ordering cost.
+ *
+ * Kept short because these are real modifiers -- anything typed inside this
+ * window would carry them. In practice nobody types while spinning the volume
+ * knob, and 150 ms is below the gap between deliberate keystrokes. */
+#define MODIFIED_CONSUMER_HOLD_MS 150
 
 #define PARAM_OVERLAY
 #define PARAM_OVERLAY_HOLD_MS 2000   /* how long a change stays on screen */

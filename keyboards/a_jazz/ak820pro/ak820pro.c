@@ -215,6 +215,12 @@ static void usb_wakeup_try(void) {
  * Rare third symptom worth knowing, because it identifies the fault: seeing Alt
  * WITHOUT Shift opens the macOS Sound settings dialog. Three different outcomes
  * from one gesture is a host sampling a transient state, not a mapping error. */
+/* Modifiers currently held for a modified-consumer burst, and when the last
+ * event landed. Real mods rather than weak ones: weak mods are cleared by the
+ * action layer on ordinary keypresses, which would silently drop them mid-spin. */
+static uint8_t  mcons_mods = 0;
+static uint16_t mcons_last = 0;
+
 static bool process_modified_consumer(uint16_t keycode, keyrecord_t *record) {
     if (!IS_QK_MODS(keycode)) return true;
 
@@ -225,17 +231,33 @@ static bool process_modified_consumer(uint16_t keycode, keyrecord_t *record) {
     uint8_t mods = extract_mod_bits(keycode);
 
     if (record->event.pressed) {
-        add_weak_mods(mods);
-        send_keyboard_report();                  /* flush the mods FIRST */
-        wait_ms(MODIFIED_CONSUMER_GAP_MS);       /* let the host poll and apply them */
+        /* Only pay the ordering cost when the modifiers are not already up. On a
+         * spin every click after the first takes this branch and costs nothing,
+         * which is what makes fast turning usable. */
+        if (mcons_mods != mods) {
+            if (mcons_mods) unregister_mods(mcons_mods);
+            register_mods(mods);
+            send_keyboard_report();              /* flush the mods FIRST */
+            wait_ms(MODIFIED_CONSUMER_GAP_MS);   /* let the host poll and apply them */
+            mcons_mods = mods;
+        }
+        mcons_last = timer_read();
         register_code(base);                     /* now the consumer usage */
     } else {
         unregister_code(base);
-        wait_ms(MODIFIED_CONSUMER_GAP_MS);
-        del_weak_mods(mods);
-        send_keyboard_report();
+        mcons_last = timer_read();               /* mods released on idle, below */
     }
     return false;   /* fully handled */
+}
+
+/* Drop the held modifiers once the spin stops. Called from the housekeeping tick
+ * so the release costs nothing on the encoder path itself. */
+static void modified_consumer_task(void) {
+    if (mcons_mods && timer_elapsed(mcons_last) >= MODIFIED_CONSUMER_HOLD_MS) {
+        unregister_mods(mcons_mods);
+        send_keyboard_report();
+        mcons_mods = 0;
+    }
 }
 
 bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
@@ -966,6 +988,7 @@ void housekeeping_task_kb(void) {
 
         update_leds();
         bt_pair_hold_task();   // hold-to-pair fires under the finger, not on release
+        modified_consumer_task();  // drop held mods once a knob spin stops
 #ifdef PARAM_OVERLAY
         param_status_task();   // surface setting changes in the info band
 #endif
