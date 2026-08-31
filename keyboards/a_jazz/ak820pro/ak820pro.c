@@ -1064,8 +1064,9 @@ static void blit_stat_task(void) {
     uint16_t to   = lcd_blit_timeouts();
     uint16_t ov = rtc_i2c_overlaps();
     if (rate != last_rate || to != last_to || ov != last_ov) {
-        dprintf("[lcd] blits/s=%lu timeouts=%u i2c-overlap=%u\n",
-                (unsigned long)rate, (unsigned)to, (unsigned)rtc_i2c_overlaps());
+        dprintf("[lcd] blits/s=%lu timeouts=%u retries=%u i2c-overlap=%u\n",
+                (unsigned long)rate, (unsigned)to, (unsigned)lcd_blit_retries(),
+                (unsigned)rtc_i2c_overlaps());
         last_rate = rate;
         last_to   = to;
         last_ov   = ov;

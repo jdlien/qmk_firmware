@@ -33,6 +33,7 @@ bool lcd_blit_busy(void);
 bool     lcd_blit_wait(void);
 uint16_t lcd_blit_timeouts(void);
 uint32_t lcd_blit_count_take(void);
+uint16_t lcd_blit_retries(void);
 void lcd_blit_flash_probe(uint32_t src, uint16_t w, uint16_t h);
 // Brings up SPI1 (external flash). lcd_blit_flash does not do this itself, so
 // call it before any blit outside the animation path.

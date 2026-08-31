@@ -492,6 +492,15 @@ static volatile bool blit_done = true;
  * raised the risk -- and it is the only way to check that without guessing. */
 static uint32_t blit_count = 0;
 static uint32_t blit_len_words = 0;   // programmed DMACNT, for the timeout report
+/* Last blit's parameters, so a transfer that NEVER STARTED can be re-armed
+ * exactly. Safe to repeat precisely because nothing partial happened -- see
+ * lcd_blit_wait(). */
+static uint32_t blit_src = 0;
+static uint16_t blit_x = 0, blit_y = 0, blit_w = 0, blit_h = 0;
+static uint16_t blit_retries = 0;
+static bool     blit_retrying = false;
+
+uint16_t lcd_blit_retries(void) { return blit_retries; }
 
 uint32_t lcd_blit_count_take(void) { uint32_t n = blit_count; blit_count = 0; return n; }
 
@@ -519,6 +528,7 @@ void lcd_blit_flash(uint32_t src, uint16_t x, uint16_t y, uint16_t w, uint16_t h
     blit_count++;
     uint32_t bytes = (uint32_t)w * (uint32_t)h * 2u;
     blit_len_words = bytes - 1;      // what Prepare() loads into DMACNT
+    blit_src = src; blit_x = x; blit_y = y; blit_w = w; blit_h = h;
     blit_done = false;
     // SPI0 (sink) into DMA config + counts; SPI1 (source) recorded for Step 2.
     // SPI0 stays 8-bit so the command phase (window) can go out first.
@@ -571,6 +581,23 @@ bool lcd_blit_wait(void) {
     }
     if (blit_done) return true;
 
+    /* NEVER STARTED -> retry once, and the frame is not even lost.
+     *
+     * Measured on hardware over 1h45m: all 13 failures read cnt == the
+     * programmed length with neither DMATCIF nor DMAHTIF set. The transfer had
+     * not begun, so nothing partial happened, nothing was half-written to the
+     * panel, and re-arming is exactly as safe as arming was the first time.
+     * That is a much better answer than dropping the frame, and it is only
+     * valid for this specific reading -- a transfer that stalled PARTWAY has
+     * pushed pixels already and must not be repeated blind.
+     *
+     * One retry, not a loop: if a second arm also fails to start, something is
+     * wrong beyond a missed trigger and spinning on it would be the original
+     * bug again. blit_retrying guards against recursing through the abort. */
+    bool never_started = (SN_SPI0->DMACNT_b.CNT == blit_len_words) &&
+                         ((SN_SPI0->RIS & 0x30u) == 0u);
+
+
     /* Abort through the LLD, which restores BOTH controllers -- crucially it
      * re-enables SPI1's NVIC vector, which Prepare() disabled for the DMA
      * window. An earlier version of this recovery reset the flash FIFO by hand
@@ -580,6 +607,7 @@ bool lcd_blit_wait(void) {
     gpio_write_pin(FLASH_CS, 1);          // then the CS lines, as blit_done_cb does
     cs(1);
     blit_done = true;
+
     if (blit_timeouts < 0xFFFFu) blit_timeouts++;
     /* Capture BEFORE the abort clears anything. DMACNT is the discriminator and
      * distinguishes three completely different faults with three different fixes:
@@ -600,6 +628,16 @@ bool lcd_blit_wait(void) {
             (unsigned long)SN_SPI0->STAT,
             (unsigned long)SN_SPI1->STAT,
             (unsigned)rtc_i2c_overlaps());
+
+    if (never_started && !blit_retrying && blit_w && blit_h) {
+        if (blit_retries < 0xFFFFu) blit_retries++;
+        blit_retrying = true;
+        lcd_blit_flash(blit_src, blit_x, blit_y, blit_w, blit_h);
+        bool ok = lcd_blit_wait();
+        blit_retrying = false;
+        return ok;
+    }
+
     return false;
 }
 
