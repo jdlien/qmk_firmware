@@ -105,9 +105,27 @@
 // by hand. Keep RGB_MATRIX_DEFAULT_VAL in keyboard.json scaled to the ceiling
 // (64/255 ~= the same 25% output as the old 32/128).
 #define RGB_MATRIX_MAXIMUM_BRIGHTNESS 255
-#define RGB_MATRIX_HUE_STEP 16
-#define RGB_MATRIX_VAL_STEP 8
-#define RGB_MATRIX_SPD_STEP 128  /* 1046 Hz LED field rate; safe now UART2 outranks the row ISR */
+/* ⚠️ THE STEP SIZES NO LONGER AFFECT THE FIELD RATE. Read this before tuning.
+ *
+ * The SonixQMK driver derived the LED PWM clock from the PRODUCT of the four UI
+ * step sizes and LED_PROCESS_LIMIT, so making any one of them finer silently
+ * halved the field rate and brought the DLP-rainbow artifact back. That forced
+ * every granularity choice to be paid for by coarsening another axis.
+ *
+ * SN32F2XX_RGB_PWM_FREQ (added to drivers/led/sn32f2xx.c) pins the clock
+ * instead, so the steps below are now purely a UI decision. 4,800,000 gives
+ * psc = 48e6/4.8e6 - 1 = 9, an effective 4.8 MHz, and 4.8e6/256/18 = 1042 Hz --
+ * the same field rate this board ran before, with none of the trade.
+ *
+ * The old coupling is why the notes above talk about "spending" one step to buy
+ * another. That reasoning is now obsolete; it is kept for the history because
+ * the rebalance table explains where the constants came from. */
+#define SN32F2XX_RGB_PWM_FREQ 4800000
+
+#define RGB_MATRIX_HUE_STEP 4    /* 64 values,  5.6 deg */
+#define RGB_MATRIX_SAT_STEP 4    /* 64 values */
+#define RGB_MATRIX_VAL_STEP 2    /* 128 values -- the dim end is where this board lives */
+#define RGB_MATRIX_SPD_STEP 8    /* 32 values */
 
 // Columns are shared between the key matrix and the (column-active-LOW) LED matrix.
 // Drive unselected key-rows HIGH (instead of leaving them high-Z): a pressed switch
@@ -233,6 +251,31 @@
 // flash on every single step (~8/s while a key is held), which is both needless
 // wear and a wide window for the LCD-DMA collision documented in ak820pro.c.
 #define RGB_MATRIX_EEPROM_WRITE_DELAY 750
+
+/* Hold-to-repeat for the RGB adjust keys (hue/sat/val/speed). 32 hue values at
+ * one press each is a lot of pressing; holding sweeps the range in ~2 s.
+ *
+ * ⚠️ COUNTERINTUITIVE: this REDUCES internal-flash writes rather than
+ * multiplying them. rgb_matrix's eeconfig flush is debounced by
+ * RGB_MATRIX_EEPROM_WRITE_DELAY (750 ms) after the LAST change, so a single
+ * hold produces ONE write at the end no matter how many steps it walked --
+ * whereas twenty deliberate taps spaced beyond the debounce produce twenty.
+ * Flash writes are the trigger for the unresolved RGB-adjust hang, so holding
+ * is the safer gesture, not the riskier one.
+ *
+ * The real cost is display blits: the parameter overlay repaints on every
+ * value change, so a hold runs ~16 blits/s against a ~1/s idle baseline. The
+ * never-started-DMA fault scales with blit count, but it is absorbed by the
+ * retry in lcd_blit_wait(), so the worst case is an extra invisible retry
+ * during a long hold. */
+#define RGB_REPEAT_DELAY_MS    400   /* hold this long before repeating starts */
+#define RGB_REPEAT_INTERVAL_MS  60   /* first cadence: ~16 steps/s, fine for nudging */
+/* Then ACCELERATE. Fine steps and a fixed repeat rate are in direct conflict:
+ * 128 brightness values at 16/s is an 8-second sweep. Ramping after a moment
+ * of holding keeps small corrections precise (you release before it speeds up)
+ * while making a full traverse quick. */
+#define RGB_REPEAT_FAST_AFTER_MS 800  /* holding this long past the initial delay... */
+#define RGB_REPEAT_FAST_MS        20  /* ...switches to ~50 steps/s */
 
 /* Measured ILRC divider for THIS unit, seeding the RTC so it does not have to
  * climb from the LLD's nominal 32000 on every boot (the trimmed value is not

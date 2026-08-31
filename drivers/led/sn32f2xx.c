@@ -122,7 +122,25 @@ static volatile bool matrix_scanned = false;
  * Costs one extra tick per PWM period (field rate 498 -> 496 Hz on the AK820 Pro,
  * i.e. nothing) and makes full duty actually mean full duty. */
 static const uint32_t periodticks                               = RGB_MATRIX_MAXIMUM_BRIGHTNESS + 1;
-static const uint32_t freq                                      = (RGB_MATRIX_HUE_STEP * RGB_MATRIX_SAT_STEP * RGB_MATRIX_VAL_STEP * RGB_MATRIX_SPD_STEP * RGB_MATRIX_LED_PROCESS_LIMIT);
+/* PWM clock. Overridable, because deriving it from the UI step sizes is an
+ * arbitrary coupling and a genuine wart.
+ *
+ * freq feeds exactly one thing -- the prescaler, psc = PWM_CLK/freq - 1 -- so
+ * there is no physical reason it should be the PRODUCT of HUE/SAT/VAL/SPD steps
+ * and LED_PROCESS_LIMIT. But because it is, every UI granularity choice
+ * silently retunes the LED field rate: halving HUE_STEP for finer colour
+ * control halves the field rate, which on boards where R/G/B are time-sliced
+ * brings back visible colour fringing on eye movement. Nothing in the UI
+ * connects those two things, and the coupling forces a board to trade one axis
+ * of granularity against another for no reason.
+ *
+ * Defining SN32F2XX_RGB_PWM_FREQ pins the clock and frees all four step sizes
+ * to be chosen purely for the UI. The default is the original expression, so
+ * every board that does not set it behaves exactly as before. */
+#ifndef SN32F2XX_RGB_PWM_FREQ
+#    define SN32F2XX_RGB_PWM_FREQ (RGB_MATRIX_HUE_STEP * RGB_MATRIX_SAT_STEP * RGB_MATRIX_VAL_STEP * RGB_MATRIX_SPD_STEP * RGB_MATRIX_LED_PROCESS_LIMIT)
+#endif
+static const uint32_t freq                                      = SN32F2XX_RGB_PWM_FREQ;
 static const pin_t    led_row_pins[SN32F2XX_RGB_MATRIX_ROWS_HW] = SN32F2XX_RGB_MATRIX_ROW_PINS; // We expect a R,B,G order here
 static const pin_t    led_col_pins[SN32F2XX_RGB_MATRIX_COLS]    = SN32F2XX_RGB_MATRIX_COL_PINS;
 static RGB            led_state[SN32F2XX_LED_COUNT];     // led state buffer

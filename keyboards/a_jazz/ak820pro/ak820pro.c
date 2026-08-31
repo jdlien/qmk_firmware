@@ -260,7 +260,81 @@ static void modified_consumer_task(void) {
     }
 }
 
+/* ---- Hold-to-repeat for the RGB adjust keys -------------------------------
+ *
+ * QMK fires process_record once on press and once on release; there is no
+ * firmware-side auto-repeat. This tracks the held key and re-invokes the same
+ * step function from housekeeping_task_kb(), which runs every main-loop
+ * iteration (~360-400 Hz here), so the timing is fine-grained.
+ *
+ * SAFETY: the held key is confirmed against the MATRIX each tick, not against
+ * a release event. A release can resolve to a different keycode if the layer
+ * changes mid-hold (Fn released first), which would otherwise strand the
+ * repeat running forever. matrix_is_on() cannot lie about a physical key. */
+static uint16_t rgb_rep_kc = KC_NO;
+static keypos_t rgb_rep_pos;
+static uint32_t rgb_rep_since, rgb_rep_last;
+
+static bool rgb_is_repeatable(uint16_t kc) {
+    switch (kc) {
+        case RM_HUEU: case RM_HUED:
+        case RM_SATU: case RM_SATD:
+        case RM_VALU: case RM_VALD:
+        case RM_SPDU: case RM_SPDD:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static void rgb_repeat_step(uint16_t kc) {
+    switch (kc) {
+        case RM_HUEU: rgb_matrix_increase_hue();   break;
+        case RM_HUED: rgb_matrix_decrease_hue();   break;
+        case RM_SATU: rgb_matrix_increase_sat();   break;
+        case RM_SATD: rgb_matrix_decrease_sat();   break;
+        case RM_VALU: rgb_matrix_increase_val();   break;
+        case RM_VALD: rgb_matrix_decrease_val();   break;
+        case RM_SPDU: rgb_matrix_increase_speed(); break;
+        case RM_SPDD: rgb_matrix_decrease_speed(); break;
+        default: break;
+    }
+}
+
+static void rgb_repeat_task(void) {
+    if (rgb_rep_kc == KC_NO) return;
+    if (!matrix_is_on(rgb_rep_pos.row, rgb_rep_pos.col)) {   // physically released
+        rgb_rep_kc = KC_NO;
+        return;
+    }
+    uint32_t held = timer_elapsed32(rgb_rep_since);
+    if (held < RGB_REPEAT_DELAY_MS) return;
+    /* Slow at first so a short hold nudges precisely, then fast so a full
+     * traverse of 128 values does not take eight seconds. */
+    uint16_t interval = (held > (RGB_REPEAT_DELAY_MS + RGB_REPEAT_FAST_AFTER_MS))
+                            ? RGB_REPEAT_FAST_MS
+                            : RGB_REPEAT_INTERVAL_MS;
+    if (timer_elapsed32(rgb_rep_last) < interval) return;
+    rgb_rep_last = timer_read32();
+    rgb_repeat_step(rgb_rep_kc);
+}
+
 bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
+    /* Arm/disarm the repeat. Returns through to QMK, which performs the FIRST
+     * step itself -- this only handles the ones after the hold threshold. */
+    if (rgb_is_repeatable(keycode)) {
+        if (record->event.pressed) {
+            rgb_rep_kc    = keycode;
+            rgb_rep_pos   = record->event.key;
+            rgb_rep_since = timer_read32();
+            rgb_rep_last  = timer_read32();
+        } else if (keycode == rgb_rep_kc) {
+            rgb_rep_kc = KC_NO;
+        }
+    } else if (record->event.pressed) {
+        rgb_rep_kc = KC_NO;      // any other key cancels a hold in progress
+    }
+
     if (!process_modified_consumer(keycode, record)) return false;
 
 #ifdef USB_WAKEUP_ON_KEYPRESS
@@ -1045,40 +1119,42 @@ static void param_status_task(void) {
 }
 #endif // PARAM_OVERLAY
 
-/* Blit rate, once a second, printed only when it CHANGES.
+/* Health line for the never-started-DMA fault, printed ONLY when a failure
+ * actually happens -- i.e. when timeouts or retries move.
  *
- * The missed-completion failure scales with how many DMA blits run, so this is
- * the number that says whether a display change raised the risk. Reported
- * alongside the recovery count: rate tells you the exposure, timeouts tell you
- * whether it is actually biting.
+ * This used to print blits/s every second. That served its purpose: it measured
+ * the blit rate (median 1/s idle, bursts to ~85) and killed the theory that the
+ * two-line text slot and playback readout had raised the hang rate by raising
+ * blit volume. Once answered it was a USB write per second for a number nobody
+ * reads, so only the failure signal is left.
  *
- * Printed on change only, like the [ch582] counters -- a per-second line would
- * bury the very events it exists to surface. Delete the block to remove it; it
- * has no other callers. */
+ * i2c-overlap was dropped from the line too: it stayed 0 across hundreds of
+ * pcf_read opportunities, so the RTC bus guard is confirmed to be doing nothing
+ * for this fault. The guard STAYS -- it is correct per the contract documented
+ * in lcd_bus.c -- but it does not need reporting.
+ *
+ * blits/s is still included as context on the failure line, where it is free. */
 #ifdef CONSOLE_ENABLE
 static void blit_stat_task(void) {
     static uint32_t last_at = 0;
-    static uint32_t last_rate = UINT32_MAX;
-    static uint16_t last_to = 0;
-    static uint16_t last_ov = 0;
+    static uint16_t last_to = 0, last_re = 0;
     if (timer_elapsed32(last_at) < 1000) return;
     last_at = timer_read32();
 
     uint32_t rate = lcd_blit_count_take();
     uint16_t to   = lcd_blit_timeouts();
-    uint16_t ov = rtc_i2c_overlaps();
-    if (rate != last_rate || to != last_to || ov != last_ov) {
-        dprintf("[lcd] blits/s=%lu timeouts=%u retries=%u i2c-overlap=%u\n",
-                (unsigned long)rate, (unsigned)to, (unsigned)lcd_blit_retries(),
-                (unsigned)rtc_i2c_overlaps());
-        last_rate = rate;
-        last_to   = to;
-        last_ov   = ov;
+    uint16_t re   = lcd_blit_retries();
+    if (to != last_to || re != last_re) {
+        dprintf("[lcd] timeouts=%u retries=%u (blits/s=%lu)\n",
+                (unsigned)to, (unsigned)re, (unsigned long)rate);
+        last_to = to;
+        last_re = re;
     }
 }
 #endif
 
 void housekeeping_task_kb(void) {
+    rgb_repeat_task();
 #ifdef CONSOLE_ENABLE
     blit_stat_task();
 #endif
