@@ -255,6 +255,26 @@ static uint8_t spi1_rw(uint8_t out) {
 // Bare-metal single byte, used ONLY by the DMA blit command phase, which runs
 // with SPID1's NVIC vector disabled by the extension -- so the driver ISR (and
 // therefore spiSend/spiExchange) is unavailable and we must poll directly.
+/* Drains by waiting on BUSY (shift complete) and then reading DATA. That is
+ * NOT the driver's own idiom, which is `while (STAT_b.RX_EMPTY);` before
+ * reading (hal_spi_v2_lld.c:569), so this read can land before the byte is
+ * published and leave residue in the RX FIFO.
+ *
+ * ⚠️ THE "CORRECT" VERSION WAS TESTED ON HARDWARE AND IS NOT BETTER -- do not
+ * re-derive it. Adding an RX_EMPTY wait here was measured 2026-08-30 against
+ * the never-started-DMA failure:
+ *
+ *     BUSY-only drain (this):  3 failures / 27.0 min = 1 per 9.0 min
+ *     RX_EMPTY drain:          3 failures / 16.1 min = 1 per 5.4 min
+ *
+ * The hypothesis was that the DMA starts because of RESIDUE in SPI1's RX FIFO
+ * (every captured failure has SPI1 STAT = 0x25, i.e. RX_EMPTY set), so draining
+ * properly should have broken nearly every blit. It did not: the rate barely
+ * moved and is if anything marginally worse, which at n=3 is noise either way.
+ *
+ * Conclusion: residue is not the trigger, and the drain is not the cause. Left
+ * as it was because the tested change showed no benefit; the discarded read
+ * only exists to drain, and the next blit's FRESET clears any residue anyway. */
 static inline void spi1_raw_byte(uint8_t out) {
     SN_SPI1->DATA = out; uint32_t n = 0;
     while (SN_SPI1->STAT_b.BUSY) { if (++n > 500000u) break; }

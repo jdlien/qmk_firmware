@@ -31,12 +31,19 @@ void    display_brightness_down(void);
  * icon: 0 none, 1 play, 2 pause, 3 stop. Deliberately an ICON ID rather than a
  * "media state" so other producers can reuse it without the name lying. */
 /* Host text is drawn in the 14px face (7px advance) rather than the 20px one,
- * because this is the slot where cramming matters -- song titles. From TEXT_X
- * (14) that is (128 - 14 - 2) / 7 = 16 characters, up from 12.
+ * because this is the slot where cramming matters -- song titles.
+ *
+ * The two lines have DIFFERENT budgets, because only line 0 sits beside the
+ * transport icon. Line 0 starts at TEXT_X (14) and gets (128 - 14) / 7 = 16;
+ * line 1 starts at TEXT_X2 (2) and gets (128 - 2) / 7 = 18. The gutter is
+ * exactly two glyphs wide, so those two characters are free for whichever line
+ * does not have to clear it -- and the producer puts the TITLE there.
  *
  * The wireless status overlay deliberately stays on the 20px face: those strings
  * are short and want legibility, not density. */
-#define DISPLAY_TEXT_MAX 16
+#define DISPLAY_TEXT_MAX_L0 16   /* beside the icon gutter */
+#define DISPLAY_TEXT_MAX_L1 18   /* full width */
+#define DISPLAY_TEXT_MAX    DISPLAY_TEXT_MAX_L1   /* buffer size: the wider one */
 
 enum display_text_icon {
     DISPLAY_ICON_NONE = 0,

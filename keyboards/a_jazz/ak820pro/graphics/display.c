@@ -59,8 +59,13 @@
 #define TEXT_ICON_LIFT  1
 
 /* The transport icon sits beside LINE 0 only (it is 12px tall in a 14px row),
- * so line 1 starts at the panel edge and gains the gutter back -- 17 glyphs
- * against 16. Small, but free. */
+ * so line 1 starts at the panel edge and gains the gutter back -- 18 glyphs
+ * (2 + 18*7 = 128) against line 0's 16. The gutter is exactly two glyphs wide,
+ * so the two characters are free; see DISPLAY_TEXT_MAX_L1. The last cell's ink
+ * ends at column 126 (col 6 of the 7px cell is always blank), so nothing runs
+ * off the panel -- but this line, unlike the battery row, has no margin left
+ * for the recessed bezel. That is the price of the two characters and it is
+ * only ever paid by a title long enough to need all 18. */
 #define TEXT_X2         2
 
 /* Single-line offsets. The transport icon spans TEXT_Y+8 .. TEXT_Y+19 (centre
@@ -805,7 +810,9 @@ static bool     text_dirty   = false;
 
 void display_set_text_line(uint8_t line, uint8_t icon, const char *s, uint8_t len) {
     if (line >= TEXT_LINES) return;
-    if (len > DISPLAY_TEXT_MAX) len = DISPLAY_TEXT_MAX;
+    /* Per-line budget: line 0 loses the icon gutter, line 1 does not. */
+    uint8_t max = (line == 0) ? DISPLAY_TEXT_MAX_L0 : DISPLAY_TEXT_MAX_L1;
+    if (len > max) len = max;
     char prev[DISPLAY_TEXT_MAX + 1];
     strcpy(prev, text_buf[line]);          // for the change check below
     uint8_t n = 0;
