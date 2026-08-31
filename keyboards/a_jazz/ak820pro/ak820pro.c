@@ -1337,5 +1337,53 @@ void backing_store_pre_write_hook(void) {
 }
 
 bool rgb_matrix_eeprom_flush_allowed(void) {
-    return !lcd_blit_busy();
+    /* Two gates.
+     *
+     * 1. Never start an internal-flash write while a flash->LCD DMA blit is in
+     *    flight -- the original reason this hook exists.
+     *
+     * 2. Wait until the RGB settings have actually SETTLED.
+     *
+     * QMK's eeconfig_flush_rgb_matrix_task() is a RATE LIMIT, not a debounce:
+     *
+     *     if (timer_elapsed(flush_timer) > timeout) { flush(); flush_timer = timer_read(); }
+     *
+     * so it fires every RGB_MATRIX_EEPROM_WRITE_DELAY ms for as long as the
+     * config stays dirty -- including throughout a held adjust key. Each write
+     * makes the flash array busy for milliseconds, during which the row ISR
+     * cannot run to arm the next row and the matrix goes DARK. Observed on
+     * hardware as a dark flash mid-hold while sweeping brightness.
+     *
+     * Holding the flush off until the values stop moving turns "a write every
+     * 750 ms while adjusting" into "one write once you settle". That also cuts
+     * flash wear, and cuts exposure to the still-unexplained RGB-adjust hang,
+     * whose trigger is an internal-flash write.
+     *
+     * Cheap enough to run from rgb_task_sync: six byte compares and a timer
+     * read. Self-contained on purpose -- it must not depend on PARAM_OVERLAY,
+     * which is a removable nicety. */
+    if (lcd_blit_busy()) return false;
+
+    static uint8_t  last_mode = 0, last_h = 0, last_s = 0, last_v = 0, last_sp = 0;
+    static bool     last_on = false, primed = false;
+    static uint32_t settled_since = 0;
+
+    uint8_t mode = rgb_matrix_get_mode();
+    uint8_t h    = rgb_matrix_get_hue();
+    uint8_t sa   = rgb_matrix_get_sat();
+    uint8_t v    = rgb_matrix_get_val();
+    uint8_t sp   = rgb_matrix_get_speed();
+    bool    on   = rgb_matrix_is_enabled();
+
+    if (!primed) {
+        primed = true;
+        last_mode = mode; last_h = h; last_s = sa; last_v = v; last_sp = sp; last_on = on;
+        settled_since = timer_read32();
+    } else if (mode != last_mode || h != last_h || sa != last_s ||
+               v != last_v || sp != last_sp || on != last_on) {
+        last_mode = mode; last_h = h; last_s = sa; last_v = v; last_sp = sp; last_on = on;
+        settled_since = timer_read32();      // still moving -- restart the settle window
+    }
+
+    return timer_elapsed32(settled_since) >= RGB_SETTLE_MS;
 }

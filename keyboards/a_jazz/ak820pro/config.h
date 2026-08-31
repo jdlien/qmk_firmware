@@ -255,6 +255,11 @@
 // flash on every single step (~8/s while a key is held), which is both needless
 // wear and a wide window for the LCD-DMA collision documented in ak820pro.c.
 #define RGB_MATRIX_EEPROM_WRITE_DELAY 750
+/* How long the RGB settings must be UNCHANGED before the eeconfig write is
+ * allowed. QMK's own delay above is a rate limit, so without this a write
+ * fires every 750 ms throughout a held adjust key -- and each one blanks the
+ * LEDs for milliseconds. See rgb_matrix_eeprom_flush_allowed() in ak820pro.c. */
+#define RGB_SETTLE_MS 900
 
 /* Hold-to-repeat for the RGB adjust keys (hue/sat/val/speed). 32 hue values at
  * one press each is a lot of pressing; holding sweeps the range in ~2 s.
