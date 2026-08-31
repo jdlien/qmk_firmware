@@ -341,7 +341,20 @@
 #define PARAM_OVERLAY
 #define PARAM_OVERLAY_HOLD_MS 2000   /* how long a change stays on screen */
 
-#define DISPLAY_BRIGHTNESS_DEFAULT 1
+/* Boot brightness, as an index into bkl_duty[] in graphics/display.c (0..9,
+ * which the Fn+PgUp/PgDn readout shows as level*100/9 -- so 5 reads "LCD 56%").
+ * Level 5 is duty 8/48, i.e. 17% of the actual PWM period; the levels are
+ * spaced perceptually, so the index and the duty do not track each other.
+ *
+ * WAS 1 ("LCD 11%"), chosen in a dark room where the dimmest lit step looked
+ * right. Against real content it reads as too dim to be comfortable -- the panel
+ * is mostly black anyway, so the lit pixels are a small fraction of the area and
+ * carry the whole impression. Middle of the range is the better compromise, and
+ * it is still far below the stock always-on-full behaviour.
+ *
+ * Not persisted: every kb-eeconfig write is an internal-flash program/erase,
+ * which is the thing that wedges this board. Change it here, not at runtime. */
+#define DISPLAY_BRIGHTNESS_DEFAULT 5
 
 // Indicator LED brightness (Caps Lock, Win Lock, Charging) -- index into
 // ind_duty[] in ak820pro.c. These are software-PWM'd on the same tick as the

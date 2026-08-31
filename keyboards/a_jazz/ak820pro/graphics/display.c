@@ -30,11 +30,14 @@
 // trap are gone.
 #define FONT_CLOCK      ASSET_IOSEVKA_REGULAR_30   // big clock
 #define FONT_STATUS     ASSET_IOSEVKA_MEDIUM_20    // small status text
-/* 13px, not 14: at 14 the lowercase 't' quantises to a 2px stem while every
- * other lowercase stem is 1px, which reads as a bold 't' in the middle of a
- * word. 13 gives the SAME 7px advance and 17 chars, with every stem uniform.
- * Same class of defect as the capital P at size 20 -- see CLAUDE.md. */
-#define FONT_SMALL      ASSET_IOSEVKA_MEDIUM_13    // dense: 7px advance
+/* NOW COZETTE, not Iosevka -- the filename is unchanged on purpose, because
+ * mkraw.py assigns asset ids by sorted filename and renaming would shift every
+ * later id. Iosevka at this ppem lost the quantisation lottery repeatedly: 'j'
+ * shipped with a 2px stem against every other lowercase's 1px, 'A' had legs
+ * that stepped at different rows, 'd' had a flat bowl top where 'b' was round,
+ * and 'l' was near-indistinguishable from '1'. Cozette is a BITMAP font drawn
+ * at 6x13 by hand, so there is no rasteriser to lose to. See mkbdfatlas.py. */
+#define FONT_SMALL      ASSET_IOSEVKA_MEDIUM_13    // dense: 6px advance
 
 /* Align the text with the TRANSPORT ICON, not with the band.
  *
@@ -59,13 +62,14 @@
 #define TEXT_ICON_LIFT  1
 
 /* The transport icon sits beside LINE 0 only (it is 12px tall in a 14px row),
- * so line 1 starts at the panel edge and gains the gutter back -- 18 glyphs
- * (2 + 18*7 = 128) against line 0's 16. The gutter is exactly two glyphs wide,
- * so the two characters are free; see DISPLAY_TEXT_MAX_L1. The last cell's ink
- * ends at column 126 (col 6 of the 7px cell is always blank), so nothing runs
- * off the panel -- but this line, unlike the battery row, has no margin left
- * for the recessed bezel. That is the price of the two characters and it is
- * only ever paid by a title long enough to need all 18. */
+ * so line 1 starts at the panel edge and gains the gutter back -- 21 glyphs
+ * (2 + 21*6 = 128) against line 0's 19. See DISPLAY_TEXT_MAX_L1.
+ *
+ * Both lines now end at the same column, so the last cell's ink lands at 126
+ * (col 5 of the 6px cell is blank for everything but '4' and 'q', which use it).
+ * Unlike the battery row this leaves no margin for the recessed bezel -- the
+ * price of the extra characters, and only ever paid by a string long enough to
+ * need every one of them. */
 #define TEXT_X2         2
 
 /* Single-line offsets. The transport icon spans TEXT_Y+8 .. TEXT_Y+19 (centre
@@ -361,7 +365,7 @@ static void draw_playback(void) {
      * hour. A 20px cell is 23 rows against this band's 22, so it borrows one
      * row from the 4-row gap below -- covered by the clear rect below. */
     bool     big = (n * 10u) <= PANEL_WIDTH;
-    uint8_t  adv = big ? 10 : 7;
+    uint8_t  adv = big ? 10 : 6;   /* must track the atlases' cell widths */
     uint16_t x0  = (uint16_t)((PANEL_WIDTH - n * adv) / 2);
     uint16_t y   = big ? CLOCK_Y : (CLOCK_Y + 4);
 

@@ -34,15 +34,19 @@ void    display_brightness_down(void);
  * because this is the slot where cramming matters -- song titles.
  *
  * The two lines have DIFFERENT budgets, because only line 0 sits beside the
- * transport icon. Line 0 starts at TEXT_X (14) and gets (128 - 14) / 7 = 16;
- * line 1 starts at TEXT_X2 (2) and gets (128 - 2) / 7 = 18. The gutter is
- * exactly two glyphs wide, so those two characters are free for whichever line
- * does not have to clear it -- and the producer puts the TITLE there.
+ * transport icon. Line 0 starts at TEXT_X (14) and gets (128 - 14) / 6 = 19;
+ * line 1 starts at TEXT_X2 (2) and gets (128 - 2) / 6 = 21. The producer puts
+ * the TITLE on line 1, so the title gets the wider of the two.
+ *
+ * The 6px advance is Cozette's OWN design width -- the atlas used to be set on
+ * a 7px cell, which spent a column of letterspacing on every glyph for nothing.
+ * Setting it natively bought three characters per line and tightened the word
+ * shapes at the same time.
  *
  * The wireless status overlay deliberately stays on the 20px face: those strings
  * are short and want legibility, not density. */
-#define DISPLAY_TEXT_MAX_L0 16   /* beside the icon gutter */
-#define DISPLAY_TEXT_MAX_L1 18   /* full width */
+#define DISPLAY_TEXT_MAX_L0 19   /* beside the icon gutter */
+#define DISPLAY_TEXT_MAX_L1 21   /* full width */
 #define DISPLAY_TEXT_MAX    DISPLAY_TEXT_MAX_L1   /* buffer size: the wider one */
 
 enum display_text_icon {
