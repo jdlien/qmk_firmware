@@ -648,7 +648,11 @@ static inline bool rtc_is_get_time_cmd(const uint8_t *data, uint8_t length) {
 
 /* Fill the reply in place with the live clock. */
 static void rtc_read_into(uint8_t *data) {
-    rtc_time_t t;
+    /* Zeroed up front: rtc_get_time() leaves t untouched when it fails, and the
+     * fields below are serialized regardless of ok. Without this the reply
+     * carries stack garbage -- nondeterministic, and a small leak of whatever
+     * was on the stack. data[3] already tells the host the reading is invalid. */
+    rtc_time_t t = {0};
     bool ok = rtc_get_time(&t);
     data[3] = ok ? 1 : 0;
     data[4] = (uint8_t)(t.year >= 2000 ? t.year - 2000 : 0);

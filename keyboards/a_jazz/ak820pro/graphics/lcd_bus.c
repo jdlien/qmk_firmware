@@ -625,7 +625,15 @@ bool lcd_blit_wait(void) {
      * One retry, not a loop: if a second arm also fails to start, something is
      * wrong beyond a missed trigger and spinning on it would be the original
      * bug again. blit_retrying guards against recursing through the abort. */
-    bool never_started = !started;
+    /* Re-read the registers HERE rather than trusting the phase-1 result alone.
+     * The start loop can only prove it saw no movement WHILE IT RAN; a transfer
+     * that began just after the loop exited would still have started == false,
+     * and retrying it would replay a blit that had already pushed pixels. The
+     * window is tiny but the consequence is a corrupted panel, so confirm the
+     * counter is still untouched at the moment we decide. */
+    bool never_started = !started &&
+                         (SN_SPI0->DMACNT_b.CNT == blit_len_words) &&
+                         ((SN_SPI0->RIS & 0x30u) == 0u);
 
 
     /* Abort through the LLD, which restores BOTH controllers -- crucially it

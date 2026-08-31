@@ -326,7 +326,14 @@ void display_playback_tick(void) {
     if (!pb_ticking) return;    // paused: hold the value, do not advance it
     /* Do not run past the end: at a track boundary the host's next push is up
      * to a poll away, and a timer reading beyond the duration looks broken. */
-    if (!pb_dur || pb_pos < pb_dur) pb_pos++;
+    /* Saturate rather than wrap. With dur == 0 (a live stream, no known length)
+     * the position would otherwise roll 65535 -> 0 after 18h12m and the timer
+     * would silently restart at 0:00. */
+    if (pb_dur) {
+        if (pb_pos < pb_dur) pb_pos++;
+    } else if (pb_pos < 0xFFFFu) {
+        pb_pos++;
+    }
 }
 
 static uint8_t fmt_hms(char *out, uint16_t sec) {
