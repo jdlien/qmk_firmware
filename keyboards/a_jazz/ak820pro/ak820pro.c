@@ -272,6 +272,12 @@ static void modified_consumer_task(void) {
  * changes mid-hold (Fn released first), which would otherwise strand the
  * repeat running forever. matrix_is_on() cannot lie about a physical key. */
 static uint16_t rgb_rep_kc = KC_NO;
+/* Set on every press of an adjust key, whether or not the value can still
+ * move. At a range extreme nothing changes, so the polled param_status_task()
+ * had nothing to report and the key looked dead -- the one case where feedback
+ * matters MOST, because "already at the limit" and "this key does nothing" are
+ * indistinguishable without it. */
+static uint16_t param_force_kc = KC_NO;
 static keypos_t rgb_rep_pos;
 static uint32_t rgb_rep_since, rgb_rep_last;
 
@@ -324,8 +330,9 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
      * step itself -- this only handles the ones after the hold threshold. */
     if (rgb_is_repeatable(keycode)) {
         if (record->event.pressed) {
-            rgb_rep_kc    = keycode;
-            rgb_rep_pos   = record->event.key;
+            rgb_rep_kc     = keycode;
+            param_force_kc = keycode;    // show the readout even if pinned at an end
+            rgb_rep_pos    = record->event.key;
             rgb_rep_since = timer_read32();
             rgb_rep_last  = timer_read32();
         } else if (keycode == rgb_rep_kc) {
@@ -1109,9 +1116,28 @@ static void param_status_task(void) {
         snprintf(buf, sizeof(buf), "Sat    %3u%%", (unsigned)((sa * 100u + 127u) / 255u));
     } else if (sp != last_sp) {
         snprintf(buf, sizeof(buf), "Speed  %3u%%", (unsigned)((sp * 100u + 127u) / 255u));
+    } else if (param_force_kc != KC_NO) {
+        /* Nothing moved, but an adjust key was pressed -- almost always because
+         * the value is already at an end stop. Report the current value so the
+         * key visibly does something and the limit is legible. */
+        switch (param_force_kc) {
+            case RM_HUEU: case RM_HUED:
+                snprintf(buf, sizeof(buf), "Hue    %3u", (unsigned)((h * 360u) / 256u)); break;
+            case RM_SATU: case RM_SATD:
+                snprintf(buf, sizeof(buf), "Sat    %3u%%", (unsigned)((sa * 100u + 127u) / 255u)); break;
+            case RM_VALU: case RM_VALD:
+                snprintf(buf, sizeof(buf), "Bright %3u%%", (unsigned)((v * 100u + 127u) / 255u)); break;
+            case RM_SPDU: case RM_SPDD:
+                snprintf(buf, sizeof(buf), "Speed  %3u%%", (unsigned)((sp * 100u + 127u) / 255u)); break;
+            default:
+                param_force_kc = KC_NO;
+                return;
+        }
+        param_force_kc = KC_NO;
     } else {
         return;
     }
+    param_force_kc = KC_NO;
 
     last_mode = mode; last_h = h; last_s = sa; last_v = v; last_sp = sp;
     last_on = on; last_nkro = nkro;

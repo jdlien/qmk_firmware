@@ -122,7 +122,11 @@
  * the rebalance table explains where the constants came from. */
 #define SN32F2XX_RGB_PWM_FREQ 4800000
 
-#define RGB_MATRIX_HUE_STEP 4    /* 64 values,  5.6 deg */
+/* 256 values, 1.4 deg -- the FINEST POSSIBLE. Hue is an 8-bit value in QMK, so
+ * 256 steps over 360 deg is the hardware floor; true single-degree steps would
+ * need a wider hue type throughout rgb_matrix. Only worth it because holding
+ * traverses the whole range in ~4 s. */
+#define RGB_MATRIX_HUE_STEP 1
 #define RGB_MATRIX_SAT_STEP 4    /* 64 values */
 #define RGB_MATRIX_VAL_STEP 2    /* 128 values -- the dim end is where this board lives */
 #define RGB_MATRIX_SPD_STEP 8    /* 32 values */
@@ -275,7 +279,7 @@
  * of holding keeps small corrections precise (you release before it speeds up)
  * while making a full traverse quick. */
 #define RGB_REPEAT_FAST_AFTER_MS 800  /* holding this long past the initial delay... */
-#define RGB_REPEAT_FAST_MS        20  /* ...switches to ~50 steps/s */
+#define RGB_REPEAT_FAST_MS        12  /* ...switches to ~83 steps/s (256 hue values in ~4 s) */
 
 /* Measured ILRC divider for THIS unit, seeding the RTC so it does not have to
  * climb from the LLD's nominal 32000 on every boot (the trimmed value is not
