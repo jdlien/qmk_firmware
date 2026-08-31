@@ -572,12 +572,43 @@ bool lcd_blit_busy(void) { return !blit_done; }
  * full-screen animation frame is ~11 ms) and 4x tighter than the old 4,000,000
  * that made each stall a full second. */
 #define BLIT_WAIT_SPINS 1000000u
+/* ~10 ms. Long enough to see the DMA MOVE, which is all phase 1 asks.
+ *
+ * The old single 250 ms bound was sized for the worst plausible transfer,
+ * because the failure was assumed to be a lost completion. The captured data
+ * says otherwise: every failure has cnt still at the programmed length, i.e.
+ * the transfer never began. So there is no need to wait out a transfer that
+ * was never running -- only long enough to distinguish "not started" from
+ * "started and still going".
+ *
+ * Cost of getting this wrong in one direction only: too short and a slow-to-
+ * start transfer is misread as never-started and retried, which is harmless
+ * (nothing partial happened). Too long and every failure costs a visible
+ * scan-rate dip, which is what this replaces -- one measured at 55 Hz against
+ * a normal ~380. */
+#define BLIT_START_SPINS 40000u
 
 static uint16_t blit_timeouts = 0;
 
 bool lcd_blit_wait(void) {
-    for (uint32_t i = 0; i < BLIT_WAIT_SPINS && !blit_done; i++) {
-        __asm__ volatile("nop");
+    /* PHASE 1 -- did the DMA actually start? Watch DMACNT move (or a transfer
+     * flag appear) rather than waiting out a whole transfer. A blit that never
+     * starts is detected in ~10 ms instead of 250 ms, so the retry lands before
+     * the stall is visible. */
+    bool started = false;
+    for (uint32_t i = 0; i < BLIT_START_SPINS && !blit_done; i++) {
+        if (SN_SPI0->DMACNT_b.CNT != blit_len_words || (SN_SPI0->RIS & 0x30u)) {
+            started = true;
+            break;
+        }
+    }
+    /* PHASE 2 -- it is moving, so give it the generous bound to finish. A
+     * started transfer must NOT be cut short: it has already pushed pixels, so
+     * it cannot be retried blind. */
+    if (started) {
+        for (uint32_t i = 0; i < BLIT_WAIT_SPINS && !blit_done; i++) {
+            __asm__ volatile("nop");
+        }
     }
     if (blit_done) return true;
 
@@ -594,8 +625,7 @@ bool lcd_blit_wait(void) {
      * One retry, not a loop: if a second arm also fails to start, something is
      * wrong beyond a missed trigger and spinning on it would be the original
      * bug again. blit_retrying guards against recursing through the abort. */
-    bool never_started = (SN_SPI0->DMACNT_b.CNT == blit_len_words) &&
-                         ((SN_SPI0->RIS & 0x30u) == 0u);
+    bool never_started = !started;
 
 
     /* Abort through the LLD, which restores BOTH controllers -- crucially it
