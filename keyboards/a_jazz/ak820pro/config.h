@@ -272,6 +272,11 @@
  * never-started-DMA fault scales with blit count, but it is absorbed by the
  * retry in lcd_blit_wait(), so the worst case is an extra invisible retry
  * during a long hold. */
+/* Stage 2 of the console investigation: report the worst main-loop gap on the
+ * LCD. Comment out once the console change is validated -- see the plan. */
+#define LOOPGAP_INSTRUMENT
+#define LOOPGAP_SETTLE_MS 10000  /* skip boot; measure steady state only */
+
 #define RGB_REPEAT_DELAY_MS    400   /* hold this long before repeating starts */
 #define RGB_REPEAT_INTERVAL_MS  60   /* first cadence: ~16 steps/s, fine for nudging */
 /* Then ACCELERATE. Fine steps and a fixed repeat rate are in direct conflict:

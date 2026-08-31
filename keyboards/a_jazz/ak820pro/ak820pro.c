@@ -278,6 +278,79 @@ static uint16_t rgb_rep_kc = KC_NO;
  * matters MOST, because "already at the limit" and "this key does nothing" are
  * indistinguishable without it. */
 static uint16_t param_force_kc = KC_NO;
+
+/* ---- Worst-case main-loop gap (Stage 2 instrument) ------------------------
+ *
+ * Measures the LONGEST interval between consecutive housekeeping passes, not
+ * the average scan rate. A single 100 ms stall is invisible in a per-second
+ * average -- 400 Hz drops to 360 and looks like ordinary jitter -- which is
+ * exactly why the console blocking bug went unnoticed.
+ *
+ * Reported on the LCD, deliberately NOT over the console: the console path is
+ * the thing under test, and printing to it would perturb the measurement.
+ * Fires only when a NEW maximum is set, so it costs nothing while quiet.
+ *
+ * Remove with LOOPGAP_INSTRUMENT once the console work is validated. */
+#ifdef LOOPGAP_INSTRUMENT
+static uint32_t loop_gap_max = 0;
+
+static void loop_gap_task(void) {
+    static uint32_t last = 0;
+    /* IGNORE THE FIRST LOOPGAP_SETTLE_MS. Boot does a lot of deliberate
+     * blocking -- lcd_init() alone spends 240 ms in wait_ms(), plus the asset
+     * index read, the RTC I2C seed and the splash blit. Because this is a
+     * MAX-HOLD, a large startup gap sets the ceiling and then nothing smaller
+     * ever reports again, so the instrument silently measured boot instead of
+     * the steady state it was built for. Nobody types during boot; the gaps
+     * that matter are the ones after it. */
+    if (timer_read32() < LOOPGAP_SETTLE_MS) {
+        last = timer_read32();
+        return;
+    }
+    if (last) {
+        uint32_t gap = timer_elapsed32(last);
+        /* Only report a new max above a floor, so ordinary jitter stays quiet
+         * and the LCD write itself cannot become the thing being measured. */
+        if (gap > loop_gap_max && gap >= 4) {   /* main loop is ~2.5 ms at 400 Hz */
+            loop_gap_max = gap;
+            char buf[24];
+            snprintf(buf, sizeof(buf), "Gap %lums", (unsigned long)gap);
+            display_set_param_status(buf);
+        }
+    }
+    last = timer_read32();
+}
+#endif
+
+#ifdef CONSOLE_ENABLE
+/* Key-event counter, to localise dropped keystrokes.
+ *
+ * Measured 2026-08-30: ~2.3% of characters lost on this board, wired, all pure
+ * drops with no transpositions. That could be the matrix/debounce failing to
+ * SEE the press, or the USB path failing to DELIVER it. Those need completely
+ * different fixes, and counting is the only way to tell them apart:
+ *
+ *   firmware count == characters received  -> the matrix missed it
+ *   firmware count >  characters received  -> the report was lost downstream
+ *
+ * Counted in process_record_kb, which is after debounce and after the matrix
+ * has resolved the event, so it measures what the firmware BELIEVES it sent.
+ *
+ * Printed at most once a second and only when the count moves, i.e. one USB
+ * write per second of typing rather than one per keystroke -- deliberately, so
+ * the instrument cannot cause the drops it is measuring. */
+static uint16_t key_press_count = 0;
+
+static void key_stat_task(void) {
+    static uint16_t last = 0;
+    static uint32_t last_at = 0;
+    if (key_press_count == last) return;
+    if (timer_elapsed32(last_at) < 1000) return;
+    last_at = timer_read32();
+    dprintf("[keys] presses=%u\n", (unsigned)key_press_count);
+    last = key_press_count;
+}
+#endif
 static keypos_t rgb_rep_pos;
 static uint32_t rgb_rep_since, rgb_rep_last;
 
@@ -326,6 +399,9 @@ static void rgb_repeat_task(void) {
 }
 
 bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
+#ifdef CONSOLE_ENABLE
+    if (record->event.pressed) key_press_count++;
+#endif
     /* Arm/disarm the repeat. Returns through to QMK, which performs the FIRST
      * step itself -- this only handles the ones after the hold threshold. */
     if (rgb_is_repeatable(keycode)) {
@@ -1180,6 +1256,9 @@ static void blit_stat_task(void) {
 #endif
 
 void housekeeping_task_kb(void) {
+#ifdef LOOPGAP_INSTRUMENT
+    loop_gap_task();
+#endif
     rgb_repeat_task();
 #ifdef CONSOLE_ENABLE
     blit_stat_task();
@@ -1195,6 +1274,9 @@ void housekeeping_task_kb(void) {
         modified_consumer_task();  // drop held mods once a knob spin stops
 #ifdef PARAM_OVERLAY
         param_status_task();   // surface setting changes in the info band
+#endif
+#ifdef CONSOLE_ENABLE
+        key_stat_task();       // dropped-keystroke localisation; see key_press_count
 #endif
 
         if (!anim_active()) rtc_task();   // RTC I2C (port A) glitches the flash SPI1 pins (A12/A13) mid-DMA

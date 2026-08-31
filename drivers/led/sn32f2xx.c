@@ -725,8 +725,21 @@ void sn32f2xx_init(void) {
 
 void sn32f2xx_flush(void) {
     if (led_state_buf_update_required) {
+        /* The row ISR reads led_state[] to set each channel's duty, and this
+         * memcpy runs on the MAIN LOOP -- so without a lock the ISR can land
+         * mid-copy and drive a frame that is part new and part old. The split
+         * falls at whatever byte was reached, which shows on the panel as a
+         * single row briefly lit in a wrong colour. Visible while sweeping hue,
+         * where consecutive frames differ enough to notice.
+         *
+         * Masking for the duration is cheap and bounded: ~10-16 us for a
+         * 82-128 LED copy at 48 MHz, against a 53 us row-ISR period at
+         * 18,750/s. Worst case the current row is armed a few microseconds
+         * late, which is invisible; a torn frame is not. */
+        chSysLock();
         memcpy(led_state, led_state_buf, sizeof(RGB) * SN32F2XX_LED_COUNT);
         led_state_buf_update_required = false;
+        chSysUnlock();
     }
 }
 
