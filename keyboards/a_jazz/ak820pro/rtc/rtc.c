@@ -98,6 +98,51 @@ static uint16_t i2c_blit_overlap = 0;
 
 uint16_t rtc_i2c_overlaps(void) { return i2c_blit_overlap; }
 
+/* ---- Phase 0 instrumentation (clock-sync plan) ----------------------------
+ * Everything here is OBSERVATION: reads of SECCNT / FRMNO and a few adds. No
+ * behaviour changes in this phase. Layouts are served by rtc_status_fill(). */
+static volatile uint32_t rtc_seconds_count = 0;   /* moved up: needed by stamps */
+
+static uint16_t stale_count    = 0;   /* rtc_now() gave up (SECIF pending, ISR starved) */
+static uint16_t i2c_fail_count = 0;   /* PCF transactions that returned != MSG_OK */
+static uint32_t i2c_max_cycles = 0;   /* longest PCF transaction, ILRC cycles */
+static uint32_t last_sync_secs = 0;   /* rtc_seconds_count at the last host set */
+static bool     host_synced    = false;
+
+/* Tick-ISR service latency: SECCNT at callback entry (cycles since the match
+ * restarted the counter). Sets LATE_CYCLES for later phases (T0.2). */
+static volatile uint16_t lat_min = 0xFFFF, lat_max = 0, lat_n = 0;
+static volatile uint32_t lat_sum = 0;
+
+/* USB SOF frame-number observation (T0.3). The ISR reads the volatile mirror
+ * ONCE and never touches SN_USB when it is false. */
+static volatile uint8_t  usb_active_mirror = 0;
+static volatile uint8_t  fn_valid = 0;
+static volatile uint16_t fn_last  = 0;
+static volatile uint32_t sof_frames_total = 0;    /* continuous while continuity holds */
+static volatile uint8_t  sof_epoch = 0;           /* bumps on every continuity break */
+static volatile uint16_t d_zero = 0, d_reject = 0, d_ok = 0;
+#define D_RING_N 14
+static volatile uint16_t d_ring[D_RING_N];
+static volatile uint8_t  d_ring_i = 0;
+
+/* Elapsed ILRC cycles between two (seconds_count, SECCNT) stamps; only valid
+ * for spans well under a second (an I2C transaction). */
+static inline void cyc_stamp(uint32_t *sc, uint32_t *cnt) {
+    *sc  = rtc_seconds_count;
+    *cnt = SN_RTC->SECCNT;
+}
+static inline uint32_t cyc_elapsed(uint32_t sc0, uint32_t c0, uint32_t sc1, uint32_t c1) {
+    int32_t d = (int32_t)c1 - (int32_t)c0 + (int32_t)(sc1 - sc0) * (int32_t)(rtc_lld_get_period(&RTCD1) + 1);
+    return d < 0 ? 0 : (uint32_t)d;
+}
+static void i2c_note(msg_t r, uint32_t sc0, uint32_t c0) {
+    uint32_t sc1, c1; cyc_stamp(&sc1, &c1);
+    uint32_t e = cyc_elapsed(sc0, c0, sc1, c1);
+    if (e > i2c_max_cycles) i2c_max_cycles = e;
+    if (r != MSG_OK && i2c_fail_count < 0xFFFF) i2c_fail_count++;
+}
+
 static void rtc_bus_guard(void) {
 #ifdef LOOPGAP_INSTRUMENT
     loop_stall_mark = LOOP_MARK_I2C;
@@ -115,13 +160,16 @@ static bool pcf_read(rtc_time_t *out)
     uint8_t buf[7];
 
 
-    if (i2cMasterTransmitTimeout(&I2CD1,
+    uint32_t sc0, c0; cyc_stamp(&sc0, &c0);
+    msg_t r = i2cMasterTransmitTimeout(&I2CD1,
                                  PCF8563_ADDR,
                                  &reg,
                                  1,
                                  buf,
                                  sizeof(buf),
-                                 PCF8563_I2C_TIMEOUT) != MSG_OK) {
+                                 PCF8563_I2C_TIMEOUT);
+    i2c_note(r, sc0, c0);
+    if (r != MSG_OK) {
         return false;
     }
 
@@ -171,14 +219,39 @@ static bool pcf_write(const rtc_time_t *t)
     };
 
 
-    return i2cMasterTransmitTimeout(&I2CD1,
+    uint32_t sc0, c0; cyc_stamp(&sc0, &c0);
+    msg_t r = i2cMasterTransmitTimeout(&I2CD1,
                                     PCF8563_ADDR,
                                     buf,
                                     sizeof(buf),
                                     NULL,
                                     0,
-                                    PCF8563_I2C_TIMEOUT) == MSG_OK;
+                                    PCF8563_I2C_TIMEOUT);
+    i2c_note(r, sc0, c0);
+    return r == MSG_OK;
 }
+
+/* Single-register PCF access, bus-guarded like the rest. Phase 0 uses these
+ * for the STOP-bit and 1-byte-read timing tests; Phase 3's deferred state
+ * machine will call the same primitives without the guard (and lift the
+ * ifdef -- until then the daily build has no caller, and -Werror objects). */
+#ifdef WDT_TEST_HOOKS
+static bool pcf_reg_read(uint8_t reg, uint8_t *v) {
+    rtc_bus_guard();
+    uint32_t sc0, c0; cyc_stamp(&sc0, &c0);
+    msg_t r = i2cMasterTransmitTimeout(&I2CD1, PCF8563_ADDR, &reg, 1, v, 1, PCF8563_I2C_TIMEOUT);
+    i2c_note(r, sc0, c0);
+    return r == MSG_OK;
+}
+static bool pcf_reg_write(uint8_t reg, uint8_t v) {
+    rtc_bus_guard();
+    uint8_t buf[2] = { reg, v };
+    uint32_t sc0, c0; cyc_stamp(&sc0, &c0);
+    msg_t r = i2cMasterTransmitTimeout(&I2CD1, PCF8563_ADDR, buf, 2, NULL, 0, PCF8563_I2C_TIMEOUT);
+    i2c_note(r, sc0, c0);
+    return r == MSG_OK;
+}
+#endif /* WDT_TEST_HOOKS */
 
 
 
@@ -283,19 +356,229 @@ static bool     rtc_cal_valid;      /* the two above are meaningful */
 
 // Free-running count of RTC second interrupts (~seconds since rtc_init). A cheap
 // once-per-second edge source (no localtime()) for pacing the display refresh.
-static volatile uint32_t rtc_seconds_count = 0;
+// (rtc_seconds_count itself is declared above, with the Phase 0 instruments.)
 
 static void rtc_second_cb(RTCDriver *rtcp, rtcevent_t event)
 {
     (void)rtcp;
     (void)event;
 
+    /* T0.2: service latency -- cycles since the match restarted the counter.
+     * Read FIRST, before anything else in the handler adds to it. */
+    uint32_t L = SN_RTC->SECCNT;
+
     rtc_seconds_count++;
 
 #ifdef RTC_AUTO_CALIBRATION
     rtc_check_seconds = MIN(rtc_check_seconds + 1, RTC_CHECK_INTERVAL_S);
 #endif
+
+    if (L < lat_min) lat_min = (uint16_t)L;
+    if (L > lat_max) lat_max = (uint16_t)L;
+    if (lat_n < 0xFFFF) { lat_n++; lat_sum += L; }
+
+    /* T0.3: USB SOF frame-number delta per RTC second. Observation only in
+     * Phase 0 (no discipline). Mirror read once; SN_USB untouched when down. */
+    uint8_t ua = usb_active_mirror;
+    if (!ua) {
+        if (fn_valid) sof_epoch++;
+        fn_valid = 0;
+    } else {
+        uint16_t fn = (uint16_t)(SN_USB->FRMNO & 0x7FFu);
+        uint16_t d  = fn_valid ? (uint16_t)((fn - fn_last) & 0x7FFu) : 0;
+        fn_last  = fn;
+        if (!fn_valid) { fn_valid = 1; }
+        else {
+            if (d) sof_frames_total += d;
+            if (d == 0)                 { d_zero++;   sof_epoch++; }
+            else if (d < 900 || d > 1100) { d_reject++; sof_epoch++; }
+            else                        { d_ok++; }
+            d_ring[d_ring_i] = d;
+            d_ring_i = (uint8_t)((d_ring_i + 1) % D_RING_N);
+        }
+    }
 }
+
+/* Coherent sub-second read (PLAN.md 3.1). Lock-free: a tick landing inside
+ * the snapshot shows as c1 != c2; a match whose ISR has not yet run shows as
+ * SECIF pending. Either way retry; after 8 tries report failure and NO time. */
+bool rtc_now(rtc_stamp_t *s)
+{
+    if (!rtc_valid) return false;
+    for (int tries = 0; tries < 8; tries++) {
+        uint32_t c1  = rtc_seconds_count;
+        uint32_t cnt = SN_RTC->SECCNT;
+        uint32_t pa  = rtc_lld_get_period(&RTCD1);
+        bool pending = (SN_RTC->RIS & mskRTC_SECIF) != 0;
+        RTCDateTime dt;
+        rtcGetTime(&RTCD1, &dt);
+        uint32_t c2  = rtc_seconds_count;
+        if (c1 == c2 && !pending) {
+            chibiostime_to_rtc(&dt, &s->t);
+            s->cnt = cnt;
+            s->period_active = pa;
+            s->seconds_count = c1;
+            return true;
+        }
+    }
+    if (stale_count < 0xFFFF) stale_count++;
+    return false;
+}
+
+/* Status blocks for raw HID -- layouts mirrored in hostagent/rtc_phase0.py. */
+static void put16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
+static void put32(uint8_t *p, uint32_t v) { put16(p, (uint16_t)v); put16(p + 2, (uint16_t)(v >> 16)); }
+
+void rtc_status_fill(uint8_t page, uint8_t *out)
+{
+    switch (page) {
+    case 1: {   /* 21 bytes: the RTC_GET_TIME[11..31] tail */
+        rtc_stamp_t s;
+        bool ok = rtc_now(&s);
+        out[0] = 2;                                          /* RTC_PROTO_VERSION */
+        put32(&out[1], ok ? s.cnt : 0);                      /* [12..15] */
+        put16(&out[5], (uint16_t)rtc_lld_get_period(&RTCD1));/* [16..17] active */
+        put16(&out[7], (uint16_t)rtc_lld_get_period(&RTCD1));/* [18..19] nominal (== active until Phase 2) */
+        out[9]  = (host_synced ? 0x01 : 0) | (stale_count ? 0x10 : 0);   /* [20] flags */
+        put16(&out[10], 0);                                  /* [21..22] last_host_offset_ms (Phase 1) */
+        put16(&out[12], 0);                                  /* [23..24] sof_bias_ppm (Phase 2) */
+        out[14] = 1;                                         /* [25] ref_state: PCF_LEGACY */
+        uint32_t age = host_synced ? (rtc_seconds_count - last_sync_secs) / 60u : 255u;
+        out[15] = (uint8_t)(age > 254 ? 255 : age);          /* [26] sync_age_min */
+        out[16] = sof_epoch;                                 /* [27] */
+        put32(&out[17], sof_frames_total);                   /* [28..31] */
+        break;
+    }
+    case 2: {   /* 28 bytes of counters */
+        put16(&out[0], stale_count);
+        put16(&out[2], i2c_fail_count);
+        put16(&out[4], 0);                                   /* deferred_passes (Phase 1) */
+        put32(&out[6], i2c_max_cycles);
+        put16(&out[10], 0);                                  /* window_rejects (Phase 2) */
+        put16(&out[12], 0);                                  /* ref_transitions (Phase 2) */
+        put16(&out[14], lat_min == 0xFFFF ? 0 : lat_min);
+        put16(&out[16], lat_max);
+        put16(&out[18], lat_n ? (uint16_t)(lat_sum / lat_n) : 0);
+        put16(&out[20], lat_n);
+        put16(&out[22], d_zero);
+        put16(&out[24], d_reject);
+        out[26] = (uint8_t)sizeof(time_t);
+        out[27] = usb_active_mirror | (fn_valid ? 2 : 0);
+        break;
+    }
+    case 3: {   /* 28 bytes: the delta ring, oldest first */
+        for (int i = 0; i < D_RING_N; i++) {
+            put16(&out[2 * i], d_ring[(d_ring_i + i) % D_RING_N]);
+        }
+        break;
+    }
+    default:
+        memset(out, 0, 28);
+        break;
+    }
+}
+
+#ifdef WDT_TEST_HOOKS
+/* Phase 0 hardware-fact tests. arg = request bytes from [4], reply written
+ * from [3]. All of these mutate the clock or the PCF on purpose. */
+void rtc_test_op(uint8_t op, const uint8_t *arg, uint8_t *reply)
+{
+    memset(reply, 0, 29);
+    reply[0] = op;
+    switch (op) {
+    case 1:     /* T0.1: does writing SECCNTV (same value) reset SECCNT?
+                 * -> [1..4] cnt before, [5..8] right after, [9..12] ~100 us later, [13..16] period */
+    case 2: {   /* same but write period+1 then restore (two writes; second reset expected too) */
+        uint32_t p = rtc_lld_get_period(&RTCD1);
+        chSysLock();
+        uint32_t a = SN_RTC->SECCNT;
+        rtc_lld_set_period(&RTCD1, op == 2 ? p + 1 : p);
+        uint32_t b = SN_RTC->SECCNT;
+        chSysUnlock();
+        wait_us(100);
+        uint32_t c = SN_RTC->SECCNT;
+        if (op == 2) rtc_lld_set_period(&RTCD1, p);
+        put32(&reply[1], a); put32(&reply[5], b); put32(&reply[9], c); put32(&reply[13], p);
+        break;
+    }
+    case 3:     /* reset the latency / delta statistics */
+        chSysLock();
+        lat_min = 0xFFFF; lat_max = 0; lat_n = 0; lat_sum = 0;
+        d_zero = d_reject = d_ok = 0;
+        chSysUnlock();
+        break;
+    case 4: {   /* T0.4: time one 1-byte PCF read -> [1] byte, [2..5] cycles, [6] ok */
+        uint32_t before = i2c_max_cycles; i2c_max_cycles = 0;
+        uint8_t v = 0;
+        bool ok = pcf_reg_read(PCF8563_REG_SECONDS, &v);
+        reply[1] = v; put32(&reply[2], i2c_max_cycles); reply[6] = ok;
+        if (before > i2c_max_cycles) i2c_max_cycles = before;
+        break;
+    }
+    case 5: {   /* T0.4: time one 8-byte PCF write (rewrites the CURRENT time) -> [2..5] cycles, [6] ok */
+        rtc_time_t t;
+        if (!rtc_get_time(&t)) { reply[6] = 0xFF; break; }
+        uint32_t before = i2c_max_cycles; i2c_max_cycles = 0;
+        bool ok = pcf_write(&t);
+        put32(&reply[2], i2c_max_cycles); reply[6] = ok;
+        if (before > i2c_max_cycles) i2c_max_cycles = before;
+        break;
+    }
+    case 6: {   /* T0.5 step 1: RMW STOP=1, then write the 7 time bytes in arg[0..6]
+                 * (yy mm dd wd hh mi ss) -> [1] ctl before, [2] ctl written, [3] ok */
+        uint8_t ctl = 0;
+        if (!pcf_reg_read(0x00, &ctl)) { reply[3] = 0; break; }
+        reply[1] = ctl;
+        uint8_t nctl = (uint8_t)(ctl | 0x20);
+        if (!pcf_reg_write(0x00, nctl)) { reply[3] = 0; break; }
+        reply[2] = nctl;
+        rtc_time_t t = { .year = (uint16_t)(2000 + arg[0]), .month = arg[1], .day = arg[2],
+                         .weekday = arg[3], .hours = arg[4], .minutes = arg[5], .seconds = arg[6] };
+        reply[3] = pcf_write(&t) ? 1 : 0;
+        break;
+    }
+    case 7: {   /* T0.5 step 2: release STOP now -> [1..4] sec_count before, [5..8] cnt before,
+                 * [9..12] sec_count after, [13..16] cnt after, [17] ctl written, [18] ok */
+        uint8_t ctl = 0;
+        if (!pcf_reg_read(0x00, &ctl)) { reply[18] = 0; break; }
+        uint8_t nctl = (uint8_t)(ctl & ~0x20);
+        uint32_t sc0, c0, sc1, c1;
+        cyc_stamp(&sc0, &c0);
+        bool ok = pcf_reg_write(0x00, nctl);
+        cyc_stamp(&sc1, &c1);
+        put32(&reply[1], sc0); put32(&reply[5], c0); put32(&reply[9], sc1); put32(&reply[13], c1);
+        reply[17] = nctl; reply[18] = ok;
+        break;
+    }
+    case 8: {   /* T0.5 step 3 (polled): read the PCF seconds byte with a board stamp
+                 * -> [1] byte, [2..5] sec_count, [6..9] cnt (stamp taken AFTER the read) */
+        uint8_t v = 0;
+        bool ok = pcf_reg_read(PCF8563_REG_SECONDS, &v);
+        uint32_t sc, c; cyc_stamp(&sc, &c);
+        reply[1] = v; put32(&reply[2], sc); put32(&reply[6], c); reply[10] = ok;
+        break;
+    }
+    case 9: {   /* read Control_status_1 -> [1] value, [2] ok */
+        uint8_t v = 0;
+        reply[2] = pcf_reg_read(0x00, &v); reply[1] = v;
+        break;
+    }
+    case 10: {  /* T0.1 fallback: RTCEN 1->0->1 -> [1..4] cnt before, [5..8] after */
+        chSysLock();
+        uint32_t a = SN_RTC->SECCNT;
+        SN_RTC->CTRL &= ~1u;
+        SN_RTC->CTRL |= 1u;
+        uint32_t b = SN_RTC->SECCNT;
+        chSysUnlock();
+        put32(&reply[1], a); put32(&reply[5], b);
+        break;
+    }
+    default:
+        reply[0] = 0xFF;
+        break;
+    }
+}
+#endif
 
 /* Live SN32 divider period (the trimmed value in the register), for the
  * HC_CONN readout -- lets the host compare it against the persisted seed. */
@@ -525,6 +808,8 @@ bool rtc_set_time(const rtc_time_t *t)
 
     rtcSetTime(&RTCD1, &dt);
     rtc_valid = true;
+    host_synced    = true;
+    last_sync_secs = rtc_seconds_count;
 
     return ok;
 }
@@ -533,6 +818,13 @@ bool rtc_set_time(const rtc_time_t *t)
 
 void rtc_task(void)
 {
+    /* USB-active mirror for the tick ISR (PLAN.md 3.4): I-class read under a
+     * short lock, published as a plain volatile byte. */
+    chSysLock();
+    uint8_t ua = (usbGetDriverStateI(&USBD1) == USB_ACTIVE) ? 1 : 0;
+    chSysUnlock();
+    usb_active_mirror = ua;
+
 #ifdef RTC_AUTO_CALIBRATION
 
     if (rtc_check_seconds < RTC_CHECK_INTERVAL_S) {

@@ -53,3 +53,32 @@ void rtc_task(void);
  * flash SPI1 pins, so an overlap glitches the transfer. Nonzero means the
  * hazard is real on this unit. */
 uint16_t rtc_i2c_overlaps(void);
+
+/* ---- Sub-second clock (clock-sync plan, Phase 0) ------------------------
+ * A coherent snapshot of the live clock: whole seconds plus the SN32 RTC
+ * prescaler count (0..period, ~30 us per cycle on this unit's ILRC). Returns
+ * false -- with NO timestamp -- if a consistent snapshot could not be taken
+ * (a second event pending while its ISR is starved); callers postpone. */
+typedef struct {
+    rtc_time_t t;              /* whole seconds, as rtc_get_time() */
+    uint32_t   cnt;            /* SECCNT at the snapshot */
+    uint32_t   period_active;  /* SECCNTV in force at the snapshot (period = +1 cycles) */
+    uint32_t   seconds_count;  /* rtc_get_seconds() at the snapshot */
+} rtc_stamp_t;
+bool rtc_now(rtc_stamp_t *s);
+
+/* Raw-HID status blocks (layouts in PLAN.md section 3.7 / hid_protocol.c).
+ * page 1: the 21-byte tail shared with RTC_GET_TIME[11..31]
+ * page 2: 28 bytes of counters (stale reads, I2C failures, ISR latency ...)
+ * page 3: the last 14 FRMNO deltas, u16 each (Phase 0 observation ring) */
+void rtc_status_fill(uint8_t page, uint8_t *out);
+
+/* 10 Hz: refresh the USB-active mirror the tick ISR reads (never touch the
+ * USB block from the ISR when the bus is down). Called from rtc_task(). */
+
+#ifdef WDT_TEST_HOOKS
+/* Phase 0 hardware-fact tests (instrumented builds only). These DELIBERATELY
+ * mutate the RTC phase / PCF registers; resync the clock afterwards.
+ * op codes and reply layouts: see hid_protocol.c HC_RTCTEST. */
+void rtc_test_op(uint8_t op, const uint8_t *arg, uint8_t *reply);
+#endif

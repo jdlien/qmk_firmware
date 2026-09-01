@@ -297,7 +297,21 @@ enum {
      * Exists so host scripts (and the CH582F fault-injection tests) can
      * assert link state without eyeballing the panel. */
     HC_CONN        = 0x02,
+    /* Clock-sync status (PLAN.md 3.7): [.., .., HC_RTC, page] ->
+     *   [.., .., HC_RTC, page, block...]
+     * page 1 = the 21-byte RTC_GET_TIME[11..31] tail at [4..24];
+     * page 2 = 28 bytes of counters at [4..31] (stale_count u16,
+     *   i2c_fail u16, deferred_passes u16, i2c_max_cycles u32,
+     *   window_rejects u16, ref_transitions u16, isr_lat min/max/mean/n
+     *   u16 x4, sof_d_zero u16, sof_d_reject u16, sizeof(time_t) u8,
+     *   usb_active|fn_valid<<1 u8);
+     * page 3 = the last 14 FRMNO-per-second deltas, u16 each. */
+    HC_RTC         = 0x03,
 #ifdef WDT_TEST_HOOKS
+    /* Phase 0 hardware-fact tests (rtc_test_op): [.., .., HC_RTCTEST, op,
+     * args...] -> [.., .., HC_RTCTEST, op, reply...]. These deliberately
+     * move the RTC phase / PCF registers -- resync afterwards. */
+    HC_RTCTEST     = 0x7A,
     /* Fault injection: [.., .., HC_INJECT, len, bytes...] -- feed up to 27
      * bytes to the CH582F parser as if received from the module. */
     HC_INJECT      = 0x7D,
@@ -359,7 +373,26 @@ static void health_command(uint8_t *data, uint8_t length) {
                 data[10] = (uint8_t)(lp & 0xFF); data[11] = (uint8_t)(lp >> 8);
             }
             break;
+        case HC_RTC:
+            if (length >= 32) {
+                uint8_t page = data[3];
+                memset(&data[4], 0, 28);
+                rtc_status_fill(page, &data[4]);
+            } else {
+                data[0] = RTC_UNHANDLED;
+            }
+            break;
 #ifdef WDT_TEST_HOOKS
+        case HC_RTCTEST:
+            if (length >= 32) {
+                uint8_t op = data[3];
+                uint8_t arg[8];
+                memcpy(arg, &data[4], sizeof arg);   /* the reply overwrites [3..] */
+                rtc_test_op(op, arg, &data[3]);
+            } else {
+                data[0] = RTC_UNHANDLED;
+            }
+            break;
         case HC_INJECT:
             if (length >= 4 && data[3] <= length - 4) {
                 ch582_inject(&data[4], data[3]);
@@ -429,6 +462,13 @@ static void rtc_read_into(uint8_t *data) {
     data[8] = t.hours;
     data[9] = t.minutes;
     data[10] = t.seconds;
+    /* Clock-sync plan 3.7: the sub-second tail. [11] is RTC_PROTO_VERSION
+     * (2); old firmware echoed zeros here, which is how a host tells them
+     * apart. Layout: [12..15] SECCNT u32, [16..17] period_active,
+     * [18..19] period_nominal, [20] flags, [21..22] last_host_offset_ms,
+     * [23..24] sof_bias_ppm, [25] ref_state, [26] sync_age_min,
+     * [27] sof_epoch, [28..31] sof_frames_total. */
+    rtc_status_fill(1, &data[11]);
 }
 
 #if defined(VIA_ENABLE)
