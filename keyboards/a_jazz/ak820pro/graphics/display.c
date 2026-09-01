@@ -1422,22 +1422,39 @@ static void queue_line(uint8_t slot, uint16_t font, uint16_t x, uint16_t y,
     uint8_t n = (uint8_t)strlen(str);
     if (n > GQ_LINE_MAX) n = GQ_LINE_MAX;
 
-    bool moved = !shadow[slot].valid || shadow[slot].font != font ||
-                 shadow[slot].x != x || shadow[slot].y != y;
-    uint8_t old_n = moved ? 0 : (uint8_t)strlen(shadow[slot].s);
+    /* Two distinct non-diffable states, and conflating them was a real bug:
+     *
+     *   moved   -- the shadow is VALID but the run is elsewhere (font/x/y
+     *              changed): the old cells are KNOWN, clear exactly them.
+     *   unknown -- the shadow is INVALID (some clear overlapped this run and
+     *              band_clear dropped it): the panel content here is UNKNOWN,
+     *              and may be WIDER than the new run. Treating this as
+     *              "nothing there" skipped the trailing-cell clear and left
+     *              "Connectedg" on the panel (the retiring line-1 clear
+     *              invalidates the overlay's shadow every time the band
+     *              changes hands, so the shrink-by-one-cell transition never
+     *              saw its vacated-cell clear). Clear the FULL band width at
+     *              this line's rect -- the only safe answer to unknown. The
+     *              cascade is convergent: invalidating a neighbour makes IT
+     *              full-clear its own rect next paint, and the text-line
+     *              rects don't mutually overlap. */
+    bool unknown = !shadow[slot].valid;
+    bool moved   = !unknown && (shadow[slot].font != font ||
+                                shadow[slot].x != x || shadow[slot].y != y);
+    uint8_t old_n = (moved || unknown) ? 0 : (uint8_t)strlen(shadow[slot].s);
 
-    /* A move means the old cells are somewhere else entirely and cannot be
-     * overwritten in place, so that region has to go. */
-    if (moved && shadow[slot].valid) {
+    if (moved) {
         uint16_t oadv = lcd_font_advance(shadow[slot].font);
         uint16_t oh   = lcd_font_height(shadow[slot].font);
         if (oadv && oh)
             band_clear(shadow[slot].x, shadow[slot].y,
                            (uint16_t)(strlen(shadow[slot].s) * oadv), oh);
+    } else if (unknown) {
+        band_clear(0, y, PANEL_WIDTH, h);
     }
 
     for (uint8_t i = 0; i < n; i++)
-        if (moved || i >= old_n || shadow[slot].s[i] != str[i])
+        if (moved || unknown || i >= old_n || shadow[slot].s[i] != str[i])
             gq_push(font, (uint16_t)(x + i * adv), y, str[i]);
 
     /* Cells the new string no longer occupies keep their old glyphs otherwise. */
