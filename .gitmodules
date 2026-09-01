@@ -4,7 +4,7 @@
 	branch = master
 [submodule "lib/chibios-contrib"]
 	path = lib/chibios-contrib
-	url = https://github.com/SonixQMK/ChibiOS-Contrib
+	url = https://github.com/jdlien/ChibiOS-Contrib.git
 	branch = ak820pro-patches
 [submodule "lib/googletest"]
 	path = lib/googletest

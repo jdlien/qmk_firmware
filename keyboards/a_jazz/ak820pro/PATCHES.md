@@ -24,5 +24,6 @@ Recovery if the branch is ever lost: a git bundle of it lives at
 (`git fetch <bundle> ak820pro-patches`), and the flattened applied state at
 `ak820pro-builds/chibios-applied-state-backup-2026-09-01.diff`.
 
-The branch exists only in the local clone (and the bundle) until it is
-pushed to a personal fork remote — planned in the publication phase.
+The branch is pushed to https://github.com/jdlien/ChibiOS-Contrib
+(`ak820pro-patches`), which `.gitmodules` now points at, so a fresh clone's
+`git submodule update` fetches the pinned patched commit directly.
