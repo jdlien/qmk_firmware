@@ -104,10 +104,76 @@ uint16_t rtc_i2c_overlaps(void) { return i2c_blit_overlap; }
 static volatile uint32_t rtc_seconds_count = 0;   /* moved up: needed by stamps */
 
 static uint16_t stale_count    = 0;   /* rtc_now() gave up (SECIF pending, ISR starved) */
+static uint8_t  pcf_avail_fail = 0;   /* consecutive failed PCF reads (reset by any success) */
 static uint16_t i2c_fail_count = 0;   /* PCF transactions that returned != MSG_OK */
 static uint32_t i2c_max_cycles = 0;   /* longest PCF transaction, ILRC cycles */
 static uint32_t last_sync_secs = 0;   /* rtc_seconds_count at the last host set */
 static bool     host_synced    = false;
+static int16_t  last_host_offset_ms = 0;
+
+/* ---- Phase 1: reload ownership (PLAN.md 3.0, R1-R3) -----------------------
+ * P_nom is the NOMINAL period (register value) owned here; RTCD1.period is
+ * whatever is live in the register (the ACTIVE period). In steady state
+ * nobody writes the register. A trim, or the restore after a phase set,
+ * sets reload_pending and the tick ISR performs the single write at the
+ * match, where the counter is ~0 anyway.
+ *
+ * On R3 (latency compensation): a write whose value is the new STEADY value
+ * cannot be compensated -- the register must end up holding P_nom, so the
+ * match-to-match interval containing the write is long by exactly the ISR
+ * service latency L, measured 0-7 cycles (T0.2, <= 200 us) idle and under
+ * BT typing. That is far inside the host uncertainty (~3 ms), so the final
+ * restore is written UNcompensated. Compensation is reserved for transient
+ * values (Phase 2 slew segments), where it is exact. */
+static uint32_t          P_nom = SN32_RTC_PERIOD_DEFAULT;
+static volatile bool     reload_pending = false;
+static volatile uint16_t reload_writes  = 0;   /* every ISR reload write */
+
+/* ---- Phase 2: slew (PLAN.md 3.3) ------------------------------------------
+ * A phase correction of D cycles is applied as N shortened/lengthened
+ * intervals: register P_nom - d for N-1 of them, P_nom - d - r for the last
+ * (r = remainder), then P_nom. Two or three ISR writes total; the transient
+ * ones are latency-compensated (R3, exact), the final restore is not (costs
+ * <= L, measured 0-7 cycles). The estimator window is invalidated by every
+ * write (R2). SLEW_STEP: 2 % of a period, i.e. 20 ms per second. */
+enum { SLEW_IDLE = 0, SLEW_START = 1, SLEW_RUN = 2 };
+static volatile uint8_t  slew_state = SLEW_IDLE;
+static volatile int32_t  slew_d = 0, slew_r = 0;
+static volatile uint16_t slew_left = 0;
+static volatile uint16_t slew_count = 0;      /* slews started, for the console/health */
+#define SLEW_MAX_MS 500
+
+/* ---- Phase 2: FRMNO frequency estimator (PLAN.md 3.4) ---------------------
+ * Per accepted RTC second the ISR adds the host-ms delta (FRMNO) and the
+ * exact interval length in ILRC cycles. Every WIN ticks housekeeping turns
+ * the ratio into P_target. 64-bit sums (128 x 40000 x 1000 overflows 32). */
+#define LATE_CYCLES     170    /* ~5 ms: T0.2 measured max 7 */
+#define WIN_INITIAL     32
+#define WIN_LOCKED      128
+static volatile uint64_t win_ms = 0, win_cycles = 0;
+static volatile uint16_t win_n = 0;
+static volatile bool     win_valid = true;
+static volatile uint16_t window_rejects = 0;
+static volatile uint32_t interval_cycles = 0;  /* exact length of the interval that just started */
+static volatile uint8_t  sof_ok_run = 0, sof_bad_run = 0;   /* consecutive accepted / rejected samples */
+static uint16_t win_target = WIN_INITIAL;
+static uint8_t  win_locked_streak = 0;
+static int16_t  sof_bias_ppm = 0;              /* from the host (0x03 [13..14]); 0 until told */
+
+/* ---- Phase 2: reference-source state machine (PLAN.md 3.4) ---------------- */
+enum { REF_NONE = 0, REF_PCF_LEGACY = 1, REF_SOF = 2 };
+static uint8_t  ref_state = REF_PCF_LEGACY;
+static uint16_t ref_transitions = 0;
+
+/* Deferred PCF write (R4/R5): the HID handler queues, rtc_fast_task() writes
+ * -- one transaction per main-loop pass, only when no LCD blit is in flight,
+ * and never via the blit-draining bus guard. */
+static bool       pcf_pending = false;
+static rtc_time_t pcf_pending_time;
+static uint16_t   deferred_passes = 0;    /* passes skipped because a blit was busy */
+static uint8_t    pcf_consec_fail = 0;
+static bool       pcf_backoff = false;    /* 3 consecutive failures: one attempt/min */
+static uint32_t   pcf_backoff_until = 0;  /* rtc_seconds_count */
 
 /* Tick-ISR service latency: SECCNT at callback entry (cycles since the match
  * restarted the counter). Sets LATE_CYCLES for later phases (T0.2). */
@@ -170,13 +236,16 @@ static bool pcf_read(rtc_time_t *out)
                                  PCF8563_I2C_TIMEOUT);
     i2c_note(r, sc0, c0);
     if (r != MSG_OK) {
+        if (pcf_avail_fail < 255) pcf_avail_fail++;
         return false;
     }
 
 
     if (buf[0] & PCF8563_VL_FLAG) {
+        if (pcf_avail_fail < 255) pcf_avail_fail++;
         return false;
     }
+    pcf_avail_fail = 0;
 
 
     out->seconds = bcd2dec(buf[0] & 0x7F);
@@ -204,9 +273,11 @@ static bool pcf_read(rtc_time_t *out)
 
 
 
-static bool pcf_write(const rtc_time_t *t)
+/* The 8-byte time write with NO bus guard: the caller must already know no
+ * flash->LCD DMA is in flight (rtc_fast_task checks lcd_blit_busy() itself,
+ * and blits only start from the same main-loop context, after it). */
+static bool pcf_write_raw(const rtc_time_t *t)
 {
-    rtc_bus_guard();
     uint8_t buf[8] = {
         PCF8563_REG_SECONDS,
         dec2bcd(t->seconds),
@@ -229,6 +300,13 @@ static bool pcf_write(const rtc_time_t *t)
                                     PCF8563_I2C_TIMEOUT);
     i2c_note(r, sc0, c0);
     return r == MSG_OK;
+}
+
+/* Legacy path (rtc_set_time, the trim): guarded, synchronous. */
+static bool pcf_write(const rtc_time_t *t)
+{
+    rtc_bus_guard();
+    return pcf_write_raw(t);
 }
 
 /* Single-register PCF access, bus-guarded like the rest. Phase 0 uses these
@@ -366,8 +444,60 @@ static void rtc_second_cb(RTCDriver *rtcp, rtcevent_t event)
     /* T0.2: service latency -- cycles since the match restarted the counter.
      * Read FIRST, before anything else in the handler adds to it. */
     uint32_t L = SN_RTC->SECCNT;
+    uint32_t ended = interval_cycles;      /* exact length of the interval that just ended */
 
     rtc_seconds_count++;
+
+    /* ---- Reload scheduling: at most ONE register write per tick, at the
+     * match where the counter has just restarted. Priority: a running slew,
+     * then a pending steady reload. Every write invalidates the estimator
+     * window (R2) and records the exact length of the interval it starts. */
+    bool     wrote = false;
+    uint32_t next  = rtc_lld_get_period(&RTCD1) + 1;     /* default: unchanged register */
+    if (slew_state == SLEW_START) {
+        /* transient value, latency-compensated (R3): interval == v+1 exactly */
+        int32_t v = (int32_t)P_nom - slew_d - (slew_left == 1 ? slew_r : 0);
+        int32_t w = v - (int32_t)L;
+        if (v >= 14000 && v <= 80000 && w >= 14000 && L < (uint32_t)v / 2) {
+            rtc_lld_set_period(&RTCD1, (uint32_t)w);
+            next = (uint32_t)v + 1;
+            slew_state = SLEW_RUN;
+        } else {                                          /* out of range: abandon, restore */
+            rtc_lld_set_period(&RTCD1, P_nom);
+            next = L + P_nom + 1;
+            slew_state = SLEW_IDLE;
+        }
+        wrote = true;
+    } else if (slew_state == SLEW_RUN) {
+        slew_left--;
+        if (slew_left == 1 && slew_r != 0) {
+            int32_t v = (int32_t)P_nom - slew_d - slew_r;
+            int32_t w = v - (int32_t)L;
+            if (v >= 14000 && v <= 80000 && w >= 14000 && L < (uint32_t)v / 2) {
+                rtc_lld_set_period(&RTCD1, (uint32_t)w);
+                next = (uint32_t)v + 1;
+            } else {
+                rtc_lld_set_period(&RTCD1, P_nom);
+                next = L + P_nom + 1;
+                slew_state = SLEW_IDLE;
+            }
+            wrote = true;
+        } else if (slew_left == 0) {
+            rtc_lld_set_period(&RTCD1, P_nom);            /* final restore: uncompensated */
+            next = L + P_nom + 1;
+            slew_state = SLEW_IDLE;
+            wrote = true;
+        }
+    } else if (reload_pending) {
+        reload_pending = false;
+        if (P_nom >= 14000 && P_nom <= 80000) {
+            rtc_lld_set_period(&RTCD1, P_nom);
+            next = L + P_nom + 1;
+            wrote = true;
+        }
+    }
+    if (wrote) { reload_writes++; win_valid = false; }
+    interval_cycles = next;
 
 #ifdef RTC_AUTO_CALIBRATION
     rtc_check_seconds = MIN(rtc_check_seconds + 1, RTC_CHECK_INTERVAL_S);
@@ -377,24 +507,135 @@ static void rtc_second_cb(RTCDriver *rtcp, rtcevent_t event)
     if (L > lat_max) lat_max = (uint16_t)L;
     if (lat_n < 0xFFFF) { lat_n++; lat_sum += L; }
 
-    /* T0.3: USB SOF frame-number delta per RTC second. Observation only in
-     * Phase 0 (no discipline). Mirror read once; SN_USB untouched when down. */
+    /* ---- USB SOF frame-number delta per RTC second: the frequency reference.
+     * Mirror read once; SN_USB untouched when the bus is down. */
     uint8_t ua = usb_active_mirror;
     if (!ua) {
         if (fn_valid) sof_epoch++;
         fn_valid = 0;
+        win_valid = false;
+        sof_ok_run = 0;
+        if (sof_bad_run < 255) sof_bad_run++;
     } else {
         uint16_t fn = (uint16_t)(SN_USB->FRMNO & 0x7FFu);
         uint16_t d  = fn_valid ? (uint16_t)((fn - fn_last) & 0x7FFu) : 0;
         fn_last  = fn;
-        if (!fn_valid) { fn_valid = 1; }
+        if (!fn_valid) { fn_valid = 1; win_valid = false; }
         else {
             if (d) sof_frames_total += d;
-            if (d == 0)                 { d_zero++;   sof_epoch++; }
+            bool ok = (d >= 900 && d <= 1100) && (L < LATE_CYCLES);
+            if (d == 0)                   { d_zero++;   sof_epoch++; }
             else if (d < 900 || d > 1100) { d_reject++; sof_epoch++; }
-            else                        { d_ok++; }
+            else                          { d_ok++; }
             d_ring[d_ring_i] = d;
             d_ring_i = (uint8_t)((d_ring_i + 1) % D_RING_N);
+
+            if (ok) {
+                sof_bad_run = 0;
+                if (sof_ok_run < 255) sof_ok_run++;
+                /* The interval that just ended must be fully known and not
+                 * contain a write: `ended` is exact, and a write this tick
+                 * only affects the NEXT interval. A write LAST tick set
+                 * win_valid false, so this sample opens a fresh window. */
+                if (win_valid && ended) {
+                    win_ms     += d;
+                    win_cycles += ended;
+                    win_n++;
+                } else {
+                    win_valid = true; win_ms = 0; win_cycles = 0; win_n = 0;
+                    if (ended) { win_ms = d; win_cycles = ended; win_n = 1; }
+                }
+            } else {
+                sof_ok_run = 0;
+                if (sof_bad_run < 255) sof_bad_run++;
+                if (win_valid && win_n) window_rejects++;
+                win_valid = false;
+            }
+        }
+    }
+}
+
+/* ---- Phase 2: window evaluation + reference-source state machine ----------
+ * Thread context, 10 Hz (from rtc_task). Reads the ISR's accumulators under
+ * a short lock, proposes P_nom (applied by the ISR at the next match). */
+static void rtc_ref_task(void)
+{
+    uint8_t ua = usb_active_mirror;
+    uint8_t okrun, badrun;
+    chSysLock();
+    okrun = sof_ok_run; badrun = sof_bad_run;
+    chSysUnlock();
+
+    /* Transitions. Exactly one estimator owns P_nom at a time. */
+    uint8_t prev = ref_state;
+    if (ref_state != REF_SOF) {
+        if (ua && okrun >= 3) {
+            ref_state = REF_SOF;
+#ifdef RTC_AUTO_CALIBRATION
+            rtc_cal_valid = false;            /* PCF span reset */
+#endif
+            win_target = WIN_INITIAL; win_locked_streak = 0;
+        } else if (ref_state == REF_PCF_LEGACY && pcf_avail_fail >= 3) {
+            ref_state = REF_NONE;
+        } else if (ref_state == REF_NONE && pcf_avail_fail == 0) {
+            ref_state = REF_PCF_LEGACY;       /* a successful read cleared the counter */
+        }
+    } else {
+        if (!ua || badrun >= 3) {
+            ref_state = REF_PCF_LEGACY;       /* its own counter moves it on to NONE if the PCF is dead */
+            chSysLock(); win_valid = false; chSysUnlock();
+#ifdef RTC_AUTO_CALIBRATION
+            rtc_cal_valid = false;
+#endif
+        }
+    }
+    if (ref_state != prev) {
+        ref_transitions++;
+#ifdef CONSOLE_ENABLE
+        printf("[rtc] ref %u -> %u\n", prev, ref_state);
+#endif
+    }
+
+    if (ref_state != REF_SOF) return;
+
+    /* Window evaluation. */
+    uint64_t ms, cyc; uint16_t n; bool valid;
+    chSysLock();
+    valid = win_valid; n = win_n; ms = win_ms; cyc = win_cycles;
+    if (valid && n >= win_target) { win_valid = false; }   /* consume: the ISR opens a fresh one */
+    chSysUnlock();
+    if (!valid || n < win_target || ms == 0) return;
+
+    uint64_t f_est  = (cyc * 1000u) / ms;                             /* Hz, assuming 1.000 ms frames */
+    int64_t  f_true = (int64_t)f_est + ((int64_t)f_est * sof_bias_ppm) / 1000000;
+    int32_t  P_target = (int32_t)f_true - 1;
+    if (P_target < 28000 || P_target > 40000) {
+#ifdef CONSOLE_ENABLE
+        printf("[rtc] window rejected: f_est=%lu\n", (unsigned long)f_est);
+#endif
+        return;
+    }
+    int32_t delta = P_target - (int32_t)P_nom;
+    if (delta > -16 && delta < 16) { if (win_locked_streak < 255) win_locked_streak++; }
+    else win_locked_streak = 0;
+    if (win_locked_streak >= 2) win_target = WIN_LOCKED;
+
+    if (delta != 0) {
+        uint32_t np = (uint32_t)((int32_t)P_nom + delta / 2);
+        if (delta == 1 || delta == -1) np = (uint32_t)P_target;      /* integer half-step would stall */
+#ifdef CONSOLE_ENABLE
+        printf("[rtc] sof window n=%u ms=%lu -> f=%lu target=%ld P %lu -> %lu\n",
+               n, (unsigned long)ms, (unsigned long)f_est, (long)P_target,
+               (unsigned long)P_nom, (unsigned long)np);
+#endif
+        P_nom = np;
+        reload_pending = true;
+        /* Persist any accepted sane value after 10 min uptime when it moved
+         * >= 64 ticks from the stored one (PLAN.md C3; was 32). */
+        if (timer_read32() >= 600000u && np >= 28000 && np <= 40000) {
+            uint16_t st = kb_eeconfig_get_rtc_period();
+            uint32_t dd = (np > st) ? (np - st) : (st - np);
+            if (st == 0 || dd >= 64) kb_eeconfig_set_rtc_period((uint16_t)np);
         }
     }
 }
@@ -437,12 +678,13 @@ void rtc_status_fill(uint8_t page, uint8_t *out)
         bool ok = rtc_now(&s);
         out[0] = 2;                                          /* RTC_PROTO_VERSION */
         put32(&out[1], ok ? s.cnt : 0);                      /* [12..15] */
-        put16(&out[5], (uint16_t)rtc_lld_get_period(&RTCD1));/* [16..17] active */
-        put16(&out[7], (uint16_t)rtc_lld_get_period(&RTCD1));/* [18..19] nominal (== active until Phase 2) */
-        out[9]  = (host_synced ? 0x01 : 0) | (stale_count ? 0x10 : 0);   /* [20] flags */
-        put16(&out[10], 0);                                  /* [21..22] last_host_offset_ms (Phase 1) */
-        put16(&out[12], 0);                                  /* [23..24] sof_bias_ppm (Phase 2) */
-        out[14] = 1;                                         /* [25] ref_state: PCF_LEGACY */
+        put16(&out[5], (uint16_t)rtc_lld_get_period(&RTCD1));/* [16..17] active (live register) */
+        put16(&out[7], (uint16_t)P_nom);                     /* [18..19] nominal */
+        out[9]  = (host_synced ? 0x01 : 0) | (slew_state != SLEW_IDLE ? 0x02 : 0) |
+                  (pcf_backoff ? 0x08 : 0) | (stale_count ? 0x10 : 0);   /* [20] flags */
+        put16(&out[10], (uint16_t)last_host_offset_ms);      /* [21..22] */
+        put16(&out[12], (uint16_t)sof_bias_ppm);             /* [23..24] in use */
+        out[14] = ref_state;                                 /* [25] */
         uint32_t age = host_synced ? (rtc_seconds_count - last_sync_secs) / 60u : 255u;
         out[15] = (uint8_t)(age > 254 ? 255 : age);          /* [26] sync_age_min */
         out[16] = sof_epoch;                                 /* [27] */
@@ -452,10 +694,10 @@ void rtc_status_fill(uint8_t page, uint8_t *out)
     case 2: {   /* 28 bytes of counters */
         put16(&out[0], stale_count);
         put16(&out[2], i2c_fail_count);
-        put16(&out[4], 0);                                   /* deferred_passes (Phase 1) */
+        put16(&out[4], deferred_passes);
         put32(&out[6], i2c_max_cycles);
-        put16(&out[10], 0);                                  /* window_rejects (Phase 2) */
-        put16(&out[12], 0);                                  /* ref_transitions (Phase 2) */
+        put16(&out[10], window_rejects);
+        put16(&out[12], ref_transitions);
         put16(&out[14], lat_min == 0xFFFF ? 0 : lat_min);
         put16(&out[16], lat_max);
         put16(&out[18], lat_n ? (uint16_t)(lat_sum / lat_n) : 0);
@@ -580,10 +822,10 @@ void rtc_test_op(uint8_t op, const uint8_t *arg, uint8_t *reply)
 }
 #endif
 
-/* Live SN32 divider period (the trimmed value in the register), for the
- * HC_CONN readout -- lets the host compare it against the persisted seed. */
+/* The NOMINAL divider period (R1). The live register may briefly differ
+ * (a shortened first period after a phase set) until the next tick. */
 uint32_t rtc_get_period(void) {
-    return rtc_lld_get_period(&RTCD1);
+    return P_nom;
 }
 
 uint32_t rtc_get_seconds(void) {
@@ -683,7 +925,7 @@ static void rtc_clock_discipline(void)
          * trim. Together the window grows on its own as the period converges. */
         if ((ticks > 0) && (real >= RTC_CAL_MIN_WINDOW_S) &&
             ((diff >= RTC_CAL_MIN_DIFF_S) || (diff <= -RTC_CAL_MIN_DIFF_S))) {
-            uint32_t period = rtc_lld_get_period(&RTCD1);
+            uint32_t period = P_nom;   /* nominal, not the live register (R1) */
 
             if (period > 0) {
                 uint32_t np = (uint32_t)(((uint64_t)period * (uint64_t)ticks) /
@@ -701,7 +943,13 @@ static void rtc_clock_discipline(void)
                 if (np > (SN32_RTC_PERIOD_DEFAULT * 2U)) np = SN32_RTC_PERIOD_DEFAULT * 2U;
 
                 if (np != period) {
-                    rtc_lld_set_period(&RTCD1, np);
+                    /* Phase 1 re-route (R1/R2): propose, do not write. The
+                     * tick ISR applies it at the match. The old direct
+                     * rtc_lld_set_period() here reset SECCNT mid-second and
+                     * threw away the elapsed fraction (mean 0.5 s) on every
+                     * trim. Estimator arithmetic above is unchanged. */
+                    P_nom = np;
+                    reload_pending = true;
                     /* Persist ANY accepted, sane trim once the board has been
                      * up a while and the value moved meaningfully from what is
                      * stored. NOT a wait-for-convergence rule: near lock the
@@ -716,7 +964,7 @@ static void rtc_clock_discipline(void)
                     if (timer_read32() >= 600000u && np >= 28000 && np <= 40000) {
                         uint16_t st = kb_eeconfig_get_rtc_period();
                         uint32_t d  = (np > st) ? (np - st) : (st - np);
-                        if (st == 0 || d >= 32) kb_eeconfig_set_rtc_period((uint16_t)np);
+                        if (st == 0 || d >= 64) kb_eeconfig_set_rtc_period((uint16_t)np);   /* 64: PLAN.md C3 */
                     }
                     printf("[rtc] trim %lu -> %lu (%ld ticks / %ld s)\n",
                            (unsigned long)period, (unsigned long)np,
@@ -768,13 +1016,18 @@ void rtc_init(void)
      * around 32 kHz): a stored value outside it is garbage, not data. */
     uint16_t stored = kb_eeconfig_get_rtc_period();
     if (stored >= 28000 && stored <= 40000) {
-        rtc_lld_set_period(&RTCD1, stored);
+        P_nom = stored;
     }
 #ifdef RTC_PERIOD_INITIAL
     else {
-        rtc_lld_set_period(&RTCD1, RTC_PERIOD_INITIAL);
+        P_nom = RTC_PERIOD_INITIAL;
+    }
+#else
+    else {
+        P_nom = SN32_RTC_PERIOD_DEFAULT;
     }
 #endif
+    rtc_lld_set_period(&RTCD1, P_nom);   /* init: the one direct steady write */
 
     rtcSetCallback(&RTCD1, rtc_second_cb);
     rtc_seed_from_pcf();
@@ -814,6 +1067,137 @@ bool rtc_set_time(const rtc_time_t *t)
     return ok;
 }
 
+/* ---- Phase 1: phase-correct set (PLAN.md 3.2) -------------------------------
+ * "At the instant this packet was received, true time was t + ms." The
+ * software seconds are set and the prescaler is restarted with a FIRST
+ * period sized so the next SECIF lands exactly on the following boundary;
+ * the tick ISR then restores P_nom (reload_pending). Whole-second phase
+ * error after this: HID delivery (host-compensated) + <= 1 cycle. */
+uint8_t rtc_set_time_ms(const rtc_time_t *t, uint16_t ms, uint8_t flags, int16_t bias_ppm, int16_t *offset_before)
+{
+    if (ms > 999) return RTC_SET_REJECT;
+    if (bias_ppm != 0x7FFF && bias_ppm >= -600 && bias_ppm <= 600) sof_bias_ppm = bias_ppm;
+
+    rtc_stamp_t now;
+    bool have_now = rtc_now(&now);
+    if (!have_now && rtc_valid) return RTC_SET_RETRY;   /* SECIF pending / ISR starved: caller retries */
+
+    /* Target epoch (the LLD's convention: mktime on the wall fields, no TZ). */
+    RTCDateTime dt_t;
+    struct tm   tm_t;
+    rtc_to_chibiostime(t, &dt_t);
+    rtcConvertDateTimeToStructTm(&dt_t, &tm_t, NULL);
+    time_t e_t = mktime(&tm_t);
+    if (e_t == (time_t)-1) return RTC_SET_REJECT;
+
+    /* Offset before correction: (t + ms) - board_now, ms, clamped to s16. */
+    int32_t off = 0;
+    if (have_now) {
+        RTCDateTime dt_n; struct tm tm_n;
+        rtc_to_chibiostime(&now.t, &dt_n);
+        rtcConvertDateTimeToStructTm(&dt_n, &tm_n, NULL);
+        time_t e_n = mktime(&tm_n);
+        /* Board fraction = 1 - remaining/(nominal period): correct in steady
+         * state AND inside a still-running shortened first period (a set
+         * arriving within a second of the previous one). */
+        int64_t frac_ms = 1000 - (int64_t)(now.period_active + 1 - now.cnt) * 1000 / (int64_t)(P_nom + 1);
+        int64_t o = ((int64_t)e_t - (int64_t)e_n) * 1000 + (int64_t)ms - frac_ms;
+        off = (o > 32767) ? 32767 : (o < -32768) ? -32768 : (int32_t)o;
+    }
+
+    /* Step or slew (PLAN.md 3.2/3.3): a small correction on an already
+     * synced clock is slewed over N seconds at 20 ms/s so the display never
+     * jumps; the first sync after boot, a large offset, or force_step steps. */
+    if (have_now && host_synced && !(flags & RTC_SETF_FORCE_STEP) &&
+        off >= -SLEW_MAX_MS && off <= SLEW_MAX_MS) {
+        int64_t D    = (int64_t)off * (int64_t)(P_nom + 1) / 1000;      /* cycles, signed */
+        int64_t absD = D < 0 ? -D : D;
+        int32_t step = (int32_t)((uint64_t)(P_nom + 1) * 20u / 1000u);   /* 2 % of a period */
+        uint16_t N   = (uint16_t)((absD + step - 1) / step);
+        if (N < 1) N = 1;
+        int32_t d = (int32_t)(D / N);                                   /* toward zero */
+        int32_t r = (int32_t)(D - (int64_t)d * N);
+        chSysLock();
+        slew_d = d; slew_r = r; slew_left = N; slew_state = SLEW_START;
+        chSysUnlock();
+        slew_count++;
+        last_host_offset_ms = (int16_t)off;
+        last_sync_secs = rtc_seconds_count;
+        if (offset_before) *offset_before = (int16_t)off;
+        if (!(flags & RTC_SETF_SKIP_PCF)) {
+            pcf_pending_time = *t;          /* whole seconds; phase-correct PCF is Phase 3 */
+            pcf_pending      = true;
+        }
+#ifdef CONSOLE_ENABLE
+        printf("[rtc] slew %ld ms: N=%u d=%ld r=%ld\n", (long)off, N, (long)d, (long)r);
+#endif
+        return RTC_SET_SLEWING;
+    }
+
+    /* First period: R ms to the next boundary. Too close -> label the one after. */
+    uint32_t R     = 1000u - ms;
+    time_t   sec   = e_t;
+    uint64_t first = ((uint64_t)(P_nom + 1) * R) / 1000u;
+    if (R < RTC_MIN_FIRST_MS) {
+        sec   += 1;
+        first += P_nom + 1;
+    }
+    if (first < 2) return RTC_SET_REJECT;
+    uint32_t reg = (uint32_t)(first - 1);
+    if (reg < 500 || reg > 0xFFFFFu) return RTC_SET_REJECT;   /* first-period range, not the steady one */
+
+    struct tm tm_s;
+    if (localtime_r(&sec, &tm_s) == NULL) return RTC_SET_REJECT;
+    RTCDateTime dt_s;
+    rtcConvertStructTmToDateTime(&tm_s, 0, &dt_s);
+
+    chSysLock();
+    slew_state = SLEW_IDLE;             /* a step supersedes any running slew */
+    rtcSetTime(&RTCD1, &dt_s);          /* software seconds */
+    reload_pending = true;              /* ISR restores P_nom at the next match */
+    rtc_lld_set_period(&RTCD1, reg);    /* resets SECCNT: next SECIF in R ms */
+    interval_cycles = 0;                /* the interval now running is not a known length */
+    win_valid = false;
+    chSysUnlock();
+
+    rtc_valid      = true;
+    host_synced    = true;
+    last_sync_secs = rtc_seconds_count;
+    last_host_offset_ms = (int16_t)off;
+    if (offset_before) *offset_before = (int16_t)off;
+
+    if (!(flags & RTC_SETF_SKIP_PCF)) {
+        rtc_time_t pt;
+        chibiostime_to_rtc(&dt_s, &pt);
+        pcf_pending_time = pt;         /* R5: the fast task performs the I2C */
+        pcf_pending      = true;
+    }
+    return RTC_SET_STEPPED;
+}
+
+/* Per main-loop pass, BEFORE display_blit_pump() (R4). At most one PCF
+ * transaction, only when no blit is in flight; never the bus guard. */
+void rtc_fast_task(void)
+{
+    if (!pcf_pending) return;
+    if (pcf_backoff) {
+        if ((int32_t)(rtc_seconds_count - pcf_backoff_until) < 0) return;
+        pcf_backoff = false;            /* one attempt, then back off again if it fails */
+    }
+    if (lcd_blit_busy()) {
+        if (deferred_passes < 0xFFFF) deferred_passes++;
+        return;
+    }
+    if (pcf_write_raw(&pcf_pending_time)) {
+        pcf_pending     = false;
+        pcf_consec_fail = 0;
+    } else if (++pcf_consec_fail >= 3) {
+        pcf_consec_fail   = 0;
+        pcf_backoff       = true;
+        pcf_backoff_until = rtc_seconds_count + 60;
+    }
+}
+
 
 
 void rtc_task(void)
@@ -825,9 +1209,20 @@ void rtc_task(void)
     chSysUnlock();
     usb_active_mirror = ua;
 
+    rtc_ref_task();      /* Phase 2: SOF window evaluation + reference-source transitions */
+
 #ifdef RTC_AUTO_CALIBRATION
 
     if (rtc_check_seconds < RTC_CHECK_INTERVAL_S) {
+        return;
+    }
+    if (ref_state == REF_SOF) {
+        /* SOF owns P_nom and the host owns phase: the PCF is write-only here
+         * (PLAN.md 3.4/3.6). The check counter still runs so the legacy
+         * discipline resumes promptly if the cable goes away. */
+        chSysLock();
+        rtc_check_seconds = 0;
+        chSysUnlock();
         return;
     }
 

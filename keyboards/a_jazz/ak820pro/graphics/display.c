@@ -1595,6 +1595,21 @@ static void draw_status(bool force) {
     draw_text_slot(force);
 }
 
+/* Clock-sync plan 3.9: on an RTC second edge, run ONE extra pass of the
+ * fully gated task below so the digits change within a main-loop pass
+ * (~2.5 ms) of the tick instead of 0-100 ms later at the 10 Hz cadence.
+ * Every gate (user hook, pause, splash, gq_pending, the last_shown_sec
+ * latch) is inside display_housekeeping_task(); nothing is moved. Fires at
+ * most once per RTC second, never per iteration. */
+void display_second_edge_task(void) {
+    static uint32_t edge_seen = UINT32_MAX;
+    uint32_t sec = rtc_get_seconds();
+    if (sec != edge_seen) {
+        edge_seen = sec;
+        display_housekeeping_task();
+    }
+}
+
 void display_housekeeping_task(void) {
     if (!display_housekeeping_task_user())
         return;

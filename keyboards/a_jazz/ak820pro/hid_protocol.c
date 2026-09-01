@@ -72,7 +72,65 @@ enum {
      * POLLING this fast and watching for the increment, which needs no extra
      * protocol and no sub-second field on the wire. */
     RTC_GET_TIME  = 0x02,
+    /* Phase-correct set (clock-sync plan 3.7):
+     *   [SET_VALUE, RTC_CHANNEL, RTC_SET_TIME_MS, yy mm dd wd hh mi ss,
+     *    ms_lo ms_hi, flags, sof_bias_lo sof_bias_hi]
+     * meaning "at the instant this packet was received, true time was
+     * t + ms". Reply: [3] = RTC_SET_* status, [4..5] offset before the
+     * correction (s16 ms, board vs target), [11] = RTC_PROTO_VERSION. */
+    RTC_SET_TIME_MS = 0x03,
+    RTC_PROTO_VERSION = 2,
 };
+
+static const uint8_t days_in_month[12] = { 31,28,31,30,31,30,31,31,30,31,30,31 };
+
+/* Full validation for RTC_SET_TIME_MS, BEFORE anything is written: calendar
+ * incl. day-of-month and leap year, year 2026..2098 (the PCF stores year%100
+ * and the +1 s branch must stay representable), ms <= 999, reserved flag
+ * bits zero, sof_bias in +-600 ppm or the 0x7FFF "unknown" sentinel. */
+static bool rtc_ms_payload_valid(const uint8_t *p) {
+    uint8_t yy = p[0], mo = p[1], dd = p[2];
+    if (yy < 26 || yy > 98) return false;
+    if (mo < 1 || mo > 12) return false;
+    uint8_t dim = days_in_month[mo - 1];
+    uint16_t year = 2000 + yy;
+    if (mo == 2 && ((year % 4 == 0 && year % 100 != 0) || year % 400 == 0)) dim = 29;
+    if (dd < 1 || dd > dim) return false;
+    if (p[3] > 6 || p[4] > 23 || p[5] > 59 || p[6] > 59) return false;
+    uint16_t ms = (uint16_t)(p[7] | (p[8] << 8));
+    if (ms > 999) return false;
+    if (p[9] & 0xFC) return false;
+    int16_t bias = (int16_t)(p[10] | (p[11] << 8));
+    if (bias != 0x7FFF && (bias < -600 || bias > 600)) return false;
+    return true;
+}
+
+static void rtc_set_ms_command(uint8_t *data, uint8_t length) {
+    if (length < 15 || !rtc_ms_payload_valid(&data[3])) {
+        data[3] = RTC_SET_REJECT;
+        data[11] = RTC_PROTO_VERSION;
+        return;
+    }
+    rtc_time_t t = {
+        .year = (uint16_t)(2000 + data[3]), .month = data[4], .day = data[5],
+        .weekday = data[6], .hours = data[7], .minutes = data[8], .seconds = data[9],
+    };
+    uint16_t ms    = (uint16_t)(data[10] | (data[11] << 8));
+    uint8_t  flags = data[12];
+    int16_t  bias  = (int16_t)(data[13] | (data[14] << 8));
+    int16_t  off   = 0;
+    uint8_t  st    = rtc_set_time_ms(&t, ms, flags, bias, &off);
+    memset(&data[3], 0, 29);
+    data[3]  = st;
+    data[4]  = (uint8_t)((uint16_t)off & 0xFF);
+    data[5]  = (uint8_t)((uint16_t)off >> 8);
+    data[11] = RTC_PROTO_VERSION;
+}
+
+static inline bool rtc_is_set_ms_cmd(const uint8_t *data, uint8_t length) {
+    return length >= 3 && data[0] == RTC_SET_VALUE &&
+           data[1] == RTC_CHANNEL && data[2] == RTC_SET_TIME_MS;
+}
 
 // ---------------------------------------------------------------------------
 // Flash provisioning channel (Stage D). Same VIA custom-value framing as the
@@ -486,6 +544,10 @@ void via_custom_value_command_kb(uint8_t *data, uint8_t length) {
         if (!rtc_apply_bytes(&data[3])) data[0] = RTC_UNHANDLED;
         return;
     }
+    if (rtc_is_set_ms_cmd(data, length)) {
+        rtc_set_ms_command(data, length);
+        return;
+    }
     if (is_flash_cmd(data, length)) {
         flash_command(data, length);
         return;
@@ -508,6 +570,8 @@ void raw_hid_receive(uint8_t *data, uint8_t length) {
         rtc_read_into(data);
     } else if (rtc_is_set_time_cmd(data, length)) {
         if (!rtc_apply_bytes(&data[3])) data[0] = RTC_UNHANDLED;
+    } else if (rtc_is_set_ms_cmd(data, length)) {
+        rtc_set_ms_command(data, length);
     } else if (is_flash_cmd(data, length)) {
         flash_command(data, length);
     } else if (is_text_cmd(data, length)) {

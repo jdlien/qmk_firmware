@@ -437,6 +437,8 @@ void housekeeping_task_kb(void) {
     loop_gap_task();
 #endif
     rgb_repeat_task();
+    rtc_fast_task();             // <= one queued PCF I2C transaction, only when no blit is in flight (R4)
+    display_second_edge_task();  // clock digits repaint on the tick, not at the 10 Hz cadence (3.9)
     display_blit_pump();   // one glyph per iteration; never waits on the DMA
 #ifdef CONSOLE_ENABLE
     blit_stat_task();

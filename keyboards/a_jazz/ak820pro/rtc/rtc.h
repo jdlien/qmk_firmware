@@ -73,8 +73,23 @@ bool rtc_now(rtc_stamp_t *s);
  * page 3: the last 14 FRMNO deltas, u16 each (Phase 0 observation ring) */
 void rtc_status_fill(uint8_t page, uint8_t *out);
 
-/* 10 Hz: refresh the USB-active mirror the tick ISR reads (never touch the
- * USB block from the ISR when the bus is down). Called from rtc_task(). */
+/* ---- Phase 1: phase-correct set + deferred PCF write ---------------------- */
+#define RTC_MIN_FIRST_MS   20      /* closer than this to a boundary: label the next one */
+#define RTC_SETF_FORCE_STEP 0x01   /* (Phase 2: bypass the slew decision) */
+#define RTC_SETF_SKIP_PCF   0x02   /* do not queue the PCF write */
+enum { RTC_SET_STEPPED = 0, RTC_SET_SLEWING = 1, RTC_SET_RETRY = 0xFE, RTC_SET_REJECT = 0xFF };
+
+/* "At the instant this call is made, true time is t + ms." Sets the software
+ * seconds and re-phases the prescaler so the next tick lands on the boundary;
+ * queues the PCF write for rtc_fast_task(). Returns an RTC_SET_* status and,
+ * when measurable, the offset (t+ms) - board_now in ms via *offset_before.
+ * The caller validates the calendar; ms > 999 is rejected here too. */
+uint8_t rtc_set_time_ms(const rtc_time_t *t, uint16_t ms, uint8_t flags, int16_t bias_ppm, int16_t *offset_before);
+
+/* Per main-loop pass, BEFORE display_blit_pump(): performs at most one
+ * queued PCF transaction, only when no LCD blit is in flight. Never blocks
+ * on the LCD. */
+void rtc_fast_task(void);
 
 #ifdef WDT_TEST_HOOKS
 /* Phase 0 hardware-fact tests (instrumented builds only). These DELIBERATELY

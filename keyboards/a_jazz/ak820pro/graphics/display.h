@@ -8,6 +8,9 @@
 bool display_init_kb(void);
 bool display_init_user(void);
 void display_housekeeping_task(void);
+/* Per main-loop pass: one extra housekeeping pass on an RTC second edge
+ * (clock-sync plan 3.9). Call before display_blit_pump(). */
+void display_second_edge_task(void);
 
 /* Paints one queued glyph per call. Must be driven from housekeeping_task_kb()
  * at MAIN-LOOP rate, not from the 10 Hz block -- see the glyph queue in
