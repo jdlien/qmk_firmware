@@ -1354,9 +1354,28 @@ static void gq_push(uint16_t font, uint16_t x, uint16_t y, char c) {
 /* Called every main-loop iteration. Cheap by construction: one compare while
  * the DMA is running, one DMA arm when it is not. */
 void display_blit_pump(void) {
+    static uint32_t blocked_since = 0;
+    static bool     blocked       = false;
+
     if (gq_i >= gq_n || display_paused) return;
-    if (!lcd_draw_flash_glyph_try(gq[gq_i].font, gq[gq_i].c, gq[gq_i].x, gq[gq_i].y))
-        return;                        /* bus busy -- try again next iteration */
+    if (!lcd_draw_flash_glyph_try(gq[gq_i].font, gq[gq_i].c, gq[gq_i].x, gq[gq_i].y)) {
+        /* Bus busy. A healthy blit completes in well under a millisecond; one
+         * whose completion IRQ was lost never completes -- and now that
+         * nothing on this path calls lcd_blit_wait() (the old gq_flush did,
+         * as a side effect), a wedged blit would park the queue AND the
+         * deferring housekeeping pass forever, freezing every band. Give the
+         * bus a generous grace, then run the bounded recovery -- teardown,
+         * counter, [lcd] console line -- exactly as a blocking wait would. */
+        if (!blocked) {
+            blocked       = true;
+            blocked_since = timer_read32();
+        } else if (timer_elapsed32(blocked_since) > 50) {
+            lcd_blit_wait();
+            blocked = false;
+        }
+        return;                        /* try again next iteration */
+    }
+    blocked = false;
     if (++gq_i >= gq_n) gq_reset();
 }
 
