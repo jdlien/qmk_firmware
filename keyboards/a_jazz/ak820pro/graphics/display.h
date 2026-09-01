@@ -9,6 +9,11 @@ bool display_init_kb(void);
 bool display_init_user(void);
 void display_housekeeping_task(void);
 
+/* Paints one queued glyph per call. Must be driven from housekeeping_task_kb()
+ * at MAIN-LOOP rate, not from the 10 Hz block -- see the glyph queue in
+ * display.c for why that distinction is the whole fix. */
+void display_blit_pump(void);
+
 void display_set_power(bool on);
 bool display_get_power(void);
 void display_toggle_power(void);

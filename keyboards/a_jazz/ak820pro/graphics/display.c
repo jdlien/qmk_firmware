@@ -1167,6 +1167,156 @@ static void conn_status_update(void) {
     }
 }
 
+/* ---- Text band: draw a BOUNDED number of glyphs per pass -------------------
+ *
+ * lcd_draw_flash_text() issues one DMA blit PER GLYPH and spins on each, so a
+ * two-line update was ~40 sequential blocking waits on the main loop -- the
+ * same loop that scans the matrix. Measured at 53 ms, which at typing speed
+ * (a character roughly every 125 ms) is ample to swallow a keystroke. Isolated
+ * by experiment: with the host text producer stopped, four reboots produced
+ * zero stalls over 15 ms; with it running, 53 ms on both boots.
+ *
+ * Most of that is per-glyph OVERHEAD, not data: a 6x14 glyph is 168 bytes, but
+ * each one pays a window command, a flash read command, and a DMA arm.
+ *
+ * The band now paints ONE LINE per housekeeping pass, composed in RAM and
+ * blitted once (lcd_draw_flash_text_staged), holding text_dirty until it
+ * finishes. A line costs a few ms instead of ~26, and a two-line update
+ * completes in two ticks -- fast enough to read as instant.
+ *
+ * The clear rect and icon are drawn ONCE per repaint, on the first pass --
+ * repeating them on every resume would erase the glyphs already painted. */
+/* One LINE per housekeeping pass, composed in RAM and blitted once.
+ *
+ * The first attempt at this budgeted per GLYPH, which bounded the stall but
+ * made every update crawl in letter by letter -- visibly worse, and it hit the
+ * RGB readout too, where instant feedback is the whole point.
+ *
+ * lcd_draw_flash_text_staged() removes the need to spread the work at all: it
+ * pays the per-glyph setup once and issues a single blit for the line, so a
+ * line costs a few ms rather than ~26. Budgeting by LINE then keeps the worst
+ * pass small while a two-line update still completes in two ticks (~200 ms) and
+ * reads as instant.
+ *
+ * Faster AND bounded, rather than trading one for the other. */
+/* Glyph queue: up to two runs (line 0, line 1), painted ONE GLYPH PER MAIN-LOOP
+ * ITERATION by display_blit_pump(). Each turn either arms a DMA or returns on a
+ * single lcd_blit_busy() compare, so the band never blocks the matrix scan.
+ *
+ * At ~390 Hz a 20-glyph line completes in ~50 ms -- below the threshold where
+ * anyone sees it arrive. The earlier one-glyph-per-HOUSEKEEPING-tick version
+ * looked identical on paper and took 2 s, because 10 Hz was the wrong clock.
+ * Granularity was never the problem; the tick was. */
+#define GQ_RUNS  2                      /* line 0, line 1                  */
+#define GQ_MAX  (DISPLAY_TEXT_MAX_L0 + DISPLAY_TEXT_MAX_L1)
+
+/* The queue holds INDIVIDUAL GLYPHS, not runs, because a repaint normally
+ * touches only the cells whose character actually changed -- "Bright 25%" to
+ * "Bright 26%" is one blit, not eleven. */
+static struct { uint16_t font, x, y; char c; } gq[GQ_MAX];
+static uint8_t gq_n = 0, gq_i = 0;
+
+/* What is CURRENTLY on the panel, so the next repaint can diff against it. */
+static struct {
+    uint16_t font, x, y;
+    char     s[DISPLAY_TEXT_MAX_L1 + 1];
+    bool     valid;
+} shadow[GQ_RUNS];
+
+static uint8_t last_icon_drawn = DISPLAY_ICON_NONE;
+static uint16_t last_icon_y    = 0;
+
+static void gq_reset(void) { gq_n = gq_i = 0; }
+
+static void shadow_invalidate(void) {
+    for (uint8_t i = 0; i < GQ_RUNS; i++) shadow[i].valid = false;
+    last_icon_drawn = DISPLAY_ICON_NONE;
+}
+
+static void gq_push(uint16_t font, uint16_t x, uint16_t y, char c) {
+    if (gq_n >= GQ_MAX) return;
+    gq[gq_n].font = font; gq[gq_n].x = x; gq[gq_n].y = y; gq[gq_n].c = c;
+    gq_n++;
+}
+
+/* Called every main-loop iteration. Cheap by construction: one compare while
+ * the DMA is running, one DMA arm when it is not. */
+void display_blit_pump(void) {
+    if (gq_i >= gq_n || display_paused) return;
+    if (!lcd_draw_flash_glyph_try(gq[gq_i].font, gq[gq_i].c, gq[gq_i].x, gq[gq_i].y))
+        return;                        /* bus busy -- try again next iteration */
+    if (++gq_i >= gq_n) gq_reset();
+}
+
+/* Finish any queued glyphs synchronously. The other band owners (clock,
+ * battery, locks) blit too, and interleaving their windows with a half-painted
+ * line would scramble both. Normally a no-op: a diff is a handful of glyphs. */
+static void gq_flush(void) {
+    while (gq_i < gq_n) {
+        if (!lcd_blit_wait()) { gq_reset(); shadow_invalidate(); return; }
+        display_blit_pump();
+    }
+}
+
+/* Queue one line, drawing ONLY what differs from what is already on the panel.
+ *
+ * This is what the clock does, and it is why the clock never flickered while
+ * this band did: a glyph blit paints its whole cell INCLUDING the background,
+ * so overwriting a cell fully replaces it and no clear is needed. Clearing
+ * first is what made a one-character change read as a flash -- the band spent
+ * the paint time empty.
+ *
+ * Only a shorter string needs any clearing, and only of the cells it vacates. */
+static void queue_line(uint8_t slot, uint16_t font, uint16_t x, uint16_t y,
+                       const char *str) {
+    if (slot >= GQ_RUNS) return;
+    uint16_t adv = lcd_font_advance(font);
+    uint16_t h   = lcd_font_height(font);
+    if (!adv || !h) return;
+
+    uint8_t n = (uint8_t)strlen(str);
+    if (n > DISPLAY_TEXT_MAX_L1) n = DISPLAY_TEXT_MAX_L1;
+
+    bool moved = !shadow[slot].valid || shadow[slot].font != font ||
+                 shadow[slot].x != x || shadow[slot].y != y;
+    uint8_t old_n = moved ? 0 : (uint8_t)strlen(shadow[slot].s);
+
+    /* A move means the old cells are somewhere else entirely and cannot be
+     * overwritten in place, so that region has to go. */
+    if (moved && shadow[slot].valid) {
+        uint16_t oadv = lcd_font_advance(shadow[slot].font);
+        uint16_t oh   = lcd_font_height(shadow[slot].font);
+        if (oadv && oh)
+            lcd_clear_rect(shadow[slot].x, shadow[slot].y,
+                           (uint16_t)(strlen(shadow[slot].s) * oadv), oh);
+    }
+
+    for (uint8_t i = 0; i < n; i++)
+        if (moved || i >= old_n || shadow[slot].s[i] != str[i])
+            gq_push(font, (uint16_t)(x + i * adv), y, str[i]);
+
+    /* Cells the new string no longer occupies keep their old glyphs otherwise. */
+    if (old_n > n)
+        lcd_clear_rect((uint16_t)(x + n * adv), y,
+                       (uint16_t)((old_n - n) * adv), h);
+
+    memcpy(shadow[slot].s, str, n);
+    shadow[slot].s[n] = '\0';
+    shadow[slot].font = font; shadow[slot].x = x; shadow[slot].y = y;
+    shadow[slot].valid = true;
+}
+
+/* Retire a line that is no longer shown, clearing only what it occupied. */
+static void retire_line(uint8_t slot) {
+    if (slot >= GQ_RUNS || !shadow[slot].valid) return;
+    uint16_t adv = lcd_font_advance(shadow[slot].font);
+    uint16_t h   = lcd_font_height(shadow[slot].font);
+    if (adv && h)
+        lcd_clear_rect(shadow[slot].x, shadow[slot].y,
+                       (uint16_t)(strlen(shadow[slot].s) * adv), h);
+    shadow[slot].valid = false;
+}
+
 static void draw_text_slot(bool force) {
     // Expire before drawing, so a stale slot blanks itself without the host
     // having to send anything.
@@ -1177,66 +1327,50 @@ static void draw_text_slot(bool force) {
     if (!force && !text_dirty) return;
     text_dirty = false;
 
-    lcd_clear_rect(0, TEXT_Y - TEXT_ICON_LIFT, PANEL_WIDTH, TEXT_H + TEXT_ICON_LIFT);
+    gq_flush();   /* land the previous diff before computing the next one */
 
-    /* Wireless status transiently outranks the host text slot. No icon: the
-     * icon IDs are media transports and would misdescribe a link event. */
-    if (conn_status_str) {
-        lcd_draw_flash_text(FONT_STATUS, CONN_STATUS_X, TEXT_Y + TEXT_BIG_DY, conn_status_str);
-        return;
+    if (force) {
+        /* A forced repaint follows a full-screen clear, so nothing on the
+         * panel can be trusted. */
+        lcd_clear_rect(0, TEXT_Y - TEXT_ICON_LIFT, PANEL_WIDTH, TEXT_H + TEXT_ICON_LIFT);
+        shadow_invalidate();
     }
 
-    if (!text_present) return;
-
-    if (text_icon != DISPLAY_ICON_NONE) {
-        /* Align to the FIRST line, not the band. Centring on the band put the
-         * icon between the two lines, which read as belonging to neither; and
-         * with a single line it floated below the text entirely.
-         *
-         * The icon is 12 rows against a 14-row cell, so it centres on the CELL
-         * rather than the 10-row cap-to-baseline mass -- it spans the letters
-         * plus their descender space, which is what "level with the line" looks
-         * like. Every case stays inside the band, so the clear rect still
-         * covers it (the mistake that stranded the padlock). */
-        uint16_t icon_y;
-        /* Centre on the CAP band, not on the cell and not on the full ink
-         * extent. Measured, the 13px face puts caps and lining figures in rows
-         * 0..9 and descenders in 3..12: descenders appear on only some letters
-         * and do not define where the eye puts the line. Centring on the full
-         * 0..12 ink therefore sits the icon a row low against most strings,
-         * which is exactly how it looked.
-         *
-         *   icon_y = cell + cap_lo + (cap_height - ICON_H) / 2
-         *
-         * 13px: cap_lo 0, cap_height 10  ->  cell - 1
-         * 20px: cap_lo 4, cap_height 15  ->  cell + 5   (already right)
-         *
-         * The two-line case lifts the icon one row ABOVE TEXT_Y, which is why
-         * the band's clear rect starts at TEXT_Y - TEXT_ICON_LIFT. */
+    /* --- icon: only when it actually changes ------------------------------ */
+    uint8_t  want_icon = DISPLAY_ICON_NONE;
+    uint16_t icon_y    = 0;
+    if (!conn_status_str && text_present && text_icon != DISPLAY_ICON_NONE) {
+        want_icon = text_icon;
+        /* Centre on the CAP band, not the cell: the 13px face puts caps in
+         * rows 0..9 and descenders in 3..12, and descenders appear on only
+         * some letters so they do not define where the eye puts the line. */
         if (text_buf[1][0])                       icon_y = TEXT_Y - TEXT_ICON_LIFT;
         else if (strlen(text_buf[0]) <= TEXT_BIG_MAX)
                                                   icon_y = TEXT_Y + TEXT_BIG_DY + 5;
         else                                      icon_y = TEXT_Y + TEXT_FONT_DY - 1;
-        draw_text_icon(0, icon_y, text_icon);
     }
-    if (text_buf[0][0] || text_buf[1][0]) {
-        if (text_buf[1][0]) {
-            /* TWO lines: both must use the 13px face -- a 20px cell is 23 rows
-             * and two of those need 46 in a 28px band. There is no mixed
-             * option, so a second line costs legibility on the first. */
-            lcd_draw_flash_text(FONT_SMALL, TEXT_X, TEXT_Y,              text_buf[0]);
-            lcd_draw_flash_text(FONT_SMALL, TEXT_X2, TEXT_Y + TEXT_LINE_H, text_buf[1]);
-        } else {
-            /* ONE line: keep the adaptive size. Short titles stay legible in
-             * the 20px face; only long ones drop to 13px. Each face is centred
-             * on the transport icon by its cap-to-baseline mass, so they need
-             * different offsets -- see TEXT_BIG_DY / TEXT_FONT_DY. */
-            bool big = strlen(text_buf[0]) <= TEXT_BIG_MAX;
-            lcd_draw_flash_text(big ? FONT_STATUS : FONT_SMALL,
-                                TEXT_X,
-                                TEXT_Y + (big ? TEXT_BIG_DY : TEXT_FONT_DY),
-                                text_buf[0]);
-        }
+    if (want_icon != last_icon_drawn || icon_y != last_icon_y) {
+        lcd_clear_rect(0, TEXT_Y - TEXT_ICON_LIFT, TEXT_X, TEXT_H + TEXT_ICON_LIFT);
+        if (want_icon != DISPLAY_ICON_NONE) draw_text_icon(0, icon_y, want_icon);
+        last_icon_drawn = want_icon;
+        last_icon_y     = icon_y;
+    }
+
+    /* --- text ------------------------------------------------------------- */
+    if (conn_status_str) {
+        queue_line(0, FONT_STATUS, CONN_STATUS_X, TEXT_Y + TEXT_BIG_DY, conn_status_str);
+        retire_line(1);
+    } else if (text_present && text_buf[1][0]) {
+        queue_line(0, FONT_SMALL, TEXT_X,  TEXT_Y,               text_buf[0]);
+        queue_line(1, FONT_SMALL, TEXT_X2, TEXT_Y + TEXT_LINE_H, text_buf[1]);
+    } else if (text_present && text_buf[0][0]) {
+        bool big = strlen(text_buf[0]) <= TEXT_BIG_MAX;
+        queue_line(0, big ? FONT_STATUS : FONT_SMALL, TEXT_X,
+                   TEXT_Y + (big ? TEXT_BIG_DY : TEXT_FONT_DY), text_buf[0]);
+        retire_line(1);
+    } else {
+        retire_line(0);
+        retire_line(1);
     }
 }
 
@@ -1254,6 +1388,10 @@ void display_housekeeping_task(void) {
     if (display_paused) return;   // animation owns the bus
 
     if (splash_cleared) {
+        /* The pump normally finished this line long ago (~50 ms against a
+         * 100 ms tick); this only bites if a blit had to be abandoned. */
+        gq_flush();
+
         // Connection digit every tick (~10 Hz) so its blink animates; self-guarded.
         draw_conn_number(false);
 

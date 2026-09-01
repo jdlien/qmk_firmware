@@ -495,6 +495,48 @@ void lcd_draw_flash_glyph(uint16_t font_id, char c, uint16_t x, uint16_t y) {
     blit_flash_sync(FLASH_ASSET_BASE + a->off + tile, x, y, a->cell_w, a->cell_h);
 }
 
+/* Arm ONE glyph's flash->LCD DMA and return immediately.
+ *
+ * The blocking wrapper (blit_flash_sync) is what made a 20-glyph line cost
+ * ~53 ms on the loop that also scans the matrix -- not the DMA itself, which
+ * costs the CPU nothing. The caller pumps these from housekeeping_task_kb() at
+ * main-loop rate and simply skips a turn while lcd_blit_busy(), so a line lands
+ * in ~50 ms of wall clock and ~0 ms of CPU.
+ *
+ * ⚠️ An earlier attempt composed the line in RAM and blitted once. That looked
+ * like the obvious win and is strictly WORSE here: flash_read_bytes() pulls
+ * every pixel through spi1_rw(), which is a full spiExchange() driver call PER
+ * BYTE -- ~5.5 KB of them for one 12-char line at 20px. Do not re-derive it.
+ *
+ * Returns false if the bus is busy (nothing armed; try again next pass) or the
+ * glyph is not in the atlas. */
+bool lcd_draw_flash_glyph_try(uint16_t font_id, char c, uint16_t x, uint16_t y) {
+    if (lcd_blit_busy()) return false;
+    const flash_asset_t *a = flash_asset(font_id);
+    if (!a || a->fmt != 1) return true;            /* nothing to draw: consume it */
+    uint8_t ch = (uint8_t)c;
+    if (ch < a->first || ch >= a->first + a->count) ch = ' ';
+    if (ch < a->first || ch >= a->first + a->count) return true;
+    uint32_t tile = (uint32_t)(ch - a->first) * a->cell_w * a->cell_h * 2u;
+    lcd_flash_init();
+    lcd_blit_flash(FLASH_ASSET_BASE + a->off + tile, x, y, a->cell_w, a->cell_h);
+    return true;
+}
+
+uint16_t lcd_font_advance(uint16_t font_id) {
+    const flash_asset_t *a = flash_asset(font_id);
+    return (a && a->fmt == 1) ? a->cell_w : 0;
+}
+
+uint16_t lcd_font_height(uint16_t font_id) {
+    const flash_asset_t *a = flash_asset(font_id);
+    return (a && a->fmt == 1) ? a->cell_h : 0;
+}
+
+/* Blocking whole-string draw. Still used by the band owners that paint rarely
+ * and briefly (clock, battery, locks, connection digit). The host text slot
+ * goes through the glyph queue instead -- it is the long one, and the only one
+ * that ran often enough to cost a keystroke. */
 void lcd_draw_flash_text(uint16_t font_id, uint16_t x, uint16_t y, const char *s) {
     const flash_asset_t *a = flash_asset(font_id);
     if (!a) return;

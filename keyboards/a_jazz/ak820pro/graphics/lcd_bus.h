@@ -39,6 +39,12 @@ void lcd_blit_flash_probe(uint32_t src, uint16_t w, uint16_t h);
 // call it before any blit outside the animation path.
 void lcd_flash_init(void);
 
+/* Non-blocking single-glyph draw + the font's advance, for the caller-driven
+ * glyph pump. See lcd_draw_flash_glyph_try() in lcd_bus.c. */
+bool     lcd_draw_flash_glyph_try(uint16_t font_id, char c, uint16_t x, uint16_t y);
+uint16_t lcd_font_advance(uint16_t font_id);
+uint16_t lcd_font_height(uint16_t font_id);
+
 // --- external flash WRITE path (Stage D provisioning) -----------------------
 // Device-asynchronous: the command returns as soon as it is on the wire, then
 // the chip is busy on its own (page program ~1-3 ms, sector erase 50-300 ms).
@@ -83,6 +89,9 @@ const flash_asset_t *flash_asset(uint16_t id);
 void     lcd_draw_flash_image(uint16_t id, uint16_t x, uint16_t y);
 void     lcd_draw_flash_glyph(uint16_t font_id, char c, uint16_t x, uint16_t y);
 void     lcd_draw_flash_text(uint16_t font_id, uint16_t x, uint16_t y, const char *s);
+/* Same, but composed in RAM and blitted ONCE -- one LCD operation per line
+ * instead of one per glyph. Much faster and it appears instantly. */
+void     lcd_draw_flash_text_staged(uint16_t font_id, uint16_t x, uint16_t y, const char *s);
 uint16_t lcd_flash_text_width(uint16_t font_id, const char *s);
 
 // CPU, blocking: RGB565 tile from a firmware/RAM array -> panel rect.

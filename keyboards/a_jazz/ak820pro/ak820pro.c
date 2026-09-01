@@ -1349,6 +1349,7 @@ void housekeeping_task_kb(void) {
     loop_gap_task();
 #endif
     rgb_repeat_task();
+    display_blit_pump();   // one glyph per iteration; never waits on the DMA
 #ifdef CONSOLE_ENABLE
     blit_stat_task();
 #endif
