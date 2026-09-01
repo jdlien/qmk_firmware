@@ -51,3 +51,6 @@ uint8_t ch582_get_target_slot(void);
 uint8_t ch582_get_battery(void);
 /* Host LED bitmap last reported by the module (USB LED bits; bit1 = caps). From 5A frames. */
 uint8_t ch582_get_host_leds(void);
+
+/* Cumulative TX health counters (sent / ACK timeouts / queue-full drops). */
+void ch582_tx_stats(uint32_t *sent, uint32_t *timeouts, uint32_t *drops);

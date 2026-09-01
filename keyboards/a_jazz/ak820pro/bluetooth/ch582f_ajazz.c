@@ -349,6 +349,13 @@ static uint8_t          tx_retries   = 0;
  * (you can out-type the link), not as mild latency. These make that visible. */
 static uint32_t tx_stat_sent = 0, tx_stat_timeout = 0, tx_stat_drop = 0;
 
+/* Health-counter readout (health.c). Main-loop only, like everything here. */
+void ch582_tx_stats(uint32_t *sent, uint32_t *timeouts, uint32_t *drops) {
+    *sent     = tx_stat_sent;
+    *timeouts = tx_stat_timeout;
+    *drops    = tx_stat_drop;
+}
+
 static inline uint8_t tx_next(uint8_t i) { return (uint8_t)((i + 1) % CH582_TXQ_LEN); }
 
 /* Drop the head frame (ACKed or given up) and stop waiting on it. */

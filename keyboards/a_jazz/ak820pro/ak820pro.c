@@ -11,6 +11,8 @@
 #include "bluetooth/ch582f_ajazz.h"
 #include "rtc/rtc.h"
 #include "raw_hid.h"
+#include "watchdog.h"
+#include "health.h"
 #ifdef USB_WAKEUP_ON_KEYPRESS
 #    include "usb_main.h"   /* USB_DRIVER */
 #endif
@@ -119,9 +121,18 @@ static void pwm_tick_init(void);
     // Initialize the display subsystem (painter, fonts, images, etc.) and draw the splash screen.
     display_init_kb();
 
+    // Reset-cause bookkeeping (consecutive-WDT-reset counter, degraded-mode
+    // decision) -- before the watchdog arms, after the console is plumbed.
+    watchdog_boot_check();
+
     // Chain the user hook: overriding keyboard_post_init_kb() replaces QMK's
     // default, which is what normally calls keyboard_post_init_user().
     keyboard_post_init_user();
+
+    // Arm the watchdog LAST: boot blocks deliberately (lcd_init's 240 ms of
+    // wait_ms, the asset index read, the RTC seed), and none of that should
+    // count against the timeout. See watchdog.c for the 12 s rationale.
+    watchdog_start();
  }
 
  bool dip_switch_update_kb(uint8_t index, bool active) {
@@ -882,6 +893,63 @@ static void text_command(uint8_t *data, uint8_t length) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Health channel: read the unified health counters over raw HID (health.c).
+// Same VIA custom-value framing as the channels above:
+//   [SET_VALUE, HEALTH_CHANNEL, HC_GET] -> [.., .., HC_GET, version, 28 bytes]
+// Raw HID is the PRIMARY health readout -- it exists in every build flavor,
+// where the console exists only in instrumented ones. Replies route through
+// the active host driver, so like ak820ctl this needs the dip switch in wired
+// mode; the counters themselves accumulate in any mode.
+enum {
+    HEALTH_CHANNEL = 0x13,
+    HC_GET         = 0x01,
+#ifdef WDT_TEST_HOOKS
+    /* Test-only, instrumented builds: deliberately wedge the main loop to
+     * prove the watchdog resets the board and the boot accounting works.
+     *   [SET_VALUE, HEALTH_CHANNEL, HC_STALL, mode]
+     * mode 1: spin forever (interrupts still running -- the historical hang
+     *         signature). mode 2: force a kb-eeconfig flash write, then spin,
+     *         so the reset lands as close after a program cycle as this test
+     *         can arrange. The reply never arrives, by design. */
+    HC_STALL       = 0x7E,
+#endif
+};
+#define HEALTH_PROTO_VERSION 1
+
+static inline bool is_health_cmd(const uint8_t *data, uint8_t length) {
+    return length >= 3 && data[0] == RTC_SET_VALUE && data[1] == HEALTH_CHANNEL;
+}
+
+static void health_command(uint8_t *data, uint8_t length) {
+    switch (data[2]) {
+        case HC_GET:
+            if (length >= 32) {
+                data[3] = HEALTH_PROTO_VERSION;
+                health_fill(&data[4]);   /* 28 bytes: exactly fills the report */
+            } else {
+                data[0] = RTC_UNHANDLED;
+            }
+            break;
+#ifdef WDT_TEST_HOOKS
+        case HC_STALL:
+            if (length >= 4) {
+                if (data[3] == 2) {
+                    /* Toggle a reserved pad byte so wear-levelling cannot skip
+                     * an identical write -- the flash really programs. */
+                    kb_config._pad[0] ^= 1;
+                    eeconfig_update_kb_datablock(&kb_config, 0, sizeof(kb_config));
+                }
+                for (;;) { /* wedge: the watchdog must get us out of here */ }
+            }
+            break;
+#endif
+        default:
+            data[0] = RTC_UNHANDLED;
+            break;
+    }
+}
+
 static inline bool rtc_is_set_time_cmd(const uint8_t *data, uint8_t length) {
     return length >= 10 && data[0] == RTC_SET_VALUE &&
            data[1] == RTC_CHANNEL && data[2] == RTC_SET_TIME;
@@ -931,6 +999,10 @@ void via_custom_value_command_kb(uint8_t *data, uint8_t length) {
         text_command(data, length);
         return;
     }
+    if (is_health_cmd(data, length)) {
+        health_command(data, length);
+        return;
+    }
     data[0] = RTC_UNHANDLED;
 }
 
@@ -945,6 +1017,8 @@ void raw_hid_receive(uint8_t *data, uint8_t length) {
         flash_command(data, length);
     } else if (is_text_cmd(data, length)) {
         text_command(data, length);
+    } else if (is_health_cmd(data, length)) {
+        health_command(data, length);
     } else {
         data[0] = RTC_UNHANDLED;
     }
@@ -1364,6 +1438,7 @@ static void blit_stat_task(void) {
 #endif
 
 void housekeeping_task_kb(void) {
+    health_loop_tick();    // worst-gap max-hold; one timer read per pass
 #ifdef LOOPGAP_INSTRUMENT
     loop_gap_task();
 #endif
@@ -1391,10 +1466,16 @@ void housekeeping_task_kb(void) {
         if (!anim_active()) rtc_task();   // RTC I2C (port A) glitches the flash SPI1 pins (A12/A13) mid-DMA
         anim_task();                      // one animation frame per 100 ms
         display_housekeeping_task();
+        health_task();                    // [health] console line, on change only
     }
 
     // Chain the user hook
     housekeeping_task_user();
+
+    // Kick the watchdog LAST -- after the 10 Hz block and the user hook, so a
+    // kick certifies a COMPLETED pass. A kick at entry would hand a freshly
+    // wedged pass another full timeout and prove nothing about what follows.
+    watchdog_kick();
 }
 
 /*

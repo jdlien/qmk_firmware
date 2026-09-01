@@ -25,6 +25,8 @@ SRC += bluetooth/ch582f_ajazz.c
 
 SRC += graphics/display.c
 SRC += rtc/rtc.c
+SRC += watchdog.c   # hardware WDT: arm/kick/boot accounting/bootloader stop
+SRC += health.c     # unified health counters; raw HID channel 0x13
 VPATH += bluetooth
 VPATH += graphics
 VPATH += rtc

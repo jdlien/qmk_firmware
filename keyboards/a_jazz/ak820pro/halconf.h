@@ -34,4 +34,8 @@
  * Bluetooth measures BETTER than it ever did at the stock rate. */
 #define HAL_USE_GPT TRUE
 
+/* Hardware watchdog (SN32 WDT). Armed at the end of post-init, kicked at the
+ * end of every housekeeping pass; see watchdog.c for the 12 s rationale. */
+#define HAL_USE_WDG TRUE
+
 #include_next <halconf.h>

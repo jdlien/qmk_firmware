@@ -45,6 +45,10 @@
 #undef SN32_GPT_USE_CT16B3
 #define SN32_GPT_USE_CT16B3 TRUE
 
+/* Hardware watchdog on the SN32 WDT block (watchdog.c). */
+#undef SN32_WDG_USE_WDT
+#define SN32_WDG_USE_WDT TRUE
+
 /* Outrank the RGB row-scan ISR (SN32_PWM_CT16B*_IRQ_PRIORITY = 2). The row ISR
  * is long -- it reloads 15 PWM channels -- and at priority 3 our 50us PWM tick
  * was being blocked by it: measured 15385 Hz against 20000 configured, i.e. 23%
