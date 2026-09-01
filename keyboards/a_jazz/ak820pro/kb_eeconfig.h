@@ -7,10 +7,11 @@
 
 /* Persisted keyboard config (the EEPROM kb datablock). One module owns the
  * struct so its layout has exactly one home; everything else goes through
- * accessors. The 4-byte block is fully assigned as of phase 4 (bt_profile,
- * rtc_period u16, lcd_brightness+1) and its layout is ASSIGN-ONLY: existing
- * on-device bytes must keep their meaning, and 0 means "unset" for every
- * field added after first ship (a fresh block is zeros).
+ * accessors. The block is 5 bytes (bt_profile, rtc_period u16,
+ * lcd_brightness+1, clock_mode+1 -- the last appended 2026-09-01, growing
+ * the block from 4) and its layout is ASSIGN-ONLY: existing on-device bytes
+ * must keep their meaning, and 0 means "unset" for every field added after
+ * first ship (a fresh block is zeros).
  *
  * Writes are coalesced and deferred -- see kb_eeconfig.c. */
 
@@ -35,6 +36,12 @@ void     kb_eeconfig_set_rtc_period(uint16_t period);
  * poisoned test value) -- the caller keeps its compile-time default. */
 bool kb_eeconfig_get_lcd_brightness(uint8_t *level);
 void kb_eeconfig_set_lcd_brightness(uint8_t level);
+
+/* Clock band format (enum display_clock_mode: 0 = 24h, 1 = 12h, 2 = off).
+ * Returns false when unset (fresh block) or garbage -- the caller keeps its
+ * compile-time default (24h). */
+bool kb_eeconfig_get_clock_mode(uint8_t *mode);
+void kb_eeconfig_set_clock_mode(uint8_t mode);
 
 #ifdef WDT_TEST_HOOKS
 /* Force a real, immediate flash program (for the reset-during-write test). */

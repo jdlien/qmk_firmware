@@ -64,6 +64,7 @@ enum ak820pro_keycodes {
     // only; inserting shifts every later keycode and silently breaks VIA maps.
     SCR_UP,                // LCD backlight brighter
     SCR_DN,                // LCD backlight dimmer
+    CLK_MODE,              // Fn+C: clock band format, 24h -> 12h (AM/PM) -> off
     AK820PRO_SAFE_RANGE
 };
 
@@ -76,3 +77,33 @@ enum ak820pro_keycodes {
 #define LOOP_MARK_BLIT  2
 #define LOOP_MARK_I2C   3
 extern volatile uint8_t loop_stall_mark;
+
+/* Loop-stall SITE profiler (LOOPGAP_INSTRUMENT only; the macro is a plain
+ * call otherwise). The mark above says which WAIT a slow pass ended in, not
+ * which caller spent the time -- a 48 ms pass that ends in a 2 ms clear is
+ * still reported as "blit". Each housekeeping sub-task is timed here and the
+ * worst one per second is printed beside the gap. begin() closes any site
+ * still open.
+ *
+ * ⚠️ 10 Hz-BLOCK SITES ONLY. The first version also wrapped the four
+ * per-pass calls (rgb repeat, rtc_fast, second-edge, pump) and the RGB
+ * flush gate; measured on hardware that dropped the scan rate from ~270 Hz
+ * to ~175 Hz with the console attached -- every pass over 4 ms, and the
+ * user felt dropped keystrokes. An instrument that costs 2 ms a pass is
+ * the fault it is looking for. Sites inside the 100 ms tick run ten times a
+ * second and are free. */
+enum loop_site {
+    LOOP_SITE_NONE = 0,
+    LOOP_SITE_LEDS, LOOP_SITE_PAIR, LOOP_SITE_CONSUMER, LOOP_SITE_PARAM,
+    LOOP_SITE_RTCTASK, LOOP_SITE_ANIM, LOOP_SITE_CONN, LOOP_SITE_STATUS,
+    LOOP_SITE_TEXT, LOOP_SITE_LOCKS, LOOP_SITE_CLOCKF, LOOP_SITE_CLOCK,
+    LOOP_SITE_BATT, LOOP_SITE_EECFG, LOOP_SITE_HEALTH, LOOP_SITE_RGBFLUSH,
+    LOOP_SITE_COUNT
+};
+#ifdef LOOPGAP_INSTRUMENT
+void loop_site_begin(uint8_t site);
+void loop_site_end(void);
+#    define LOOP_SITE(site, call) do { loop_site_begin(site); call; loop_site_end(); } while (0)
+#else
+#    define LOOP_SITE(site, call) do { call; } while (0)
+#endif

@@ -135,7 +135,7 @@ The following is supported by this port:
     - Layout (Mac/Win)
     - Connection type (USB/BT/2.4G) + Slot (for BT mode)
     - date (day/month)
-    - time (HH:MM or HH:MM:SS)
+    - time (24h, or 12h with a stacked AM/PM glyph, or off, or the date `Sep 1, 2026` -- `Fn`+`C` cycles, persisted)
     - battery charge level (%)
 - [x] Triple mode support (Use `Fn`+[`Q`|`W`|`E`] for Bluetooth and `Fn`+`R` for 2.4G dongle. Keep pressed for pairing.
 - [x] Per-key RGB Matrix (hardware PWM across CT16B0/B1/B2 — see `hardware_pwm.diff`)

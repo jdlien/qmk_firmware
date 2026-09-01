@@ -33,6 +33,20 @@ void    display_set_brightness(uint8_t level);
 void    display_brightness_up(void);
 void    display_brightness_down(void);
 
+/* Clock band format. Display-only: it changes how the band draws the time the
+ * RTC module keeps, never the time itself. Persisted in kb_eeconfig by the
+ * Fn+C gesture path (ak820pro.c); the setter here is raw, so init can restore
+ * the stored value through it. */
+enum display_clock_mode {
+    DISPLAY_CLOCK_24H = 0,      /* HH:MM:SS                                   */
+    DISPLAY_CLOCK_12H,          /* H:MM:SS + stacked grey AM/PM glyph          */
+    DISPLAY_CLOCK_OFF,          /* band blank; the playback timer still uses it */
+    DISPLAY_CLOCK_DATE,         /* "Sep 1, 2026" in the 20px face (appended 2026-09-01) */
+    DISPLAY_CLOCK_MODE_COUNT    /* append only: the value is persisted */
+};
+void    display_set_clock_mode(uint8_t mode);
+uint8_t display_get_clock_mode(void);
+
 /* --- Host text slot -------------------------------------------------------
  * A single line the host pushes over raw HID, drawn in the band above the
  * clock. The firmware attaches no meaning to the text; it is whatever the host

@@ -276,6 +276,11 @@
       "name": "SCR_DN",
       "title": "LCD backlight dimmer",
       "shortName": "SCR-"
+    },
+    {
+      "name": "CLK_MODE",
+      "title": "Clock format: 24h / 12h / off",
+      "shortName": "Clock"
     }
   ]
 }

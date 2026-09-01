@@ -15,17 +15,21 @@
 #include "quantum.h"
 #include "kb_eeconfig.h"
 #include "bluetooth/ch582f_ajazz.h"
+#include "graphics/display.h"   /* DISPLAY_CLOCK_MODE_COUNT */
 
-/* Layout (4 bytes, matching the pre-phase-4 block size exactly).
- * A fresh or pre-phase-4 block holds ZEROS in bytes 1..3, so 0 must mean
- * "unset" for every added field -- hence the +1 encoding for brightness. */
+/* Layout (5 bytes; EECONFIG_KB_DATA_SIZE in config.h must match).
+ * A fresh block holds ZEROS, so 0 must mean "unset" for every field added
+ * after first ship -- hence the +1 encodings. Bytes 0..3 are the phase-4
+ * block; byte 4 (clock format) was appended 2026-09-01 with a version bump. */
 typedef struct __attribute__((packed)) {
     uint8_t bt_profile;        // last BT slot selected (CH582_PROFILE_BT_1..3)
     uint8_t rtc_period_lo;     // converged RTC divider period, LE; 0 = unset
     uint8_t rtc_period_hi;
     uint8_t lcd_brightness_p1; // backlight level + 1; 0 = unset
+    uint8_t clock_mode_p1;     // clock band format (display_clock_mode) + 1; 0 = unset
 } kb_config_t;
-_Static_assert(sizeof(kb_config_t) == 4, "block layout is assign-only; do not grow casually");
+_Static_assert(sizeof(kb_config_t) == 5, "block layout is assign-only; do not grow casually");
+_Static_assert(sizeof(kb_config_t) == EECONFIG_KB_DATA_SIZE, "config.h EECONFIG_KB_DATA_SIZE must match the struct");
 
 static kb_config_t kb_config;
 static bool        kb_dirty = false;
@@ -87,6 +91,21 @@ void kb_eeconfig_set_lcd_brightness(uint8_t level) {
     uint8_t p1 = (uint8_t)(level + 1);
     if (kb_config.lcd_brightness_p1 == p1) return;
     kb_config.lcd_brightness_p1 = p1;
+    kb_mark_dirty();
+}
+
+bool kb_eeconfig_get_clock_mode(uint8_t *mode) {
+    if (kb_config.clock_mode_p1 == 0 || kb_config.clock_mode_p1 > DISPLAY_CLOCK_MODE_COUNT) {
+        return false;   /* unset, or garbage */
+    }
+    *mode = (uint8_t)(kb_config.clock_mode_p1 - 1);
+    return true;
+}
+
+void kb_eeconfig_set_clock_mode(uint8_t mode) {
+    uint8_t p1 = (uint8_t)(mode + 1);
+    if (kb_config.clock_mode_p1 == p1) return;
+    kb_config.clock_mode_p1 = p1;
     kb_mark_dirty();
 }
 

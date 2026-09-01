@@ -13,6 +13,7 @@
 #include "gpio.h"
 #include "rtc/rtc.h"
 #include "kb_eeconfig.h"   /* persisted backlight level (phase 4) */
+#include "ak820pro.h"      /* LOOP_SITE profiler (LOOPGAP_INSTRUMENT) */
 
 
 
@@ -374,9 +375,114 @@ static void queue_line(uint8_t slot, uint16_t font, uint16_t x, uint16_t y,
 static void band_clear(uint16_t x, uint16_t y, uint16_t w, uint16_t h);
 static bool gq_pending(void);
 static void display_queue_discard(void);
+static void shadow_mark_empty(uint8_t slot, uint16_t font, uint16_t x, uint16_t y);
+static void retire_line(uint8_t slot);
 /* Slot 2 of the glyph queue is the CLOCK BAND -- the clock or the playback
  * timer, whichever owns it (defined with the queue further down). */
 #define GQ_SLOT_CLOCK 2
+
+/* ---- Clock format: 24h / 12h + AM-PM / off ---------------------------------
+ *
+ * Display-only (plans/CLOCK-FORMAT-PLAN.md): the rtc module keeps the time,
+ * this only changes how the band draws it. 12h drops the leading zero
+ * (H:MM:SS, 7 or 8 cells) and adds a 6px-wide stacked A/M or P/M to the
+ * right of the digits in light grey.
+ *
+ * The letters are rasterised in firmware from 5x7 bitmaps into a RAM tile
+ * (see draw_ampm), not drawn from an atlas, for two reasons: the atlases
+ * have no colour (a glyph blit paints its whole cell, white on black), and a
+ * new atlas PNG would shift every later asset id and force the coordinated
+ * rebuild + re-provision (fonts-assets.md). Two 6x14 Cozette cells stacked
+ * would also be 28 rows in a 22-row face.
+ *
+ * The glyph lives OUTSIDE the glyph queue's shadow, so `ampm` is its own
+ * tiny shadow: where it is and which letter, so it can be cleared before it
+ * moves (7 <-> 8 cells at 9:59:59 -> 10:00:00), flips (noon, midnight) or
+ * goes away (mode change). That is a handful of times a day; the per-second
+ * path never touches it. Clearing it never invalidates the clock run's own
+ * shadow, because the glyph starts exactly where the run ends and
+ * rects_overlap() is half-open. Every WHOLE-band clear goes through
+ * clock_band_clear() so the two shadows cannot disagree. */
+static uint8_t clock_mode = DISPLAY_CLOCK_24H;
+static struct { bool shown; uint16_t x; bool pm; } ampm = {false, 0, false};
+/* A format change RELAYOUTS the band; it does not wipe it. The first version
+ * forced a whole-band clear and the eight digits then arrived one per main-
+ * loop pass -- a visible black flash, the same wipe-was-the-flicker lesson
+ * the text band learned. Now the run moves through queue_line's diff path
+ * (which clears only the columns it vacates) and the old digits stay up
+ * until each cell is overwritten. Only an OWNER change (playback) still
+ * clears the band whole, via clock_force_repaint. */
+static bool clock_relayout = false;
+
+#define AMPM_W        6     /* 1px bearing + 5px of ink                          */
+#define AMPM_INK_W    5
+#define AMPM_LETTER_H 7     /* Cozette capitals are 5x7 of ink                    */
+#define AMPM_GAP      2     /* rows between the stacked letters                  */
+#define AMPM_STACK_H  (2 * AMPM_LETTER_H + AMPM_GAP)   /* 16 of the face's 22 rows */
+#define AMPM_Y_OFF    ((22 - AMPM_STACK_H) / 2)         /* centred on the digits: 3 */
+/* 12h sits 2px left of centre: 8 cells + glyph is 126 of 128 columns, and the
+ * recessed panel's bezel clips the outermost ones (display.md). */
+#define AMPM_X_SHIFT  2
+#define COL_AMPM      0xCE79                            /* #CCCCCC light grey, RGB565: a hair off white -- mid grey (0x8410) was near-illegible at 5x7 */
+_Static_assert(AMPM_Y_OFF + AMPM_STACK_H <= CLOCK_BAND_H, "AM/PM stack must fit the clock band");
+_Static_assert(8 * 15 + AMPM_W <= PANEL_WIDTH, "12:MM:SS plus the AM/PM glyph must fit the panel");
+
+/* 5x7 capitals after Cozette's shapes; bit 4 is the leftmost column. */
+static const uint8_t ampm_A[AMPM_LETTER_H] = {0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11};
+static const uint8_t ampm_P[AMPM_LETTER_H] = {0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10};
+static const uint8_t ampm_M[AMPM_LETTER_H] = {0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11};
+
+/* Rasterise one letter into the 5x16 RAM tile at row `top`. */
+static void ampm_rasterise(uint16_t *tile, const uint8_t *rows, uint8_t top) {
+    for (uint8_t r = 0; r < AMPM_LETTER_H; r++)
+        for (uint8_t c = 0; c < AMPM_INK_W; c++)
+            if (rows[r] & (0x10u >> c)) tile[(top + r) * AMPM_INK_W + c] = COL_AMPM;
+}
+
+/* x is the glyph's cell origin (the run's end); y is the band top.
+ *
+ * ONE RAM tile, ONE transfer. The first version emitted the letters as ~28
+ * lcd_fill_rect runs, the way the padlock is drawn -- and the profiled build
+ * put that at ~24 ms for 160 pixels: every rectangle pays an 11-byte window
+ * command sent BYTE BY BYTE through spiSend, and the ChibiOS call overhead
+ * per byte dwarfs the pixels. A 5x16 tile is 160 bytes through lcd_blit_ram:
+ * one window, one send. It also paints its own background, so a letter flip
+ * (A -> P) needs no clear first. lcd_blit_ram is the CPU path (the SN32 DMA
+ * cannot source RAM), which is fine at this size. */
+static void draw_ampm(uint16_t x, uint16_t y, bool pm) {
+    static uint16_t tile[AMPM_INK_W * AMPM_STACK_H];
+    memset(tile, 0, sizeof(tile));                      /* black background */
+    ampm_rasterise(tile, pm ? ampm_P : ampm_A, 0);
+    ampm_rasterise(tile, ampm_M, AMPM_LETTER_H + AMPM_GAP);
+    /* CPU pushes share SPI0 with the DMA blits and lcd_blit_ram does not
+     * wait on its own. Every caller has just cleared (which waits), but the
+     * padlock's reliance on caller ordering is not worth copying. Free when
+     * the bus is idle. */
+    lcd_blit_wait();
+    lcd_blit_ram(tile, (uint16_t)(x + 1), (uint16_t)(y + AMPM_Y_OFF), AMPM_INK_W, AMPM_STACK_H);
+}
+
+/* The one way the clock band is wiped whole: an owner change (clock <->
+ * playback) and the dashboard repaint. A format change does NOT come here --
+ * it relayouts through the diff path (clock_relayout). band_clear only knows
+ * the glyph queue's runs, so the AM/PM shadow is reset here, with the pixels. */
+static void clock_band_clear(void) {
+    band_clear(0, CLOCK_Y, PANEL_WIDTH, CLOCK_BAND_H);
+    ampm.shown = false;
+}
+
+uint8_t display_get_clock_mode(void) {
+    return clock_mode;
+}
+
+void display_set_clock_mode(uint8_t mode) {
+    if (mode >= DISPLAY_CLOCK_MODE_COUNT) mode = DISPLAY_CLOCK_24H;
+    if (mode == clock_mode) return;
+    clock_mode = mode;
+    /* The housekeeping pass paints a relayout on its next 100 ms tick rather
+     * than waiting for the second edge. */
+    clock_relayout = true;
+}
 
 static void draw_playback(void) {
     char buf[PLAYBACK_MAX + 1];
@@ -398,8 +504,13 @@ static void draw_playback(void) {
     uint16_t y    = big ? CLOCK_Y : (CLOCK_Y + 4);
 
     /* Ownership change (clock <-> playback): clear the whole band through
-     * band_clear so every overlapping shadow is invalidated. */
-    if (clock_force_repaint) band_clear(0, CLOCK_Y, PANEL_WIDTH, CLOCK_BAND_H);
+     * band_clear so every overlapping shadow is invalidated -- then tell the
+     * slot it is KNOWN EMPTY at the new layout, or queue_line's unknown path
+     * clears the full width a second time (profiled: ~8 ms per clear). */
+    if (clock_force_repaint) {
+        clock_band_clear();
+        shadow_mark_empty(GQ_SLOT_CLOCK, font, x0, y);
+    }
 
     /* Through the glyph queue (audit BW-2): the per-second case still diffs
      * to 1-2 glyphs against the shadow, and a RELAYOUT -- font or length
@@ -466,18 +577,79 @@ void draw_clock(void) {
         clock_force_repaint = false;
         return;
     }
-    if (clock_force_repaint) band_clear(0, CLOCK_Y, PANEL_WIDTH, CLOCK_BAND_H);
+    bool cleared = clock_force_repaint;
+    if (cleared) clock_band_clear();
+    clock_force_repaint = false;
+    bool relayout  = clock_relayout;
+    clock_relayout = false;
+
+    /* Off: retire what is up (the run exactly, plus the AM/PM cell) and the
+     * per-second path does no work. Playback still takes the band, handled
+     * before we get here. */
+    if (clock_mode == DISPLAY_CLOCK_OFF) {
+        if (relayout) {
+            retire_line(GQ_SLOT_CLOCK);
+            if (ampm.shown) {
+                band_clear(ampm.x, CLOCK_Y, AMPM_W, CLOCK_BAND_H);
+                ampm.shown = false;
+            }
+        }
+        return;
+    }
+    (void)relayout;   /* 24h <-> 12h: nothing to pre-clear; the diff path moves the run */
+
     rtc_time_t shown;
     bool valid = rtc_get_time(&shown);
     if (!valid) memset(&shown, 0, sizeof(shown));
 
+    /* Date: "Sep 1, 2026" in the 20px face -- the 30px atlas holds only
+     * digits and the colon. 12 cells of 10 px at most, in the same 23-row
+     * cell the playback timer uses. Redraws only when the string changes,
+     * i.e. at midnight; the font change to/from the digits goes through
+     * queue_line's moved path (a different face cannot overlap-paint, so
+     * that one transition wipes, exactly as playback does). */
+    if (clock_mode == DISPLAY_CLOCK_DATE) {
+        static const char *const months[12] = {
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        };
+        char date_str[32];   /* oversized: the compiler cannot prove %u is short */
+        if (valid && shown.month >= 1 && shown.month <= 12) {
+            snprintf(date_str, sizeof(date_str), "%s %u, %u",
+                     months[shown.month - 1], (unsigned)shown.day, (unsigned)shown.year);
+        } else {
+            snprintf(date_str, sizeof(date_str), "--- --, ----");
+        }
+        uint8_t  dn  = (uint8_t)strlen(date_str);
+        if (dn > 12) dn = 12;
+        date_str[dn] = '\0';
+        uint16_t dx0 = (uint16_t)((PANEL_WIDTH - dn * FONT_STATUS_ADV) / 2);
+        if (ampm.shown) {   /* leaving 12h: the glyph cell is outside any run */
+            band_clear(ampm.x, CLOCK_Y, AMPM_W, CLOCK_BAND_H);
+            ampm.shown = false;
+        }
+        if (cleared) shadow_mark_empty(GQ_SLOT_CLOCK, FONT_STATUS, dx0, CLOCK_Y);
+        queue_line(GQ_SLOT_CLOCK, FONT_STATUS, dx0, CLOCK_Y, date_str);
+        return;
+    }
+
+    bool     twelve = (clock_mode == DISPLAY_CLOCK_12H);
+    bool     pm     = shown.hours >= 12;
+    unsigned hh     = shown.hours;
+    if (twelve) {
+        hh %= 12;
+        if (hh == 0) hh = 12;
+    }
+
     char time_str[12];
 #if DISPLAY_CLOCK_SHOW_SECONDS
-    snprintf(time_str, sizeof(time_str), "%02u:%02u:%02u",
-             (unsigned)shown.hours, (unsigned)shown.minutes, (unsigned)shown.seconds);
+    if (twelve) snprintf(time_str, sizeof(time_str), "%u:%02u:%02u",
+                         hh, (unsigned)shown.minutes, (unsigned)shown.seconds);
+    else        snprintf(time_str, sizeof(time_str), "%02u:%02u:%02u",
+                         hh, (unsigned)shown.minutes, (unsigned)shown.seconds);
 #else
-    snprintf(time_str, sizeof(time_str), "%02u:%02u",
-             (unsigned)shown.hours, (unsigned)shown.minutes);
+    if (twelve) snprintf(time_str, sizeof(time_str), "%u:%02u", hh, (unsigned)shown.minutes);
+    else        snprintf(time_str, sizeof(time_str), "%02u:%02u", hh, (unsigned)shown.minutes);
 #endif
     /* Through the glyph queue (audit BW-3): queue_line diffs against the
      * band's shadow, so the per-second case queues 1-2 glyphs exactly as the
@@ -485,12 +657,44 @@ void draw_clock(void) {
      * invalidated the shadow) queues all 8 -- painted by the pump at main-
      * loop rate instead of ~16 ms of blocking waits. */
     uint16_t adv = lcd_font_advance(FONT_CLOCK);
-    if (adv) {
-        uint8_t  n  = (uint8_t)strlen(time_str);   // 8 (HH:MM:SS) or 5 (HH:MM)
-        uint16_t x0 = (uint16_t)((PANEL_WIDTH - n * adv) / 2);
-        queue_line(GQ_SLOT_CLOCK, FONT_CLOCK, x0, CLOCK_Y, time_str);
+    if (!adv) return;
+    uint8_t  n  = (uint8_t)strlen(time_str);   // 8/7 (with seconds) or 5/4
+    uint16_t w  = (uint16_t)(n * adv + (twelve ? AMPM_W : 0));
+    uint16_t x0 = (uint16_t)((PANEL_WIDTH - w) / 2);
+    if (twelve) x0 = (x0 > AMPM_X_SHIFT) ? (uint16_t)(x0 - AMPM_X_SHIFT) : 0;
+    uint16_t ax = (uint16_t)(x0 + n * adv);   // AM/PM cell origin: the run's end
+
+    /* Retire a stale AM/PM glyph BEFORE the run is re-laid: when the run
+     * grows from 7 to 8 cells the old glyph's columns fall inside the new
+     * run, and the queue paints those cells asynchronously -- clearing after
+     * the fact would erase a freshly painted digit. This clear does not
+     * touch the run's shadow (half-open overlap, see above), so the per-cell
+     * diff below still holds and the queue handles the moved run itself.
+     * A letter flip (noon, midnight) needs no clear: the tile paints its
+     * own background. */
+    if (ampm.shown && (!twelve || ampm.x != ax)) {
+        band_clear(ampm.x, CLOCK_Y, AMPM_W, CLOCK_BAND_H);
+        ampm.shown = false;
     }
-    clock_force_repaint = false;
+    /* After a whole-band clear the slot is KNOWN EMPTY at this layout; saying
+     * so spares queue_line's unknown-path full-width clear (~8 ms). */
+    if (cleared) shadow_mark_empty(GQ_SLOT_CLOCK, FONT_CLOCK, x0, CLOCK_Y);
+    queue_line(GQ_SLOT_CLOCK, FONT_CLOCK, x0, CLOCK_Y, time_str);
+    if (twelve && !ampm.shown) {
+        /* The cell may hold the tail of the run's OLD layout (24h -> 12h
+         * shifts the digits left, off the glyph's columns). Clear it AFTER
+         * queue_line: the new run does not cover these columns, so this
+         * cannot invalidate the fresh shadow -- before it, it would overlap
+         * the old run and force the full-width unknown clear (the wipe). */
+        band_clear(ax, CLOCK_Y, AMPM_W, CLOCK_BAND_H);
+        draw_ampm(ax, CLOCK_Y, pm);
+        ampm.shown = true;
+        ampm.x     = ax;
+        ampm.pm    = pm;
+    } else if (twelve && ampm.pm != pm) {
+        draw_ampm(ax, CLOCK_Y, pm);    /* the tile paints its own background */
+        ampm.pm = pm;
+    }
 }
 
 uint32_t display_redraw_dashboard(uint32_t trigger_time, void *cb_arg) {
@@ -539,6 +743,12 @@ bool display_init_kb(void) {
     }
 
     display_backlight_init();
+
+    /* Stored clock format, else the compile-time default (24h). Raw
+     * assignment: the dashboard has not been drawn yet, so there is nothing
+     * to relayout. */
+    uint8_t cm;
+    if (kb_eeconfig_get_clock_mode(&cm)) clock_mode = cm;
 
     bool res = display_init_user();
     if (res)
@@ -1389,6 +1599,7 @@ static bool gq_pending(void) { return gq_i < gq_n; }
 static void shadow_invalidate(void) {
     for (uint8_t i = 0; i < GQ_RUNS; i++) shadow[i].valid = false;
     last_icon_drawn = DISPLAY_ICON_NONE;
+    ampm.shown      = false;   /* the AM/PM glyph is its own shadow */
 }
 
 static void gq_push(uint16_t font, uint16_t x, uint16_t y, char c) {
@@ -1483,9 +1694,23 @@ static void queue_line(uint8_t slot, uint16_t font, uint16_t x, uint16_t y,
     if (moved) {
         uint16_t oadv = lcd_font_advance(shadow[slot].font);
         uint16_t oh   = lcd_font_height(shadow[slot].font);
-        if (oadv && oh)
-            band_clear(shadow[slot].x, shadow[slot].y,
-                           (uint16_t)(strlen(shadow[slot].s) * oadv), oh);
+        uint16_t ox   = shadow[slot].x, oy = shadow[slot].y;
+        uint16_t ow   = (uint16_t)(strlen(shadow[slot].s) * oadv);
+        uint16_t nw   = (uint16_t)(n * adv);
+        if (oadv && oh) {
+            if (oy == y && oh == h) {
+                /* Same row, same face (the clock format change, a playback
+                 * relayout at the same size): the new cells will overwrite
+                 * everything they cover, so clear ONLY the columns the old
+                 * run vacates. The old digits stay up until each cell is
+                 * repainted -- no black flash. */
+                if (ox < x) band_clear(ox, oy, (uint16_t)(x - ox), oh);
+                if (ox + ow > x + nw)
+                    band_clear((uint16_t)(x + nw), oy, (uint16_t)(ox + ow - (x + nw)), oh);
+            } else {
+                band_clear(ox, oy, ow, oh);
+            }
+        }
     } else if (unknown) {
         band_clear(0, y, PANEL_WIDTH, h);
     }
@@ -1502,6 +1727,19 @@ static void queue_line(uint8_t slot, uint16_t font, uint16_t x, uint16_t y,
     memcpy(shadow[slot].s, str, n);
     shadow[slot].s[n] = '\0';
     shadow[slot].font = font; shadow[slot].x = x; shadow[slot].y = y;
+    shadow[slot].valid = true;
+}
+
+/* Declare a slot KNOWN EMPTY at a layout: the caller has just cleared the
+ * whole band (every pixel the slot could own), so the next queue_line at
+ * this font/x/y paints every cell WITHOUT the unknown-path full-width clear.
+ * Only valid right after such a clear -- lying here is the stray-glyph bug. */
+static void shadow_mark_empty(uint8_t slot, uint16_t font, uint16_t x, uint16_t y) {
+    if (slot >= GQ_RUNS) return;
+    shadow[slot].font  = font;
+    shadow[slot].x     = x;
+    shadow[slot].y     = y;
+    shadow[slot].s[0]  = '\0';
     shadow[slot].valid = true;
 }
 
@@ -1636,19 +1874,24 @@ void display_housekeeping_task(void) {
         if (gq_pending()) return;
 
         // Connection digit every tick (~10 Hz) so its blink animates; self-guarded.
-        draw_conn_number(false);
+        LOOP_SITE(LOOP_SITE_CONN, draw_conn_number(false));
 
         // Wireless status overlay: recompute before the slot is drawn so an
         // appearing/releasing overlay repaints on this same tick.
-        conn_status_update();
+        LOOP_SITE(LOOP_SITE_STATUS, conn_status_update());
 
         // Host text slot: self-guards, and expires itself on the same tick.
-        draw_text_slot(false);
+        LOOP_SITE(LOOP_SITE_TEXT, draw_text_slot(false));
 
         // Lock band: self-guards, only redraws when a lock state actually
         // changes. Needs the ~10 Hz tick rather than the 1 Hz clock path so a
         // Caps press shows up immediately.
-        draw_locks(false);
+        LOOP_SITE(LOOP_SITE_LOCKS, draw_locks(false));
+
+        /* A forced clock-band repaint (owner or format change) paints on this
+         * tick rather than up to a second later at the edge; the per-second
+         * pass below then diffs to nothing. */
+        if (clock_force_repaint || clock_relayout) LOOP_SITE(LOOP_SITE_CLOCKF, draw_clock());
 
         // Clock + battery only need refreshing once per RTC second.
         static uint32_t last_shown_sec = UINT32_MAX;
@@ -1658,8 +1901,8 @@ void display_housekeeping_task(void) {
             /* Advance the playback timer on the RTC second, so it runs at the
              * same cadence the band already repaints at -- no extra DMA. */
             display_playback_tick();
-            draw_clock();
-            draw_battery(false); // self-guards, only draws on change
+            LOOP_SITE(LOOP_SITE_CLOCK, draw_clock());
+            LOOP_SITE(LOOP_SITE_BATT,  draw_battery(false)); // self-guards, only draws on change
         }
     }
 }

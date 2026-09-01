@@ -168,6 +168,32 @@ static void usb_wakeup_try(void) {
  * completely different remedies, so each marks itself on the way in. */
 volatile uint8_t loop_stall_mark = 0;   /* see LOOP_MARK_* in ak820pro.h */
 
+static const char *loop_site_name(uint8_t s) {
+    static const char *const names[LOOP_SITE_COUNT] = {
+        "none", "leds", "pair", "consumer",
+        "param", "rtctask", "anim", "conn", "status", "text", "locks", "clockF",
+        "clock", "batt", "eecfg", "health",
+    };
+    return s < LOOP_SITE_COUNT ? names[s] : "?";
+}
+
+static uint8_t  site_open = LOOP_SITE_NONE, site_worst = LOOP_SITE_NONE;
+static uint32_t site_t0 = 0, site_worst_ms = 0;
+static uint32_t hk_worst_ms = 0;      /* the whole 10 Hz block */
+
+void loop_site_end(void) {
+    if (site_open == LOOP_SITE_NONE) return;
+    uint32_t e = timer_elapsed32(site_t0);
+    if (e > site_worst_ms) { site_worst_ms = e; site_worst = site_open; }
+    site_open = LOOP_SITE_NONE;
+}
+
+void loop_site_begin(uint8_t site) {
+    loop_site_end();
+    site_open = site;
+    site_t0   = timer_read32();
+}
+
 static const char *loop_mark_name(uint8_t m) {
     switch (m) {
         case LOOP_MARK_FLASH: return "flash";   /* internal-flash program/erase */
@@ -218,10 +244,13 @@ static void loop_gap_task(void) {
      * what. */
     if (n_gaps && timer_elapsed32(report_at) >= 1000) {
         report_at = timer_read32();
-        dprintf("[stall] t=%lus %ux worst=%lums %s\n",
+        dprintf("[stall] t=%lus %ux worst=%lums %s hk=%lums site=%s:%lums\n",
                 (unsigned long)(timer_read32() / 1000), (unsigned)n_gaps,
-                (unsigned long)worst, loop_mark_name(worst_mark));
+                (unsigned long)worst, loop_mark_name(worst_mark),
+                (unsigned long)hk_worst_ms,
+                loop_site_name(site_worst), (unsigned long)site_worst_ms);
         n_gaps = 0; worst = 0; worst_mark = LOOP_MARK_NONE;
+        hk_worst_ms = 0; site_worst_ms = 0; site_worst = LOOP_SITE_NONE;
     }
 }
 #endif
@@ -306,6 +335,21 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
                 snprintf(buf, sizeof(buf), "LCD    %3u%%",
                          (unsigned)(mx ? (lvl * 100u + mx / 2u) / mx : 0u));
                 display_set_param_status(buf);
+#endif
+            }
+            return false;
+        case CLK_MODE:
+            if (record->event.pressed) {
+                /* 24h -> 12h -> off -> date -> 24h. Persisted like the backlight
+                 * level: through kb_eeconfig's coalesced deferred flush. */
+                uint8_t m = (uint8_t)((display_get_clock_mode() + 1) % DISPLAY_CLOCK_MODE_COUNT);
+                display_set_clock_mode(m);
+                kb_eeconfig_set_clock_mode(m);
+#ifdef PARAM_OVERLAY
+                static const char *const clock_mode_names[DISPLAY_CLOCK_MODE_COUNT] = {
+                    "Clock 24h", "Clock 12h", "Clock off", "Clock date",
+                };
+                display_set_param_status(clock_mode_names[m]);
 #endif
             }
             return false;
@@ -436,6 +480,8 @@ void housekeeping_task_kb(void) {
 #ifdef LOOPGAP_INSTRUMENT
     loop_gap_task();
 #endif
+    /* Per-pass work is deliberately NOT sited: see the LOOP_SITE note in
+     * ak820pro.h -- the timer reads cost ~2 ms a pass on this MCU. */
     rgb_repeat_task();
     rtc_fast_task();             // <= one queued PCF I2C transaction, only when no blit is in flight (R4)
     display_second_edge_task();  // clock digits repaint on the tick, not at the 10 Hz cadence (3.9)
@@ -448,22 +494,29 @@ void housekeeping_task_kb(void) {
     static uint32_t last_t = 0;
     if (timer_elapsed32(last_t) >= 100) {
         last_t = timer_read32();
+#ifdef LOOPGAP_INSTRUMENT
+        uint32_t hk_t0 = last_t;
+#endif
 
-        update_leds();
-        bt_pair_hold_task();   // hold-to-pair fires under the finger, not on release
-        modified_consumer_task();  // drop held mods once a knob spin stops
+        LOOP_SITE(LOOP_SITE_LEDS,     update_leds());
+        LOOP_SITE(LOOP_SITE_PAIR,     bt_pair_hold_task());   // hold-to-pair fires under the finger, not on release
+        LOOP_SITE(LOOP_SITE_CONSUMER, modified_consumer_task());  // drop held mods once a knob spin stops
 #ifdef PARAM_OVERLAY
-        param_status_task();   // surface setting changes in the info band
+        LOOP_SITE(LOOP_SITE_PARAM,    param_status_task());   // surface setting changes in the info band
 #endif
 #ifdef CONSOLE_ENABLE
         key_stat_task();       // dropped-keystroke localisation; see key_press_count
 #endif
 
-        if (!anim_active()) rtc_task();   // RTC I2C (port A) glitches the flash SPI1 pins (A12/A13) mid-DMA
-        anim_task();                      // one animation frame per 100 ms
-        display_housekeeping_task();
-        kb_eeconfig_task();               // settled, coalesced kb-config flush
-        health_task();                    // [health] console line, on change only
+        if (!anim_active()) LOOP_SITE(LOOP_SITE_RTCTASK, rtc_task());   // RTC I2C (port A) glitches the flash SPI1 pins (A12/A13) mid-DMA
+        LOOP_SITE(LOOP_SITE_ANIM, anim_task());                      // one animation frame per 100 ms
+        display_housekeeping_task();      // its sub-draws are sited individually
+        LOOP_SITE(LOOP_SITE_EECFG,  kb_eeconfig_task());               // settled, coalesced kb-config flush
+        LOOP_SITE(LOOP_SITE_HEALTH, health_task());                    // [health] console line, on change only
+#ifdef LOOPGAP_INSTRUMENT
+        uint32_t hk = timer_elapsed32(hk_t0);
+        if (hk > hk_worst_ms) hk_worst_ms = hk;
+#endif
     }
 
     // Chain the user hook
