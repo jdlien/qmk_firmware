@@ -1226,6 +1226,26 @@ static struct {
 static uint8_t last_icon_drawn = DISPLAY_ICON_NONE;
 static uint16_t last_icon_y    = 0;
 
+/* Set when a text clear lands on the icon's columns. See band_clear(). */
+static bool icon_clobbered = false;
+
+/* Every clear issued by the text path goes through here.
+ *
+ * The transport icon occupies x 0..TEXT_ICON_W-1, and the overlay deliberately
+ * starts at CONN_STATUS_X (4) rather than TEXT_X (16) to buy a twelfth
+ * character -- so the two OVERLAP. When the overlay retires, the clear that
+ * removes it also removes most of the icon that was painted earlier in the same
+ * pass, leaving only columns 0..3 and whatever rows sit above the cleared band.
+ *
+ * ⚠️ DO NOT "FIX" THIS BY DRAWING THE ICON AFTER THE TEXT. That breaks the
+ * other direction: entering the overlay, the icon block's gutter clear (x
+ * 0..TEXT_X) erases the overlay's first glyph at x=4. Icon-first is required;
+ * this flag is what makes it survive. */
+static void band_clear(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
+    if (x < TEXT_ICON_W) icon_clobbered = true;
+    lcd_clear_rect(x, y, w, h);
+}
+
 static void gq_reset(void) { gq_n = gq_i = 0; }
 
 static void shadow_invalidate(void) {
@@ -1287,7 +1307,7 @@ static void queue_line(uint8_t slot, uint16_t font, uint16_t x, uint16_t y,
         uint16_t oadv = lcd_font_advance(shadow[slot].font);
         uint16_t oh   = lcd_font_height(shadow[slot].font);
         if (oadv && oh)
-            lcd_clear_rect(shadow[slot].x, shadow[slot].y,
+            band_clear(shadow[slot].x, shadow[slot].y,
                            (uint16_t)(strlen(shadow[slot].s) * oadv), oh);
     }
 
@@ -1297,8 +1317,8 @@ static void queue_line(uint8_t slot, uint16_t font, uint16_t x, uint16_t y,
 
     /* Cells the new string no longer occupies keep their old glyphs otherwise. */
     if (old_n > n)
-        lcd_clear_rect((uint16_t)(x + n * adv), y,
-                       (uint16_t)((old_n - n) * adv), h);
+        band_clear((uint16_t)(x + n * adv), y,
+                   (uint16_t)((old_n - n) * adv), h);
 
     memcpy(shadow[slot].s, str, n);
     shadow[slot].s[n] = '\0';
@@ -1312,7 +1332,7 @@ static void retire_line(uint8_t slot) {
     uint16_t adv = lcd_font_advance(shadow[slot].font);
     uint16_t h   = lcd_font_height(shadow[slot].font);
     if (adv && h)
-        lcd_clear_rect(shadow[slot].x, shadow[slot].y,
+        band_clear(shadow[slot].x, shadow[slot].y,
                        (uint16_t)(strlen(shadow[slot].s) * adv), h);
     shadow[slot].valid = false;
 }
@@ -1328,6 +1348,7 @@ static void draw_text_slot(bool force) {
     text_dirty = false;
 
     gq_flush();   /* land the previous diff before computing the next one */
+    icon_clobbered = false;
 
     if (force) {
         /* A forced repaint follows a full-screen clear, so nothing on the
@@ -1372,6 +1393,12 @@ static void draw_text_slot(bool force) {
         retire_line(0);
         retire_line(1);
     }
+
+    /* Repaint the icon if a text clear reached into it. Costs one blit, and
+     * only on a transition that is already repainting -- in the steady state
+     * nothing clears the gutter and this never fires. */
+    if (icon_clobbered && want_icon != DISPLAY_ICON_NONE)
+        draw_text_icon(0, icon_y, want_icon);
 }
 
 static void draw_status(bool force) {
