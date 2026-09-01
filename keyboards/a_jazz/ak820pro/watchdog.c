@@ -78,12 +78,13 @@ uint8_t watchdog_boot_rstst(void) { return boot_rstst; }
 
 void watchdog_boot_check(void) {
     boot_rstst = (uint8_t)(SN_SYS0->RSTST & 0x1F);
-    /* RSTST flags are write-0-to-clear ("Write: clear this bit"), so writing
-     * the read value with WDTRSTF zeroed clears only that flag. */
-    fired_last = (SN_SYS0->RSTST_b.WDTRSTF != 0);
-    if (fired_last) {
-        SN_SYS0->RSTST = SN_SYS0->RSTST & ~(1u << 1);
-    }
+    fired_last = (boot_rstst & (1u << 1)) != 0;
+    /* RSTST flags are STICKY and write-0-to-clear; clear ALL of them after
+     * the capture so each boot's snapshot names THIS boot's cause instead of
+     * a union of history. (The first readout proved the point: it showed
+     * SW+LVD+POR at once -- the LVD being the residue of the slider's
+     * BT->cable brownout resets.) */
+    SN_SYS0->RSTST = 0;
 
     if (wdt_boot_magic != WDT_BOOT_MAGIC) { /* cold power-on: RAM is garbage */
         wdt_boot_magic = WDT_BOOT_MAGIC;
