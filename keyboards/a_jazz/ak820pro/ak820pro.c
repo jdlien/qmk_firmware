@@ -17,50 +17,10 @@
 #    include "usb_main.h"   /* USB_DRIVER */
 #endif
 
-// Current wireless mode, derived from the tri-state slider. The Fn BT controls
-// are only meaningful in the matching mode (e.g. Fn+Q selects a BT slot only
-// while the slider is in the BT position), so they are gated on this.
-enum wireless_mode {
-    WL_MODE_USB = 0,
-    WL_MODE_BT,
-    WL_MODE_24G
-};
-static uint8_t wireless_mode = WL_MODE_USB;
-
-// Persisted keyboard config (EEPROM kb datablock; 4 bytes reserved, room to grow).
-typedef struct __attribute__((packed)) {
-    uint8_t bt_profile;   // last BT slot selected (CH582_PROFILE_BT_1..3)
-    uint8_t _pad[3];
-} kb_config_t;
-static kb_config_t kb_config;
-
-// Last BT slot the user selected. Entering BT mode used to hardcode slot 1, so
-// leaving BT for USB/2.4G and coming back silently dropped you onto slot 1
-// whatever you had been connected to. Persisted to EEPROM so it survives mode
-// switches and power cycles.
-static ch582_profile_t last_bt_profile = CH582_PROFILE_BT_1;
-
-// Write the remembered slot back only when it actually changed -- wear-leveling
-// on internal flash is cheap but not free, and slot changes are user-initiated.
-static void save_bt_profile(ch582_profile_t p) {
-    if (p == last_bt_profile) return;
-    last_bt_profile     = p;
-    kb_config.bt_profile = (uint8_t)p;
-    eeconfig_update_kb_datablock(&kb_config, 0, sizeof(kb_config));
-}
-
-// Fn+P long-press tracking: pairing only starts after a sustained hold, and
-// only while in a wireless mode.
-/* 2 s, not 1 s. A slot-key press ALSO issues a select/reconnect, so a merely
- * slow tap at 1 s would drop a live link and start advertising -- recovering
- * needs a re-select. Pairing is rare and deliberate; reconnecting is the common
- * action, so the gesture must sit well clear of any tap. The progress bar makes
- * the longer hold legible rather than annoying. Measured caveat: the hold task
- * runs on the 10 Hz tick and the band redraws on the same tick, so the PERCEIVED
- * threshold is ~200 ms longer than this number. */
-#define BT_PAIR_HOLD_MS 2000
-static uint16_t bt_pair_timer = 0;
-static bool     bt_pair_armed = false;
+// Wireless-mode/slot UI lives in bt_ui.c; the persisted kb datablock in
+// kb_eeconfig.c (phase-3 module split -- code moved verbatim).
+#include "bt_ui.h"
+#include "kb_eeconfig.h"
 
 void early_hardware_init_post(void) {
     // Configure SPI0 pins for the LCD panel. SEL0 is left UNMUXED: our bare-metal bus
@@ -103,17 +63,11 @@ static void pwm_tick_init(void);
     gpio_set_pin_input_high(CHARGE_CHRG_PIN);   // input with pull-up
     gpio_set_pin_input_high(CHARGE_STDBY_PIN);  // input with pull-up
 
-    // Restore persisted config. A fresh/invalid EEPROM zero-fills the block, so a
-    // 0 (or out-of-range) bt_profile falls back to slot 1.
-    eeconfig_read_kb_datablock(&kb_config, 0, sizeof(kb_config));
-    if (kb_config.bt_profile >= CH582_PROFILE_BT_1 && kb_config.bt_profile <= CH582_PROFILE_BT_3)
-        last_bt_profile = (ch582_profile_t)kb_config.bt_profile;
-
-    // dip_switch_init() runs BEFORE this hook, so its boot-time BT selection used
-    // the default slot (EEPROM had not been read yet). Now that we have the saved
-    // slot, re-select it if we booted with the slider already on Bluetooth.
-    if (wireless_mode == WL_MODE_BT)
-        ch582_set_profile(last_bt_profile);
+    // Restore persisted config, then re-select the saved BT slot if the
+    // slider booted in the BT position (dip_switch_init ran before EEPROM
+    // was read). Details in kb_eeconfig.c / bt_ui.c.
+    kb_eeconfig_init();
+    bt_ui_resume_saved_profile();
 
     // Bring up the clock: I2C, the SN32 1 Hz counter, and a first PCF8563 seed.
     rtc_init();
@@ -145,41 +99,7 @@ static void pwm_tick_init(void);
         if (active) display_draw_windows_logo();
         else        display_draw_mac_logo();
     } else if (index == 1 || index == 2) {
-        // The mode slider is a tri-state encoded by two dip pins: index 1 = BT,
-        // index 2 = 2.4G, both inactive = USB. We must look at BOTH pins together
-        // -- handling them independently lets the inactive sibling's "else" branch
-        // call ch582_cancel_connect() and clobber connect_requested even while the
-        // other mode is active (e.g. at boot in BT position), silently disabling
-        // wireless key forwarding. Recompute the mode from the latched pin states.
-        static bool bt_on  = false;
-        static bool g24_on = false;
-        if (index == 1) bt_on = active;
-        if (index == 2) g24_on = active;
-
-        // The CH582F handles both BT and 2.4G over the same UART, and QMK's
-        // CONNECTION_HOST_2P4GHZ is not wired, so BOTH wireless positions map to
-        // CONNECTION_HOST_BLUETOOTH (QMK then routes key reports to bt_driver ->
-        // our bluetooth_send_keyboard). Our own A6 profile-select tells the
-        // module which radio to use.
-        if (bt_on) {
-            wireless_mode = WL_MODE_BT;
-            ch582_set_profile(last_bt_profile);  // resume the slot last selected
-            connection_set_host_noeeprom(CONNECTION_HOST_BLUETOOTH);
-            display_draw_bluetooth_logo();
-        } else if (g24_on) {
-            wireless_mode = WL_MODE_24G;
-            ch582_set_profile(CH582_PROFILE_PEER_24G);
-            connection_set_host_noeeprom(CONNECTION_HOST_BLUETOOTH);
-            display_draw_2_4_g_logo();
-        } else {
-            // USB mode (both inactive): stop retrying, but keep the module alive
-            // (it must stay powered to keep reporting battery level). Route key
-            // reports back to USB.
-            wireless_mode = WL_MODE_USB;
-            ch582_cancel_connect();
-            connection_set_host_noeeprom(CONNECTION_HOST_USB);
-            display_draw_usb_logo();
-        }
+        bt_ui_mode_slider(index, active);   // tri-state slider; see bt_ui.c
     }
     return true;
  }
@@ -590,57 +510,15 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
         case RGBM_SPI:  if (record->event.pressed) rgb_matrix_increase_speed(); return false;
         case RGBM_SPD:  if (record->event.pressed) rgb_matrix_decrease_speed(); return false;
 #endif
-        /* BT slot keys use the @isuua/edthu devctrl model: TAP = select the slot
-         * (A6 <slot>, reconnect the existing bond); HOLD = select + pair (adds
-         * A6 0x51 on the held slot). Select happens on press for instant feedback;
-         * the pair is added if the key is still held at BT_PAIR_HOLD_MS. This
-         * replaces needing a separate pair key, though Fn+P still works. */
-        case BT1:  // Fn+Q -> tap: select BT1 | hold: pair BT1
-        case BT2:  // Fn+W -> tap: select BT2 | hold: pair BT2
-        case BT3:  // Fn+E -> tap: select BT3 | hold: pair BT3
-            if (record->event.pressed) {
-                if (wireless_mode == WL_MODE_BT) {
-                    ch582_profile_t slot = keycode == BT1 ? CH582_PROFILE_BT_1
-                                         : keycode == BT2 ? CH582_PROFILE_BT_2
-                                                          : CH582_PROFILE_BT_3;
-                    save_bt_profile(slot);
-                    ch582_set_profile(last_bt_profile);          // tap action: select
-                    connection_set_host_noeeprom(CONNECTION_HOST_BLUETOOTH);
-                    display_draw_bluetooth_logo();
-                    bt_pair_timer = timer_read();                // arm hold-to-pair
-                    bt_pair_armed = true;
-                    display_set_pair_hint(0);      // progress bar until it fires
-                }
-            } else {
-                /* Release only disarms. Pairing now fires from
-                 * bt_pair_hold_task() the instant BT_PAIR_HOLD_MS elapses while
-                 * the key is STILL DOWN -- previously it fired here, on key-up,
-                 * so holding the key did nothing visible until you let go and
-                 * there was no way to tell whether the hold had "taken". That
-                 * also contradicted the comment above, which describes firing at
-                 * the threshold. */
-                display_set_pair_hint(-1);      // released early: hold abandoned
-                bt_pair_armed = false;
-            }
-            return false;
-        case BT24G:  // Fn+R -> select 2.4G (2.4G mode only)
-            if (record->event.pressed && wireless_mode == WL_MODE_24G) {
-                ch582_set_profile(CH582_PROFILE_PEER_24G);
-                connection_set_host_noeeprom(CONNECTION_HOST_BLUETOOTH);
-                display_draw_2_4_g_logo();
-            }
-            return false;
+        // BT slot / 2.4G / pair keys: tap-select + hold-to-pair, in bt_ui.c.
+        case BT1:      // Fn+Q -> tap: select BT1 | hold: pair BT1
+        case BT2:      // Fn+W -> tap: select BT2 | hold: pair BT2
+        case BT3:      // Fn+E -> tap: select BT3 | hold: pair BT3
+            return bt_ui_slot_key(keycode, record);
+        case BT24G:    // Fn+R -> select 2.4G (2.4G mode only)
+            return bt_ui_24g_key(record);
         case BT_PAIR:  // Fn+P (long press) -> pair, BT/2.4G modes only
-            if (record->event.pressed) {
-                // Arm a long-press only in a wireless mode; ignore in USB.
-                bt_pair_armed = (wireless_mode != WL_MODE_USB);
-                bt_pair_timer = timer_read();
-                if (bt_pair_armed) display_set_pair_hint(0);
-            } else {
-                display_set_pair_hint(-1);
-                bt_pair_armed = false;   /* fired from bt_pair_hold_task() */
-            }
-            return false;
+            return bt_ui_pair_key(record);
         default:
             return true;
     }
@@ -657,7 +535,11 @@ static bool rtc_apply_bytes(const uint8_t *p) {
      * seconds register. Any local HID-capable process can send this packet;
      * "the host script is well-behaved" is not a guard. (Audit finding
      * IV-1, hardening-plan/findings-input-validation.md.) */
-    if (p[1] < 1 || p[1] > 12 ||   /* month   */
+    if (p[0] > 99 ||               /* year -- the PCF stores year %100 but
+                                    * reads reconstruct 2000+yy, so 100..255
+                                    * would set one year live and persist
+                                    * another (Codex phase-2 review #1) */
+        p[1] < 1 || p[1] > 12 ||   /* month   */
         p[2] < 1 || p[2] > 31 ||   /* day     */
         p[3] > 6 ||                /* weekday */
         p[4] > 23 ||               /* hours   */
@@ -949,10 +831,7 @@ static void health_command(uint8_t *data, uint8_t length) {
         case HC_STALL:
             if (length >= 4) {
                 if (data[3] == 2) {
-                    /* Toggle a reserved pad byte so wear-levelling cannot skip
-                     * an identical write -- the flash really programs. */
-                    kb_config._pad[0] ^= 1;
-                    eeconfig_update_kb_datablock(&kb_config, 0, sizeof(kb_config));
+                    kb_eeconfig_test_write();   /* a REAL flash program first */
                 }
                 for (;;) { /* wedge: the watchdog must get us out of here */ }
             }
@@ -1253,21 +1132,6 @@ static void update_leds(void) {
 }
 
 __attribute__((weak)) void display_housekeeping_task(void) {}
-
-/* Fire hold-to-pair the moment the threshold passes, while the key is still
- * held, so the LCD reacts under your finger instead of on release. Shared by the
- * BT slot keys and Fn+P; both only ARM here and are disarmed on key-up. */
-static void bt_pair_hold_task(void) {
-    if (!bt_pair_armed) return;
-    uint16_t held = timer_elapsed(bt_pair_timer);
-    if (held < BT_PAIR_HOLD_MS) {
-        display_set_pair_hint((int16_t)((held * 100u) / BT_PAIR_HOLD_MS));
-        return;
-    }
-    bt_pair_armed = false;      /* one-shot: do not re-enter pairing while held */
-    display_set_pair_hint(-1);      // resolved: the band now shows PAIRING
-    ch582_enter_pairing();
-}
 
 #ifdef PARAM_OVERLAY
 /* Short effect names for the 12-character band.

@@ -850,8 +850,11 @@ void ch582_task(void) {
              * cannot itself begin a new frame -- the signature of corrupted
              * UART traffic (what the 2026-08-29 priority inversion produced).
              * Count it: the counter is a TREND instrument, not an exact frame
-             * count -- payload bytes can pose as type bytes, so expect a small
-             * false-positive rate. Main-loop context only (audit C-4).
+             * count -- payload bytes can pose as type bytes, and a VALID frame
+             * preceded by one type-looking noise byte also counts once before
+             * parsing correctly (the window only protects a candidate starting
+             * at b0, not b1). Expect a small false-positive rate; read trends,
+             * not values. Main-loop context only (audit C-4).
              * (Audit finding IV-2, findings-input-validation.md.) */
             health_note_rx_malformed();
         }
