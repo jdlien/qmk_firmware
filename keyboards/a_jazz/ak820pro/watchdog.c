@@ -70,7 +70,14 @@ static const WDGConfig wdg_cfg = {
     .tc = WDT_TC,
 };
 
+/* Raw RSTST at boot: bit0 SWRSTF, bit1 WDTRSTF, bit2 LVDRSTF (brownout),
+ * bit3 EXTRSTF, bit4 PORRSTF. Captured before any clearing so the slider
+ * power-switchover resets can be NAMED instead of guessed at. */
+static uint8_t boot_rstst = 0;
+uint8_t watchdog_boot_rstst(void) { return boot_rstst; }
+
 void watchdog_boot_check(void) {
+    boot_rstst = (uint8_t)(SN_SYS0->RSTST & 0x1F);
     /* RSTST flags are write-0-to-clear ("Write: clear this bit"), so writing
      * the read value with WDTRSTF zeroed clears only that flag. */
     fired_last = (SN_SYS0->RSTST_b.WDTRSTF != 0);
@@ -152,6 +159,7 @@ void    watchdog_boot_check(void) {}
 void    watchdog_start(void) {}
 void    watchdog_kick(void) {}
 void    watchdog_stop(void) {}
+uint8_t watchdog_boot_rstst(void) { return 0; }
 uint8_t watchdog_reset_count(void) { return 0; }
 bool    watchdog_fired_last_boot(void) { return false; }
 bool    watchdog_degraded(void) { return false; }

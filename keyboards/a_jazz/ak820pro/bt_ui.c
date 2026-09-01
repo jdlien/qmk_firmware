@@ -53,6 +53,27 @@ void bt_ui_resume_saved_profile(void) {
 }
 
 void bt_ui_mode_slider(uint8_t index, bool active) {
+    /* Release everything on the OUTGOING host BEFORE routing flips (analysis
+     * credit: Rachel, 2026-09-01). QMK's handle_host_changed() never clears
+     * the report state -- verified in quantum/connection/connection.c -- so
+     * in principle a key held across the slide sends its press on one
+     * route (USB) and its release on the other (CH582F), leaving the USB
+     * host with a stuck, auto-repeating key.
+     *
+     * TESTED ON HARDWARE 2026-09-01 and the stuck key did NOT reproduce on
+     * macOS (held 'a' across wired->BT on the non-rebooting edge: the key
+     * simply stopped). Something un-traced clears it -- possibly host-side
+     * behaviour -- but since the saving mechanism is UNIDENTIFIED, this
+     * explicit clear stays: one zero-report per pin event buys correctness
+     * that doesn't depend on an unexplained mercy or on macOS. (BT->cable
+     * needs no help on this unit: the slider is a power-source switch and
+     * that direction reboots the MCU -- see CLAUDE.md.)
+     *
+     * MUST run here, not in connection_host_changed_kb(): by the time that
+     * callback fires, connection.c has already flipped desired_host, so a
+     * clear there zero-reports the NEW host and strands the old one. */
+    clear_keyboard();
+
     // The mode slider is a tri-state encoded by two dip pins: index 1 = BT,
     // index 2 = 2.4G, both inactive = USB. We must look at BOTH pins together
     // -- handling them independently lets the inactive sibling's "else" branch

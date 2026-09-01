@@ -13,6 +13,7 @@
 #include "health.h"
 #include "kb_eeconfig.h"
 #include "bluetooth/ch582f_ajazz.h"   /* HC_CONN readout + fault injection */
+#include "watchdog.h"                 /* boot reset cause for HC_CONN */
 
 // Apply a 7-byte time payload to the RTC:
 //   [0]=year-2000 [1]=month [2]=day [3]=weekday [4]=hour [5]=min [6]=sec
@@ -344,6 +345,9 @@ static void health_command(uint8_t *data, uint8_t length) {
             data[6] = (ch582_is_connected() ? 1 : 0) |
                       (ch582_is_pairing()   ? 2 : 0) |
                       (ch582_is_usb()       ? 4 : 0);
+            /* Boot reset cause (raw RSTST bits): names what kind of reset a
+             * slider flip produces (POR vs LVD brownout vs external). */
+            data[7] = watchdog_boot_rstst();
             break;
 #ifdef WDT_TEST_HOOKS
         case HC_INJECT:

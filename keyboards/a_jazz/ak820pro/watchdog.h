@@ -18,6 +18,9 @@ void watchdog_stop(void);
 
 /* Consecutive WDT resets leading into this boot (0 on a normal boot). */
 uint8_t watchdog_reset_count(void);
+/* Raw RSTST snapshot from boot: bit0 SW, bit1 WDT, bit2 LVD (brownout),
+ * bit3 EXT, bit4 POR. Names the cause of slider power-switchover resets. */
+uint8_t watchdog_boot_rstst(void);
 /* This boot immediately followed a WDT reset. */
 bool watchdog_fired_last_boot(void);
 /* Too many consecutive WDT resets: the watchdog stays unarmed this boot so
