@@ -646,7 +646,38 @@ static void rgb_callback(PWMDriver *pwmp) {
     }
 #endif
     // Scan the rgb and key matrix
-    if (EFLD1.state != FLASH_PGM) update_pwm_channels(pwmp);
+    if (EFLD1.state != FLASH_PGM) {
+        update_pwm_channels(pwmp);
+    } else {
+        /* A flash program is in progress. The old guard merely SKIPPED the
+         * advance, which left the currently-selected mux row energized --
+         * and the masked program windows then freeze it there for the whole
+         * multi-ms operation, so that row shows its live colour slot at
+         * ~18x normal brightness: the long-standing "row of LEDs flashes
+         * red/green while adjusting" artifact (reproduced on demand
+         * 2026-09-01 by firing EEPROM writes and watching the matrix).
+         * De-select every mux pin instead -- plain GPIO writes, ISR-safe
+         * (sn32f2xx_blank() is NOT: it calls non-I-class pwmDisableChannel)
+         * -- so the frozen state is dark. The first tick after the
+         * operation re-drives the mux via update_pwm_channels. */
+#if (SN32F2XX_PWM_DIRECTION == COL2ROW)
+        for (uint8_t x = 0; x < SN32F2XX_RGB_MATRIX_ROWS_HW; x++) {
+#    if (SN32F2XX_RGB_OUTPUT_ACTIVE_LEVEL == SN32F2XX_RGB_OUTPUT_ACTIVE_HIGH)
+            gpio_write_pin_low(led_row_pins[x]);
+#    else
+            gpio_write_pin_high(led_row_pins[x]);
+#    endif
+        }
+#else /* ROW2COL: the column pins are the mux select */
+        for (uint8_t y = 0; y < SN32F2XX_RGB_MATRIX_COLS; y++) {
+#    if (SN32F2XX_RGB_OUTPUT_ACTIVE_LEVEL == SN32F2XX_RGB_OUTPUT_ACTIVE_HIGH)
+            gpio_write_pin_low(led_col_pins[y]);
+#    else
+            gpio_write_pin_high(led_col_pins[y]);
+#    endif
+        }
+#endif
+    }
     chSysLockFromISR();
     // Advance the timer to just before the wrap-around, that will start a new PWM cycle
     pwm_lld_change_counter(pwmp, UINT16_MAX);
