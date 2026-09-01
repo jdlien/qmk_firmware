@@ -28,8 +28,12 @@ top section is what a new user must know BEFORE flashing.
    fails with "Could not open the device" while reporting the right version —
    plain hidapi has no HID node to open on Tahoe. `nm sonixflasher | grep -c
    libusb` must be > 0.
-5. **Flashing erases the emulated EEPROM** (VIA keymap included). Note your
-   VIA customisations, or use a keymap backup flow, before flashing.
+5. **Flashing erases the emulated EEPROM** — VIA keymap, RGB settings,
+   the persisted LCD brightness, and the persisted RTC divider trim. Note
+   your VIA customisations (or use a keymap backup flow) before flashing.
+   The clock re-converges by itself after a flash: expect it to run a few
+   thousand ppm off with occasional 2 s corrections for the first hour or
+   so, until the trim re-persists (needs ~10 min of uninterrupted uptime).
 
 ## Panel variant
 
