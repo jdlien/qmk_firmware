@@ -783,35 +783,66 @@ static void draw_padlock(uint16_t x, uint16_t y, uint16_t col) {
     lcd_fill_rect(x + 0, y + 7, x + 12, y + 15, col);   // body
 }
 
+/* Per-slot diffing, for the same reason the text band does it: this used to
+ * clear the whole band and repaint every label whenever ANY bit changed, so
+ * pressing Fn visibly flickered CAPS and the padlock -- pixels that were not
+ * changing. The four slots are at fixed, non-overlapping x positions, so each
+ * can be left alone unless its own content moves. */
+#define LOCK_PAD_W  13
+#define LOCK_PAD_H  16
+#define LOCK_TXT_H  23                    /* FONT_STATUS cell height */
+#define LOCK_CAP_W  40                    /* "CAPS" 4 glyphs @10px            */
+#define LOCK_WIN_W  30                    /* "WIN"  3 glyphs                  */
+#define LOCK_SL3_W  30                    /* "SCR" 3; covers "FN" shrinking   */
+
 static void draw_locks(bool force) {
     bool caps = lock_state_caps();
     bool gui  = lock_state_gui();
     bool fn   = lock_state_fn();
     bool scr  = lock_state_scroll();
 
-    uint8_t state = (caps ? 1u : 0u) | (gui ? 2u : 0u)
-                  | (fn ? 4u : 0u)   | (scr ? 8u : 0u);
-
-    static uint8_t last_state = 0xFFu;
-    if (!force && state == last_state) return;
-    last_state = state;
-
-    lcd_clear_rect(0, LOCK_Y, PANEL_WIDTH, STATUS_Y - LOCK_Y);
-    if (state == 0) return;               // nothing locked -> leave the band dark
-
     /* The padlock means "locked", so it tracks the lock states only. A held Fn
      * layer is not a lock -- it lights its slot without one. That stays correct
      * if Fn is ever made a toggle (TG/TT) rather than momentary. */
-    if (caps || gui || scr) draw_padlock(LOCK_PAD_X, LOCK_PAD_Y, COL_PADLOCK);
-    if (caps) lcd_draw_flash_text(FONT_STATUS, LOCK_CAP_X, LOCK_Y, "CAPS");
-    if (gui)  lcd_draw_flash_text(FONT_STATUS, LOCK_WIN_X, LOCK_Y, "WIN");
+    bool pad = caps || gui || scr;
 
     /* Third slot is shared. Scroll Lock wins when actually set -- this board has
      * no Scroll Lock key and macOS effectively never sets it, so in practice the
      * slot is Fn, but the state is not thrown away on the rare occasion some
-     * other host or app does set it. */
-    if (scr)      lcd_draw_flash_text(FONT_STATUS, LOCK_SLOT3_X, LOCK_Y, "SCR");
-    else if (fn)  lcd_draw_flash_text(FONT_STATUS, LOCK_SLOT3_X, LOCK_Y, "FN");
+     * other host or app does set it. A pointer compare is enough: both are
+     * string literals. */
+    const char *slot3 = scr ? "SCR" : (fn ? "FN" : NULL);
+
+    static bool        shown_pad  = false, shown_caps = false, shown_gui = false;
+    static const char *shown_sl3  = NULL;
+
+    if (force) {   /* the caller has just cleared the screen; nothing is drawn */
+        shown_pad = shown_caps = shown_gui = false;
+        shown_sl3 = NULL;
+    }
+
+    if (pad != shown_pad) {
+        if (pad) draw_padlock(LOCK_PAD_X, LOCK_PAD_Y, COL_PADLOCK);
+        else     lcd_clear_rect(LOCK_PAD_X, LOCK_PAD_Y, LOCK_PAD_W, LOCK_PAD_H);
+        shown_pad = pad;
+    }
+    if (caps != shown_caps) {
+        if (caps) lcd_draw_flash_text(FONT_STATUS, LOCK_CAP_X, LOCK_Y, "CAPS");
+        else      lcd_clear_rect(LOCK_CAP_X, LOCK_Y, LOCK_CAP_W, LOCK_TXT_H);
+        shown_caps = caps;
+    }
+    if (gui != shown_gui) {
+        if (gui) lcd_draw_flash_text(FONT_STATUS, LOCK_WIN_X, LOCK_Y, "WIN");
+        else     lcd_clear_rect(LOCK_WIN_X, LOCK_Y, LOCK_WIN_W, LOCK_TXT_H);
+        shown_gui = gui;
+    }
+    if (slot3 != shown_sl3) {
+        /* Clear first: "SCR" -> "FN" would otherwise strand the third glyph,
+         * since a glyph blit only paints its own cell. */
+        lcd_clear_rect(LOCK_SLOT3_X, LOCK_Y, LOCK_SL3_W, LOCK_TXT_H);
+        if (slot3) lcd_draw_flash_text(FONT_STATUS, LOCK_SLOT3_X, LOCK_Y, slot3);
+        shown_sl3 = slot3;
+    }
 }
 
 
