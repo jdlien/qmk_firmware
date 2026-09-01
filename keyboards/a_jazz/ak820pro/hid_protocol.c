@@ -306,7 +306,8 @@ enum {
     /* Drive the user-command entry points so pending actions can be ARMED
      * from a host test: [.., .., HC_DRIVE, op, arg]. op 1 = set_profile(arg),
      * 2 = enter_pairing, 3 = cancel_connect. Test builds only -- these
-     * really do move the module. */
+     * 4 = rx_mute(arg) -- discard real module bytes so injected traffic is
+     * deterministic. Test builds only -- these really do move the module. */
     HC_DRIVE       = 0x7B,
 #endif
 #ifdef WDT_TEST_HOOKS
@@ -366,6 +367,7 @@ static void health_command(uint8_t *data, uint8_t length) {
                     case 1: ch582_set_profile((ch582_profile_t)data[4]); break;
                     case 2: ch582_enter_pairing();                       break;
                     case 3: ch582_cancel_connect();                      break;
+                    case 4: ch582_rx_mute(data[4] != 0);                 break;
                     default: data[0] = RTC_UNHANDLED;                    break;
                 }
             } else {

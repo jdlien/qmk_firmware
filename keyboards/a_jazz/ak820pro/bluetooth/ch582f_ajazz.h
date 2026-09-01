@@ -64,4 +64,6 @@ void ch582_inject(const uint8_t *bytes, uint8_t len);
  * tests observe the pending-action machinery (supersession, bounce order,
  * retry cadence), not just the rx-driven state. */
 uint8_t ch582_a6_trace(uint8_t *out, uint16_t *count);
+/* Discard real UART RX while true, so tests see only injected bytes. */
+void ch582_rx_mute(bool on);
 #endif

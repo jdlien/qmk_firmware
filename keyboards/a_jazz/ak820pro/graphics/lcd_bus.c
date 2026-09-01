@@ -32,12 +32,21 @@ extern void display_set_paused(bool paused);   // graphics/display.c
 #define LCD_OFF_Y 2
 #define FLASH_CMD_READ 0x03
 
-// GC9107 MADCTL. fpb's units want rotation 270 = BGR(0x08) | MV(0x20) | MY(0x80)
-// = 0xA8. This unit (shipped on stock v1.10) has the panel mounted 180 deg from
-// that and rendered the dashboard upside down, so trade MY for MX:
-// BGR(0x08) | MV(0x20) | MX(0x40) = 0x68. The dashboard and the animation share
-// this orientation.
-#define MADCTL_DASH 0x68
+// GC9107 MADCTL -- PANEL VARIANT FLAG (hardening plan phase 5.2). At least two
+// hardware revisions of this keyboard exist: JD's unit (shipped on stock v1.10)
+// has the panel mounted 180 degrees from fpb's units AND needs display
+// inversion, so the wrong build shows an upside-down, colour-inverted panel
+// that reads as broken firmware. The default is JD's variant; build with
+//   -e EXTRAFLAGS=-DAK820PRO_LCD_VARIANT_FPB
+// (or #define AK820PRO_LCD_VARIANT_FPB in config.h) for fpb-style panels:
+// rotation 270 = BGR(0x08)|MV(0x20)|MY(0x80) = 0xA8, no INVON. JD's trades MY
+// for MX: BGR|MV|MX(0x40) = 0x68, with INVON in the init sequence. The
+// dashboard and the animation share this orientation.
+#ifdef AK820PRO_LCD_VARIANT_FPB
+#    define MADCTL_DASH 0xA8
+#else
+#    define MADCTL_DASH 0x68
+#endif
 #define MADCTL_ANIM MADCTL_DASH
 
 // Animation slot. The header at ANIM_BASE is the stock format we reverse-engineered:
@@ -231,10 +240,13 @@ void lcd_init(void) {
         0xAB, 0, 1, 0x0E,
         0xA8, 0, 1, 0x19,           // frame rate
         0x3A, 0, 1, 0x05,           // pixel format: 16bpp RGB565
-        0x21, 0, 0,                 // display inversion ON. Without it this panel
-                                    // renders the assets' white-on-black artwork as
-                                    // black-on-white. Set before sleep-out so the
+#ifndef AK820PRO_LCD_VARIANT_FPB
+        0x21, 0, 0,                 // display inversion ON (JD-variant panels
+                                    // render white-on-black artwork as black-on-
+                                    // white without it; fpb-variant panels need
+                                    // no inversion). Set before sleep-out so the
                                     // very first frame is already correct.
+#endif
         0x11, 120, 0,               // sleep out
         0x29, 20, 0,                // display on
         0x36, 0, 1, MADCTL_DASH,    // memory access ctl: see MADCTL_DASH above

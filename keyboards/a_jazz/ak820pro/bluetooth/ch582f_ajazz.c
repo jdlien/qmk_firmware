@@ -221,6 +221,13 @@ typedef enum {
 static uint8_t inj_buf[CH582_INJECT_MAX];
 static uint8_t inj_head = 0, inj_tail = 0;
 
+/* While muted, REAL UART bytes are drained and discarded so the parser sees
+ * only injected traffic -- the live module answers A6 commands even in wired
+ * mode, and its interleaved 5B frames made the pending-action tests
+ * nondeterministic (Codex phase-4 review #1). */
+static bool ch582_rx_muted = false;
+void ch582_rx_mute(bool on) { ch582_rx_muted = on; }
+
 void ch582_inject(const uint8_t *bytes, uint8_t len) {
     for (uint8_t i = 0; i < len; i++) {
         uint8_t nxt = (uint8_t)((inj_tail + 1) % CH582_INJECT_MAX);
@@ -524,7 +531,9 @@ void ch582_send_command(uint8_t cmd, const uint8_t *params, uint8_t param_len) {
     f->len                 = param_len + 2;
     tx_tail                = nxt;
 #ifdef WDT_TEST_HOOKS
-    if (cmd == 0xA6 && param_len == 1) a6_trace_note(params[0]);
+    /* Battery polls (A6 53) are periodic noise; excluding them makes the
+     * count an EXACT observable for the pending-action tests. */
+    if (cmd == 0xA6 && param_len == 1 && params[0] != 0x53) a6_trace_note(params[0]);
 #endif
 }
 
@@ -803,6 +812,9 @@ void ch582_task(void) {
         } else
 #endif
         if (chnReadTimeout(&CH582_SERIAL_DRIVER, &c, 1, TIME_IMMEDIATE) == 0) break;
+#ifdef WDT_TEST_HOOKS
+        else if (ch582_rx_muted) { bytes_processed++; continue; } /* discard real byte */
+#endif
         else bytes_processed++;
 
         b2 = b1;

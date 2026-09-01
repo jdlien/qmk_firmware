@@ -93,12 +93,13 @@ void kb_eeconfig_set_lcd_brightness(uint8_t level) {
 #ifdef WDT_TEST_HOOKS
 void kb_eeconfig_test_write(void) {
     /* Force a REAL, IMMEDIATE flash program (the point is to wedge the CPU
-     * right after one). Toggling bit 7 of the brightness byte guarantees the
-     * content changed so wear-levelling cannot skip it, while the poisoned
-     * value reads as "unset" (> 32 guard above) -- so after the WDT-reset
-     * test the board falls back to the default and self-heals on the next
-     * settled write. */
-    kb_config.lcd_brightness_p1 ^= 0x80;
+     * right after one). The pattern always keeps bit 7 set AND changes the
+     * low bits, so every invocation writes a different, ALWAYS-invalid value
+     * (> 32 guard above) -- repeated test runs cannot XOR back to validity.
+     * The board runs on the compile-time default until the next settled
+     * write of any field stores a real value again; the poke itself does not
+     * schedule that heal. */
+    kb_config.lcd_brightness_p1 = (uint8_t)(0x80 | ((kb_config.lcd_brightness_p1 + 1) & 0x3F));
     eeconfig_update_kb_datablock(&kb_config, 0, sizeof(kb_config));
 }
 #endif

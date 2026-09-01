@@ -1366,7 +1366,10 @@ void display_blit_pump(void) {
     static uint32_t blocked_since = 0;
     static bool     blocked       = false;
 
-    if (gq_i >= gq_n || display_paused) return;
+    if (gq_i >= gq_n || display_paused) {
+        blocked = false;   /* stale grace must not carry into later work */
+        return;
+    }
     if (!lcd_draw_flash_glyph_try(gq[gq_i].font, gq[gq_i].c, gq[gq_i].x, gq[gq_i].y)) {
         /* Bus busy. A healthy blit completes in well under a millisecond; one
          * whose completion IRQ was lost never completes -- and now that

@@ -1,3 +1,91 @@
+# AJAZZ AK820 Pro — the "Jackrabbit" fork
+
+This branch (`ak820pro-jdlien`) is [JD Lien](https://github.com/jdlien)'s
+personal, heavily-hardened build of [fpb](https://github.com/fpb)'s QMK port —
+open for anyone with this keyboard to use or fork, maintained for one person's
+board. fpb's original port documentation is further down; everything in this
+top section is what a new user must know BEFORE flashing.
+
+## ⚠️ Read before your first flash
+
+1. **There is no way to back up the stock firmware.** Download
+   `AJAZZ_AK820PRO_PID_8009_V1.13_SN32F290.bin` from
+   [fpb/ajazz-ak820-pro](https://github.com/fpb/ajazz-ak820-pro)
+   (`StockFWBinaries/`) FIRST — it is your only road back. Do NOT use the
+   v1.14 image: it changes the PID to 0x8099 and AJAZZ's own drivers stop
+   seeing the board.
+2. **The bootloader looks almost dead.** This firmware shows a `BOOTLOADER /
+   0C45:7140` splash for ~1.5 s on entry, then the backlight drops and the
+   board sits dark with no lights and no typing. That is NORMAL — check for
+   USB id `0c45:7140` before assuming a brick. Recovery is re-running the
+   flash, not a power cycle.
+3. **Enter the bootloader** with `Fn`+`Esc` from running QMK/this firmware, or
+   hold `Esc` while plugging in. From STOCK firmware the first flash needs the
+   2-pin header short under the spacebar — see fpb's repo for the photo and
+   procedure (put the mode slider in `cable`, cold-boot, the short is sampled
+   only at power-on, and the mode latches once `0x7140` appears).
+4. **macOS Sonoma/Tahoe:** build SonixFlasherC with `USE_LIBUSB=1` or it
+   fails with "Could not open the device" while reporting the right version —
+   plain hidapi has no HID node to open on Tahoe. `nm sonixflasher | grep -c
+   libusb` must be > 0.
+5. **Flashing erases the emulated EEPROM** (VIA keymap included). Note your
+   VIA customisations, or use a keymap backup flow, before flashing.
+
+## Panel variant
+
+At least two hardware revisions exist. If your panel comes up **upside down
+and/or colour-inverted**, you have the other one — rebuild with:
+
+    qmk compile -kb a_jazz/ak820pro -km via -e EXTRAFLAGS=-DAK820PRO_LCD_VARIANT_FPB
+
+(The default suits units shipped on stock v1.10; the flag suits fpb-style
+units. It is one MADCTL byte and one INVON toggle — `graphics/lcd_bus.c`.)
+
+## Building
+
+The ChibiOS patches this board needs are COMMITS on the pinned
+`lib/chibios-contrib` submodule branch (`ak820pro-patches`,
+[jdlien/ChibiOS-Contrib](https://github.com/jdlien/ChibiOS-Contrib)) — a
+plain checkout + `make git-submodule` gets everything; nothing is applied by
+hand. See `PATCHES.md`. Then:
+
+    qmk compile -kb a_jazz/ak820pro -km via
+
+## LCD assets
+
+The dashboard's fonts and images live in EXTERNAL flash, provisioned once
+with `ak820ctl` from the companion tool repo (fpb's `time-util-ak820pro`).
+An unprovisioned board runs fine but shows a mostly blank panel (battery icon
+only) and says so on the console. Provision AFTER flashing firmware, in wired
+mode, then power-cycle (slider to `off` ~10 s — the board is battery-backed).
+The two sides must match: the firmware's `graphics/res/flash_assets.h` is
+generated together with the `flash_assets.bin` you provision.
+
+## What this fork adds over the base port
+
+Hardware watchdog with reset-loop escape; unified health counters readable
+over raw HID (channel 0x13); a two-line host text slot + playback timer; a
+non-blocking glyph-queue renderer (no more keystroke-eating display stalls);
+persisted RTC divider trim and backlight level; interrupt priorities fixed
+for reliable Bluetooth at a 1 kHz LED field rate; hold-to-pair with progress
+bar; per-key RGB niceties (hold-to-repeat, on-panel readouts, two custom
+board-local effects: RAINFALL and DRIFT); extensive input validation and an
+audited concurrency model. History on this branch tells the whole story.
+
+Known post-flash oddity that looks like a bug: the stored RGB mode index
+does not shift with the effect enum, so a build with a different effect list
+comes back on a different effect — one-time, re-pick with `Fn`+`\`.
+
+**Fonts/branding:** the 13px face is [Cozette](https://github.com/slavfox/Cozette)
+(MIT); the larger faces are derived from [Iosevka](https://typeof.net/Iosevka/)
+(OFL). The bunny boot splash is JD's personal mark — build and flash freely,
+but please don't rebrand your own fork with it.
+
+**No warranty, no support promised** — this works on JD's unit; issues and
+forks are welcome all the same.
+
+-----------------
+
 # AJAZZ AK820 PRO
 
 ![AK820 PRO](https://i.postimg.cc/T3XwwLTN/PXL-20260630-155003679.jpg)
