@@ -29,6 +29,7 @@ SRC += watchdog.c   # hardware WDT: arm/kick/boot accounting/bootloader stop
 SRC += health.c     # unified health counters; raw HID channel 0x13
 SRC += kb_eeconfig.c # owner of the persisted kb datablock
 SRC += bt_ui.c      # wireless slider, BT slot keys, hold-to-pair
+SRC += consumer_mod.c # modified-consumer endpoint-ordering sequencer
 VPATH += bluetooth
 VPATH += graphics
 VPATH += rtc
