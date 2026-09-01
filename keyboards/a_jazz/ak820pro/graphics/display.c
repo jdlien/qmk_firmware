@@ -1601,6 +1601,10 @@ static void draw_status(bool force) {
  * Every gate (user hook, pause, splash, gq_pending, the last_shown_sec
  * latch) is inside display_housekeeping_task(); nothing is moved. Fires at
  * most once per RTC second, never per iteration. */
+/* Clock-sync plan 3.6: boot phase acquisition waits for the splash to be
+ * gone before it starts polling the PCF. */
+bool display_splash_done(void) { return splash_cleared; }
+
 void display_second_edge_task(void) {
     static uint32_t edge_seen = UINT32_MAX;
     uint32_t sec = rtc_get_seconds();

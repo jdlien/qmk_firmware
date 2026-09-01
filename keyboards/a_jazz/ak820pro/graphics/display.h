@@ -11,6 +11,8 @@ void display_housekeeping_task(void);
 /* Per main-loop pass: one extra housekeeping pass on an RTC second edge
  * (clock-sync plan 3.9). Call before display_blit_pump(). */
 void display_second_edge_task(void);
+/* True once the boot splash has been cleared and the dashboard owns the panel. */
+bool display_splash_done(void);
 
 /* Paints one queued glyph per call. Must be driven from housekeeping_task_kb()
  * at MAIN-LOOP rate, not from the 10 Hz block -- see the glyph queue in

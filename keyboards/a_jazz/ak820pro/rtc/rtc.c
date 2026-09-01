@@ -7,6 +7,7 @@
 #include "kb_eeconfig.h"   /* persisted divider period (phase 4) */
 #include "hal.h"
 #include "../graphics/lcd_bus.h"
+#include "../graphics/display.h"   /* display_splash_done() */
 #include "../ak820pro.h"
 
 #include <time.h>
@@ -171,8 +172,8 @@ static uint16_t ref_transitions = 0;
 static bool       pcf_pending = false;
 static rtc_time_t pcf_pending_time;
 static uint16_t   deferred_passes = 0;    /* passes skipped because a blit was busy */
-static uint8_t    pcf_consec_fail = 0;
 static bool       pcf_backoff = false;    /* 3 consecutive failures: one attempt/min */
+static bool       pcf_maybe_stopped = false; /* recovery pending: loud health flag (Phase 3) */
 static uint32_t   pcf_backoff_until = 0;  /* rtc_seconds_count */
 
 /* Tick-ISR service latency: SECCNT at callback entry (cycles since the match
@@ -630,13 +631,16 @@ static void rtc_ref_task(void)
 #endif
         P_nom = np;
         reload_pending = true;
-        /* Persist any accepted sane value after 10 min uptime when it moved
-         * >= 64 ticks from the stored one (PLAN.md C3; was 32). */
-        if (timer_read32() >= 600000u && np >= 28000 && np <= 40000) {
-            uint16_t st = kb_eeconfig_get_rtc_period();
-            uint32_t dd = (np > st) ? (np - st) : (st - np);
-            if (st == 0 || dd >= 64) kb_eeconfig_set_rtc_period((uint16_t)np);
-        }
+    }
+    /* Persist any accepted sane value after 10 min uptime when it moved
+     * >= 64 ticks from the stored one (PLAN.md C3; was 32) -- INCLUDING a
+     * window whose delta is 0: a cleanly converged loop otherwise never
+     * stored anything (seen 2026-09-01: 33212 held for two windows, EEPROM
+     * still 0, next reboot re-seeded at 33600). */
+    if (timer_read32() >= 600000u && P_nom >= 28000 && P_nom <= 40000) {
+        uint16_t st = kb_eeconfig_get_rtc_period();
+        uint32_t dd = (P_nom > st) ? (P_nom - st) : (st - P_nom);
+        if (st == 0 || dd >= 64) kb_eeconfig_set_rtc_period((uint16_t)P_nom);
     }
 }
 
@@ -670,6 +674,8 @@ bool rtc_now(rtc_stamp_t *s)
 static void put16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
 static void put32(uint8_t *p, uint32_t v) { put16(p, (uint16_t)v); put16(p + 2, (uint16_t)(v >> 16)); }
 
+void rtc_status_fill_page4(uint8_t *out);
+static bool acq_state_done(void);
 void rtc_status_fill(uint8_t page, uint8_t *out)
 {
     switch (page) {
@@ -681,7 +687,8 @@ void rtc_status_fill(uint8_t page, uint8_t *out)
         put16(&out[5], (uint16_t)rtc_lld_get_period(&RTCD1));/* [16..17] active (live register) */
         put16(&out[7], (uint16_t)P_nom);                     /* [18..19] nominal */
         out[9]  = (host_synced ? 0x01 : 0) | (slew_state != SLEW_IDLE ? 0x02 : 0) |
-                  (pcf_backoff ? 0x08 : 0) | (stale_count ? 0x10 : 0);   /* [20] flags */
+                  (acq_state_done() ? 0x04 : 0) | ((pcf_backoff || pcf_maybe_stopped) ? 0x08 : 0) |
+                  (stale_count ? 0x10 : 0);   /* [20] flags */
         put16(&out[10], (uint16_t)last_host_offset_ms);      /* [21..22] */
         put16(&out[12], (uint16_t)sof_bias_ppm);             /* [23..24] in use */
         out[14] = ref_state;                                 /* [25] */
@@ -714,6 +721,10 @@ void rtc_status_fill(uint8_t page, uint8_t *out)
         }
         break;
     }
+    case 4:
+        memset(out, 0, 28);
+        rtc_status_fill_page4(out);
+        break;
     default:
         memset(out, 0, 28);
         break;
@@ -1175,27 +1186,299 @@ uint8_t rtc_set_time_ms(const rtc_time_t *t, uint16_t ms, uint8_t flags, int16_t
     return RTC_SET_STEPPED;
 }
 
+/* ---- Phase 3: PCF phase-correct write (PLAN.md 3.5) and boot acquisition
+ * (PLAN.md 3.6). Both run from rtc_fast_task(): one I2C transaction per
+ * main-loop pass at most, only when no LCD blit is in flight, never via the
+ * blit-draining bus guard (R4). --------------------------------------------- */
+
+/* Board time in milliseconds since boot, monotonic across ticks and phase
+ * sets (seconds_count * 1000 + fraction of the current interval). */
+static bool board_ms_now(int64_t *ms)
+{
+    rtc_stamp_t s;
+    if (!rtc_now(&s)) return false;
+    int64_t frac = 1000 - (int64_t)(s.period_active + 1 - s.cnt) * 1000 / (int64_t)(P_nom + 1);
+    *ms = (int64_t)s.seconds_count * 1000 + frac;
+    return true;
+}
+
+/* Un-guarded single-register access for the fast task (the caller has
+ * already checked lcd_blit_busy()). */
+static bool pcf_reg_read_raw(uint8_t reg, uint8_t *v) {
+    uint32_t sc0, c0; cyc_stamp(&sc0, &c0);
+    msg_t r = i2cMasterTransmitTimeout(&I2CD1, PCF8563_ADDR, &reg, 1, v, 1, PCF8563_I2C_TIMEOUT);
+    i2c_note(r, sc0, c0);
+    if (r != MSG_OK) { if (pcf_avail_fail < 255) pcf_avail_fail++; return false; }
+    pcf_avail_fail = 0;
+    return true;
+}
+static bool pcf_reg_write_raw(uint8_t reg, uint8_t v) {
+    uint8_t buf[2] = { reg, v };
+    uint32_t sc0, c0; cyc_stamp(&sc0, &c0);
+    msg_t r = i2cMasterTransmitTimeout(&I2CD1, PCF8563_ADDR, buf, 2, NULL, 0, PCF8563_I2C_TIMEOUT);
+    i2c_note(r, sc0, c0);
+    return r == MSG_OK;
+}
+
+#define PCF_CTL_STOP        0x20
+#define PCF_D_FIRST_MS      490     /* clone's release-to-first-increment (T0.5: 489-494 ms) -- initial value */
+static int32_t pcf_d_first_ms = PCF_D_FIRST_MS;   /* adapted from the bracket measurement below */
+static int64_t ps_boundary_ms = 0;                /* the true boundary we aimed the increment at */
+static int16_t pcf_boundary_err_ms = 0;           /* measured PCF increment - intended boundary */
+static int64_t ps_brk_prev_t = 0;                 /* bracket: previous read stamp */
+static int16_t ps_brk_prev_sec = -1;
+#define PCF_WRITE_MS        1       /* one 1-byte write on this bus (T0.4) */
+#define PCF_LATE_MS         10      /* missed the release window: restart */
+#define PCF_MAX_ATTEMPTS    5       /* per transaction before recovery / back-off */
+
+enum { PS_IDLE = 0, PS_STOP_READ, PS_STOP_WRITE, PS_TIME_WRITE, PS_RELEASE_READ,
+       PS_RELEASE_WRITE, PS_VERIFY, PS_RECOVER, PS_BRACKET };
+static uint8_t  ps_state = PS_IDLE;
+static uint8_t  ps_ctl = 0;
+static bool     stop_asserted = false;
+static uint8_t  ps_attempts = 0;
+static time_t   ps_S = 0;                 /* the second being written */
+static int64_t  ps_trel_ms = 0;           /* release instant, board ms */
+static int8_t   pcf_release_err_ms = 0;   /* achieved release - T_rel, last run */
+static uint16_t pcf_runs_ok = 0, pcf_restarts = 0;
+
+/* Choose S (the next whole second per the board clock) and T_rel. */
+static bool ps_plan(void)
+{
+    rtc_stamp_t s; int64_t now_ms;
+    if (!rtc_now(&s) || !board_ms_now(&now_ms)) return false;
+    RTCDateTime dt; struct tm tm;
+    rtc_to_chibiostime(&s.t, &dt);
+    rtcConvertDateTimeToStructTm(&dt, &tm, NULL);
+    time_t cur = mktime(&tm);
+    if (cur == (time_t)-1) return false;
+    int64_t frac = 1000 - (int64_t)(s.period_active + 1 - s.cnt) * 1000 / (int64_t)(P_nom + 1);
+    int64_t next_boundary = now_ms + (1000 - frac);       /* boundary of cur+1 */
+    /* The PCF's FIRST increment after release moves the register from S to
+     * S+1, and we time that increment onto boundary(cur+1), where true time
+     * becomes cur+1. So the register must hold S = cur (not cur+1 -- that
+     * off-by-one put the PCF a second ahead on the first Phase 3 build). */
+    ps_S = cur;
+    ps_boundary_ms = next_boundary;
+    ps_trel_ms = next_boundary - pcf_d_first_ms;
+    if (ps_trel_ms - now_ms < 5 + PCF_WRITE_MS + 3) {    /* too close: the one after */
+        ps_S += 1; ps_trel_ms += 1000; ps_boundary_ms += 1000;
+    }
+    return true;
+}
+
+static void ps_fail(void)
+{
+    if (++ps_attempts < PCF_MAX_ATTEMPTS) return;
+    ps_attempts = 0;
+    if (stop_asserted) { ps_state = PS_RECOVER; pcf_maybe_stopped = true; }
+    else { ps_state = PS_IDLE; pcf_pending = false; pcf_backoff = true; pcf_backoff_until = rtc_seconds_count + 60; }
+}
+
+/* One state step; returns after at most one I2C transaction. */
+static void pcf_machine_step(void)
+{
+    switch (ps_state) {
+    case PS_IDLE:
+        if (!pcf_pending) return;
+        if (pcf_backoff) {
+            if ((int32_t)(rtc_seconds_count - pcf_backoff_until) < 0) return;
+            pcf_backoff = false;
+        }
+        ps_state = PS_STOP_READ; ps_attempts = 0;
+        /* fall through */
+    case PS_STOP_READ:
+        if (pcf_reg_read_raw(0x00, &ps_ctl)) { ps_state = PS_STOP_WRITE; ps_attempts = 0; }
+        else ps_fail();
+        return;
+    case PS_STOP_WRITE:
+        if (pcf_reg_write_raw(0x00, (uint8_t)(ps_ctl | PCF_CTL_STOP))) {
+            stop_asserted = true; ps_attempts = 0;
+            if (ps_plan()) ps_state = PS_TIME_WRITE;   /* else: stay, re-plan next pass */
+        } else ps_fail();
+        return;
+    case PS_TIME_WRITE: {
+        struct tm tm_s; rtc_time_t t;
+        if (localtime_r(&ps_S, &tm_s) == NULL) { ps_fail(); return; }
+        RTCDateTime dt; rtcConvertStructTmToDateTime(&tm_s, 0, &dt);
+        chibiostime_to_rtc(&dt, &t);
+        if (pcf_write_raw(&t)) { ps_state = PS_RELEASE_READ; ps_attempts = 0; }
+        else ps_fail();
+        return;
+    }
+    case PS_RELEASE_READ: {
+        int64_t now_ms;
+        if (!board_ms_now(&now_ms)) return;
+        if (now_ms < ps_trel_ms - PCF_WRITE_MS - 3) return;          /* not yet */
+        if (now_ms > ps_trel_ms + PCF_LATE_MS) {                      /* missed: restart from STOP (still asserted) */
+            pcf_restarts++; ps_state = PS_STOP_WRITE; ps_attempts = 0; return;
+        }
+        if (pcf_reg_read_raw(0x00, &ps_ctl)) { ps_state = PS_RELEASE_WRITE; ps_attempts = 0; }
+        else ps_fail();
+        return;
+    }
+    case PS_RELEASE_WRITE: {
+        int64_t now_ms;
+        if (!board_ms_now(&now_ms)) return;
+        if (now_ms < ps_trel_ms - PCF_WRITE_MS) return;              /* wait for the exact pass */
+        if (now_ms > ps_trel_ms + PCF_LATE_MS) {                      /* a busy pass delayed us */
+            pcf_restarts++; ps_state = PS_STOP_WRITE; ps_attempts = 0; return;
+        }
+        if (pcf_reg_write_raw(0x00, (uint8_t)(ps_ctl & ~PCF_CTL_STOP))) {
+            int64_t after; if (!board_ms_now(&after)) after = now_ms + PCF_WRITE_MS;
+            int64_t err = after - ps_trel_ms;
+            pcf_release_err_ms = (int8_t)(err > 127 ? 127 : err < -128 ? -128 : err);
+            stop_asserted = false; ps_state = PS_VERIFY; ps_attempts = 0;
+        } else ps_fail();
+        return;
+    }
+    case PS_VERIFY: {
+        uint8_t v;
+        if (pcf_reg_read_raw(0x00, &v)) {
+            if (v & PCF_CTL_STOP) { stop_asserted = true; ps_state = PS_RECOVER; pcf_maybe_stopped = true; return; }
+            pcf_runs_ok++; pcf_pending = false; pcf_maybe_stopped = false;
+            ps_state = PS_BRACKET; ps_attempts = 0; ps_brk_prev_sec = -1;
+        } else ps_fail();
+        return;
+    }
+    case PS_BRACKET: {
+        /* Verify the RESULT, not the intent: bracket the PCF's first increment
+         * with 1-byte reads (one per pass) from 60 ms before the aimed boundary
+         * to 400 ms after; the increment's midpoint minus the aimed boundary is
+         * the real phase error, and half of it feeds back into the release lead
+         * so the next run lands closer. Never more than ~120 reads, only on a
+         * sync, only with the bus idle. */
+        int64_t now_ms;
+        if (!board_ms_now(&now_ms)) return;
+        if (now_ms < ps_boundary_ms - 60) return;
+        if (now_ms > ps_boundary_ms + 400) {                  /* no increment seen: give up quietly */
+            ps_state = PS_IDLE; ps_brk_prev_sec = -1;
+#ifdef CONSOLE_ENABLE
+            printf("[rtc] pcf set S: release err %d ms, increment NOT seen\n", pcf_release_err_ms);
+#endif
+            return;
+        }
+        uint8_t v;
+        if (!pcf_reg_read_raw(PCF8563_REG_SECONDS, &v)) return;
+        int64_t t_after; if (!board_ms_now(&t_after)) return;
+        int16_t sec = (int16_t)bcd2dec(v & 0x7F);
+        if (ps_brk_prev_sec >= 0 && sec != ps_brk_prev_sec) {
+            int64_t edge = (ps_brk_prev_t + t_after) / 2;
+            int64_t err  = edge - ps_boundary_ms;              /* + = PCF late */
+            pcf_boundary_err_ms = (int16_t)(err > 32767 ? 32767 : err < -32768 ? -32768 : err);
+            /* Adapt the lead: PCF late -> release earlier next time. */
+            int32_t nd = pcf_d_first_ms + (int32_t)(err / 2);
+            if (nd < 300) nd = 300;
+            if (nd > 800) nd = 800;
+            pcf_d_first_ms = nd;
+            ps_state = PS_IDLE; ps_brk_prev_sec = -1;
+#ifdef CONSOLE_ENABLE
+            printf("[rtc] pcf set S ok: release err %d ms, boundary err %d ms, D_first -> %ld\n",
+                   pcf_release_err_ms, pcf_boundary_err_ms, (long)pcf_d_first_ms);
+#endif
+            return;
+        }
+        ps_brk_prev_sec = sec; ps_brk_prev_t = (now_ms + t_after) / 2;
+        return;
+    }
+    case PS_RECOVER: {
+        /* STOP must never be left asserted: clear it with the preserved
+         * control bits, indefinitely, at the back-off cadence. */
+        if ((int32_t)(rtc_seconds_count - pcf_backoff_until) < 0) return;
+        pcf_backoff_until = rtc_seconds_count + 5;
+        if (pcf_reg_write_raw(0x00, (uint8_t)(ps_ctl & ~PCF_CTL_STOP))) {
+            uint8_t v;
+            if (pcf_reg_read_raw(0x00, &v) && !(v & PCF_CTL_STOP)) {
+                stop_asserted = false; pcf_maybe_stopped = false;
+                ps_state = PS_IDLE; pcf_pending = false;
+                pcf_backoff = true; pcf_backoff_until = rtc_seconds_count + 60;
+            }
+        }
+        return;
+    }
+    }
+}
+
+/* Boot acquisition: bracket the PCF's seconds increment with 1-byte reads
+ * every ACQ_EVERY passes (~20 ms), then take the full calendar and step the
+ * board to the PCF's phase. Cancelled by a host sync. */
+#define ACQ_EVERY       8
+#define ACQ_TIMEOUT_MS  1500
+enum { ACQ_WAIT_SPLASH = 0, ACQ_COARSE, ACQ_DONE, ACQ_ABORTED };
+static uint8_t  acq_state = ACQ_WAIT_SPLASH;
+static uint8_t  acq_pass = 0, acq_fails = 0;
+static int64_t  acq_t0 = 0, acq_prev_t = 0;
+static int16_t  acq_prev_sec = -1;
+static uint16_t acq_unc_ms = 0;
+static int16_t  acq_step_ms = 0;
+
+static bool acq_state_done(void) { return acq_state == 2; }   /* ACQ_DONE */
+
+static void acquisition_step(void)
+{
+    if (acq_state == ACQ_DONE || acq_state == ACQ_ABORTED) return;
+    if (host_synced) { acq_state = ACQ_ABORTED; return; }      /* the host outranks the PCF */
+    if (acq_state == ACQ_WAIT_SPLASH) {
+        if (!display_splash_done() || !rtc_valid) return;
+        int64_t ms; if (!board_ms_now(&ms)) return;
+        acq_t0 = ms; acq_state = ACQ_COARSE; acq_pass = 0; acq_prev_sec = -1;
+    }
+    if (++acq_pass < ACQ_EVERY) return;
+    acq_pass = 0;
+    int64_t t_before; if (!board_ms_now(&t_before)) return;
+    if (t_before - acq_t0 > ACQ_TIMEOUT_MS) { acq_state = ACQ_ABORTED; return; }
+    uint8_t v;
+    if (!pcf_reg_read_raw(PCF8563_REG_SECONDS, &v)) { if (++acq_fails >= 3) acq_state = ACQ_ABORTED; return; }
+    int64_t t_after; if (!board_ms_now(&t_after)) return;
+    int16_t sec = (int16_t)bcd2dec(v & 0x7F);
+    if (acq_prev_sec >= 0 && sec != acq_prev_sec) {
+        /* Edge between the previous read and this one: midpoint, half-width. */
+        int64_t edge = (acq_prev_t + t_after) / 2;
+        acq_unc_ms = (uint16_t)((t_after - acq_prev_t) / 2);
+        rtc_time_t full;
+        if (!pcf_read(&full)) { acq_state = ACQ_ABORTED; return; }    /* guarded: bus was idle a moment ago */
+        uint8_t v2;
+        if (!pcf_reg_read_raw(PCF8563_REG_SECONDS, &v2) || bcd2dec(v2 & 0x7F) != full.seconds) {
+            /* raced a rollover: try again on the next edge */
+            acq_prev_sec = -1; return;
+        }
+        int64_t now_ms; if (!board_ms_now(&now_ms)) return;
+        int64_t elapsed = now_ms - edge;                               /* ms since the PCF boundary */
+        if (elapsed < 0) elapsed = 0;
+        if (elapsed > 999) elapsed = 999;
+        int16_t off = 0;
+        uint8_t st = rtc_set_time_ms(&full, (uint16_t)elapsed, RTC_SETF_FORCE_STEP | RTC_SETF_SKIP_PCF, 0x7FFF, &off);
+        host_synced = false;                /* this was the PCF, not the host */
+        acq_step_ms = off;
+        acq_state = (st == RTC_SET_STEPPED) ? ACQ_DONE : ACQ_ABORTED;
+#ifdef CONSOLE_ENABLE
+        printf("[rtc] boot acquisition: step %d ms, +/-%u ms\n", off, acq_unc_ms);
+#endif
+        return;
+    }
+    acq_prev_sec = sec; acq_prev_t = (t_before + t_after) / 2;
+}
+
 /* Per main-loop pass, BEFORE display_blit_pump() (R4). At most one PCF
  * transaction, only when no blit is in flight; never the bus guard. */
 void rtc_fast_task(void)
 {
-    if (!pcf_pending) return;
-    if (pcf_backoff) {
-        if ((int32_t)(rtc_seconds_count - pcf_backoff_until) < 0) return;
-        pcf_backoff = false;            /* one attempt, then back off again if it fails */
-    }
     if (lcd_blit_busy()) {
-        if (deferred_passes < 0xFFFF) deferred_passes++;
+        if ((pcf_pending || ps_state != PS_IDLE) && deferred_passes < 0xFFFF) deferred_passes++;
         return;
     }
-    if (pcf_write_raw(&pcf_pending_time)) {
-        pcf_pending     = false;
-        pcf_consec_fail = 0;
-    } else if (++pcf_consec_fail >= 3) {
-        pcf_consec_fail   = 0;
-        pcf_backoff       = true;
-        pcf_backoff_until = rtc_seconds_count + 60;
-    }
+    if (acq_state == ACQ_WAIT_SPLASH || acq_state == ACQ_COARSE) { acquisition_step(); return; }
+    pcf_machine_step();
+}
+
+void rtc_status_fill_page4(uint8_t *out)
+{
+    out[0] = ps_state; out[1] = stop_asserted; out[2] = (uint8_t)pcf_release_err_ms;
+    put16(&out[3], pcf_runs_ok); put16(&out[5], pcf_restarts);
+    out[7] = pcf_maybe_stopped; out[8] = acq_state; put16(&out[9], acq_unc_ms);
+    put16(&out[11], (uint16_t)acq_step_ms); out[13] = ps_attempts; out[14] = pcf_pending;
+    out[15] = ref_state; put16(&out[16], slew_count); put16(&out[18], reload_writes);
+    put16(&out[20], (uint16_t)pcf_boundary_err_ms); put16(&out[22], (uint16_t)pcf_d_first_ms);
 }
 
 
