@@ -30,6 +30,12 @@
 // trap are gone.
 #define FONT_CLOCK      ASSET_IOSEVKA_REGULAR_30   // big clock
 #define FONT_STATUS     ASSET_IOSEVKA_MEDIUM_20    // small status text
+#define FONT_STATUS_ADV 10   /* 20px face cell advance. The firmware reads
+                              * cell_w from the flash index at RUNTIME for
+                              * ordinary draws; these named constants exist for
+                              * the few places layout math needs the width at
+                              * compile time -- they must match the PROVISIONED
+                              * atlases (10x23 and 6x14 cells). */
 /* NOW COZETTE, not Iosevka -- the filename is unchanged on purpose, because
  * mkraw.py assigns asset ids by sorted filename and renaming would shift every
  * later id. Iosevka at this ppem lost the quantisation lottery repeatedly: 'j'
@@ -38,6 +44,7 @@
  * and 'l' was near-indistinguishable from '1'. Cozette is a BITMAP font drawn
  * at 6x13 by hand, so there is no rasteriser to lose to. See mkbdfatlas.py. */
 #define FONT_SMALL      ASSET_IOSEVKA_MEDIUM_13    // dense: 6px advance
+#define FONT_SMALL_ADV  6
 
 /* Align the text with the TRANSPORT ICON, not with the band.
  *
@@ -139,6 +146,7 @@ bool display_get_power(void) {
                             * lengthen this for a dimmer floor if wanted. */
 static const uint8_t bkl_duty[] = { 0, 1, 2, 3, 5, 8, 12, 18, 27, 48 };
 #define BKL_MAX_LEVEL ((uint8_t)(sizeof(bkl_duty) / sizeof(bkl_duty[0])) - 1)
+_Static_assert(sizeof(bkl_duty) == 10, "brightness UI documents 10 levels (0..9); resize deliberately");
 
 #ifndef DISPLAY_BRIGHTNESS_DEFAULT
 #    define DISPLAY_BRIGHTNESS_DEFAULT BKL_MAX_LEVEL
@@ -369,7 +377,7 @@ static void draw_playback(void) {
      * hour. A 20px cell is 23 rows against this band's 22, so it borrows one
      * row from the 4-row gap below -- covered by the clear rect below. */
     bool     big = (n * 10u) <= PANEL_WIDTH;
-    uint8_t  adv = big ? 10 : 6;   /* must track the atlases' cell widths */
+    uint8_t  adv = big ? FONT_STATUS_ADV : FONT_SMALL_ADV;
     uint16_t x0  = (uint16_t)((PANEL_WIDTH - n * adv) / 2);
     uint16_t y   = big ? CLOCK_Y : (CLOCK_Y + 4);
 
@@ -764,6 +772,13 @@ static void draw_battery(bool force) {
  * 17px: the padlock ran to LOCK_Y+18 against a clear of LOCK_Y+16, leaving its
  * bottom two rows on screen forever once the locks cleared. */
 #define LOCK_PAD_Y  (LOCK_Y + 3)
+
+/* Layout invariants the panel budget depends on (phase 3.3). The padlock one
+ * was a real bug: while the lock band was briefly 17px, the 16px padlock at
+ * LOCK_Y+3 overhung the band's clear rect and stayed lit forever. */
+_Static_assert(STATUS_Y - LOCK_Y >= 19, "lock band must contain the 16px padlock drawn at LOCK_Y+3");
+_Static_assert(STATUS_Y + 23 <= 128, "battery band (20px face, 23-row cell) must fit the panel");
+_Static_assert(CLOCK_Y + CLOCK_BAND_H <= LOCK_Y, "clock band must not overlap the lock band");
 #define LOCK_CAP_X  20                    // "CAPS" 4 glyphs = 40px -> 20..59
 #define LOCK_WIN_X  64                    // "WIN"  3 glyphs = 30px -> 64..93
 #define LOCK_SLOT3_X 96                   // shared: "FN" 20px, "SCR" 30px -> 96..125
@@ -870,6 +885,10 @@ static void draw_locks(bool force) {
 #define TEXT_ICON_W   12
 #define TEXT_ICON_GAP 2   /* tightened with the denser face: one more glyph */
 #define TEXT_X        (TEXT_ICON_W + TEXT_ICON_GAP)
+/* The per-line budgets in display.h (mirrored by MAXLEN in ak820text.py) are
+ * derived facts; keep them provably in sync with the geometry. */
+_Static_assert(DISPLAY_TEXT_MAX_L0 == (PANEL_WIDTH - TEXT_X) / FONT_SMALL_ADV, "line-0 budget vs icon gutter");
+_Static_assert(DISPLAY_TEXT_MAX_L1 == (PANEL_WIDTH - TEXT_X2) / FONT_SMALL_ADV, "line-1 budget vs full width");
 
 // Blank after this long with no update. Without it the panel would happily show
 // last night's track forever if the host agent dies, the machine sleeps, or the

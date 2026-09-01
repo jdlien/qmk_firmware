@@ -5,6 +5,18 @@
 
 #include "quantum.h"
 
+/* Layer indices, shared between the keymaps and board code. Historically the
+ * keymaps owned this enum and indicators.c hand-wrote the Fn mask as
+ * (1<<1)|(1<<3) -- a silent-corruption coupling if layers were ever
+ * rearranged. The mac/win dip switch selects the base layer, so per-key
+ * remaps usually need doing on both bases. */
+enum ak820pro_layers {
+    WINBASE = 0,
+    WINFN,
+    MACBASE,
+    MACFN,
+};
+
 // Keyboard-level custom keycodes handled in process_record_kb(). Based at
 // QK_KB_0 (not SAFE_RANGE/QK_USER) so their values line up with VIA, which maps
 // its customKeycodes[] to the QK_KB_0 range -- otherwise a keycode reassigned in

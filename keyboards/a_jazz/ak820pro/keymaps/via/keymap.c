@@ -5,13 +5,8 @@
 
 #include "ak820pro.h"
 
-enum layer_names {
-    WINBASE,
-    WINFN,
-    MACBASE,
-    MACFN
-};
-
+/* Layer indices come from ak820pro.h (shared with board code -- the Fn-layer
+ * mask in indicators.c is derived from them). */
 #define KC_TASK LGUI(KC_TAB)        // Task viewer
 #define KC_FLXP LGUI(KC_E)          // Windows file explorer
 #define KC_MCTL KC_MISSION_CONTROL  // Mission Control

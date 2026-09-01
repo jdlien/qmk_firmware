@@ -3,6 +3,7 @@
 /* Moved verbatim from ak820pro.c in the phase-3 module split. */
 #include "quantum.h"
 #include "indicators.h"
+#include "ak820pro.h"   /* the shared layer enum for FN_LAYER_MASK */
 #include "graphics/display.h"
 #include <hal.h>
 
@@ -44,6 +45,7 @@
                             * that was dropping 23% of its interrupts; with a
                             * steady 20000 the same period is now 208 Hz. */
 static const uint8_t ind_duty[] = { 0, 1, 2, 3, 5, 8, 12, 18, 28, 48 };
+_Static_assert(sizeof(ind_duty) == 10, "indicator levels are 0..9");
 
 /* Per-LED levels: the charging LED is not under user control and duplicates
  * what the battery icon already shows, so it defaults to 0 (off) while the
@@ -176,9 +178,9 @@ bool charge_is_charging(void) {
 /* Lock states for the LCD indicator band. Caps and Scroll are host-reported (and
  * so unreliable over BT -- see led_update_kb); GUI lock is a local QMK flag and
  * is always trustworthy. */
-/* Fn-layer state. Layer indices rather than the keymap's enum (WINFN=1,
- * MACFN=3) because that enum lives in keymap.c and is not visible here. */
-#define FN_LAYER_MASK ((layer_state_t)((1UL << 1) | (1UL << 3)))
+/* Fn-layer state, derived from the shared layer enum in ak820pro.h (it used
+ * to be a hand-written (1<<1)|(1<<3) because the enum lived in keymap.c). */
+#define FN_LAYER_MASK ((layer_state_t)((1UL << WINFN) | (1UL << MACFN)))
 
 static volatile bool ind_fn = false;
 
