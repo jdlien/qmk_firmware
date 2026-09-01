@@ -651,6 +651,20 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
 // Sets both the PCF8563 (persist) and the live SN32 clock; the display picks it up
 // within a second via rtc_get_time(). Returns the PCF (persistence) write status.
 static bool rtc_apply_bytes(const uint8_t *p) {
+    /* Validate BEFORE touching hardware: these bytes go into a BATTERY-BACKED
+     * part, so garbage persists across power cycles -- and dec2bcd(sec >= 80)
+     * would even set the PCF8563's VL (voltage-low) flag via bit 7 of the
+     * seconds register. Any local HID-capable process can send this packet;
+     * "the host script is well-behaved" is not a guard. (Audit finding
+     * IV-1, hardening-plan/findings-input-validation.md.) */
+    if (p[1] < 1 || p[1] > 12 ||   /* month   */
+        p[2] < 1 || p[2] > 31 ||   /* day     */
+        p[3] > 6 ||                /* weekday */
+        p[4] > 23 ||               /* hours   */
+        p[5] > 59 ||               /* minutes */
+        p[6] > 59) {               /* seconds */
+        return false;
+    }
     rtc_time_t t = {
         .year    = (uint16_t)(2000 + p[0]),
         .month   = p[1],
@@ -988,7 +1002,9 @@ void via_custom_value_command_kb(uint8_t *data, uint8_t length) {
         return;
     }
     if (rtc_is_set_time_cmd(data, length)) {
-        rtc_apply_bytes(&data[3]); // leave data[0] = SET_VALUE -> "handled"
+        // Honest reply: a rejected packet or failed I2C write must not echo
+        // back as "handled" -- the host's next poll is its only truth.
+        if (!rtc_apply_bytes(&data[3])) data[0] = RTC_UNHANDLED;
         return;
     }
     if (is_flash_cmd(data, length)) {
@@ -1012,7 +1028,7 @@ void raw_hid_receive(uint8_t *data, uint8_t length) {
     if (rtc_is_get_time_cmd(data, length)) {
         rtc_read_into(data);
     } else if (rtc_is_set_time_cmd(data, length)) {
-        rtc_apply_bytes(&data[3]);
+        if (!rtc_apply_bytes(&data[3])) data[0] = RTC_UNHANDLED;
     } else if (is_flash_cmd(data, length)) {
         flash_command(data, length);
     } else if (is_text_cmd(data, length)) {

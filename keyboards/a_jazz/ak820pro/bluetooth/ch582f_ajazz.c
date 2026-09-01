@@ -2,6 +2,7 @@
 #include "bluetooth.h"
 #include "quantum.h"
 #include "hal.h"
+#include "health.h"   /* health_note_rx_malformed() -- main-loop context only */
 
 #ifndef CH582_SERIAL_DRIVER
 #    define CH582_SERIAL_DRIVER SD2
@@ -342,11 +343,16 @@ static bool             tx_in_flight = false;
 static uint16_t         tx_sent_time = 0;
 static uint8_t          tx_retries   = 0;
 
-/* TX health counters. The UART runs at 115200 with the RX FIFO DISABLED
- * (serial_cfg above), so a byte must be serviced within ~87us or it is lost.
- * A lost ACK stalls the in-flight frame for the full CH582_TX_ACK_TIMEOUT_MS,
- * and a keystroke is two frames -- so ACK loss shows up as throughput collapse
- * (you can out-type the link), not as mild latency. These make that visible. */
+/* TX health counters. NOTE (corrected 2026-09-01, audit BW-5): an earlier
+ * comment here claimed the RX FIFO was disabled and a byte had to be serviced
+ * within ~87 us. WRONG -- the SN32 serial LLD ALWAYS enables the 16550-style
+ * 16-byte FIFO; `UART_FIFOControl = 0` in serial_cfg merely selects an RX
+ * threshold of 1 (IRQ per byte), so the real overrun tolerance is ~16 bytes
+ * ~= 1.4 ms at 115200. The historical byte loss came from the interrupt
+ * priority inversion starving the ISR past even that, not from a missing
+ * FIFO. A lost ACK stalls the in-flight frame for CH582_TX_ACK_TIMEOUT_MS,
+ * and a keystroke is two frames -- so ACK loss shows up as throughput
+ * collapse (you can out-type the link), not as mild latency. */
 static uint32_t tx_stat_sent = 0, tx_stat_timeout = 0, tx_stat_drop = 0;
 
 /* Health-counter readout (health.c). Main-loop only, like everything here. */
@@ -393,6 +399,47 @@ static void ch582_tx_ack(void) {
 
 void ch582_send_command(uint8_t cmd, const uint8_t *params, uint8_t param_len) {
     if (param_len > TX_MAX_PAYLOAD) return;
+
+    /* NEWEST-SUPERSEDES for STATE frames (audit BW-6). 0xA1 (keyboard) and
+     * 0xA3 (consumer) carry absolute state, not events -- the frame contract
+     * above says so -- so if one of the same type is already QUEUED (not the
+     * in-flight head), the newer state can simply overwrite it in place.
+     * Under a typing burst against a stalled link the queue then converges to
+     * the true final state instead of filling and DROPPING a release, which
+     * was a stuck key over BT (queue-full needed ~23 frames: ACK stall x
+     * burst).
+     *
+     * Gated on the queue being NEARLY FULL, not always-on: coalescing eats
+     * intermediate edges (a double-tap queued during a stall collapses into
+     * a continuous hold), so while there is room, every edge still ships in
+     * order -- delayed-but-complete beats collapsed. Only when the ring is
+     * about to overflow does convergence-to-final-state take over, because
+     * the alternative at that point is the stuck-key drop.
+     *
+     * ⚠️ NEVER coalesce 0xA6 (or anything else): the cancel-pairing bounce
+     * depends on ORDERED, DISTINCT selects (bounce slot, then target) --
+     * collapsing them re-derives the documented same-slot-select no-op trap. */
+    uint8_t used = (uint8_t)((tx_tail - tx_head + CH582_TXQ_LEN) % CH582_TXQ_LEN);
+    if ((cmd == 0xA1 || cmd == 0xA3) && used >= CH582_TXQ_LEN - 4) {
+        /* Overwrite the LAST queued frame of this type, never an earlier one:
+         * frames behind an overwritten earlier slot would deliver OLDER state
+         * after the newest and the host would end wrong. */
+        ch582_tx_frame_t *last = NULL;
+        uint8_t i = tx_in_flight ? tx_next(tx_head) : tx_head;
+        for (; i != tx_tail; i = tx_next(i)) {
+            if (tx_q[i].data[0] == cmd) last = &tx_q[i];
+        }
+        if (last) {
+            uint16_t s = cmd;
+            for (uint8_t j = 0; j < param_len; j++) {
+                last->data[1 + j] = params[j];
+                s += params[j];
+            }
+            last->data[param_len + 1] = (uint8_t)(s & 0xFF);
+            last->len                 = param_len + 2;
+            return;
+        }
+    }
 
     uint8_t nxt = tx_next(tx_tail);
     if (nxt == tx_head) { tx_stat_drop++; return; }  /* queue full -> DROPPED KEYSTROKE */
@@ -796,6 +843,17 @@ void ch582_task(void) {
             /* Clear the window so the consumed bytes can't form a phantom overlap
              * match with the next byte. */
             b2 = b1 = b0 = 0;
+        } else if ((b2 == 0x5A || b2 == 0x5B || b2 == 0x5C) &&
+                   b0 != (uint8_t)(b2 + b1) &&
+                   b0 != 0x5A && b0 != 0x5B && b0 != 0x5C && b0 != 0x61) {
+            /* A frame-shaped window with a WRONG checksum, whose tail byte
+             * cannot itself begin a new frame -- the signature of corrupted
+             * UART traffic (what the 2026-08-29 priority inversion produced).
+             * Count it: the counter is a TREND instrument, not an exact frame
+             * count -- payload bytes can pose as type bytes, so expect a small
+             * false-positive rate. Main-loop context only (audit C-4).
+             * (Audit finding IV-2, findings-input-validation.md.) */
+            health_note_rx_malformed();
         }
     }
 }

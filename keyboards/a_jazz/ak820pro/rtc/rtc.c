@@ -514,7 +514,14 @@ void rtc_task(void)
         return;
     }
 
+    /* The 1 Hz RTC callback RMWs rtc_check_seconds in ISR context; a bare
+     * main-loop store here can lose against it (load/store/store-old+1) and
+     * re-trigger a check ~1 s later. Benign -- the trim measures from
+     * snap-immune sources, not this counter -- but masking one store is
+     * cheaper than reasoning about it again. (Audit C-1.) */
+    chSysLock();
     rtc_check_seconds = 0;
+    chSysUnlock();
     rtc_clock_discipline();
 #endif
 }

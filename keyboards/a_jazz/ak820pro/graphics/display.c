@@ -84,7 +84,11 @@
 // Bottom row: y position of the wireless status line.
 #define STATUS_Y 105
 
-static bool display_powered = true;
+/* volatile: read every GPT tick in ISR context (display_backlight_tick),
+ * written from the main loop -- same discipline as bkl_level/ind_*. Benign
+ * without it today (no caching loop), but the one exception invites the
+ * refactor that silently caches it. (Audit C-2.) */
+static volatile bool display_powered = true;
 static bool display_paused  = false;   // true while the flash-animation player owns the bus
 static bool splash_cleared = false;
 static bool mac_mode = false;
