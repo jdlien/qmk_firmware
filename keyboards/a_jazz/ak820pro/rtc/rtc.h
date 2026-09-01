@@ -40,6 +40,8 @@ bool rtc_set_time(const rtc_time_t *t);
  * no calendar conversion. For once-per-second edge detection (e.g. pacing the
  * display refresh). NOT wall time; use rtc_get_time() for that. */
 uint32_t rtc_get_seconds(void);
+/* Live SN32 divider period (trimmed register value). */
+uint32_t rtc_get_period(void);
 
 /* Per-housekeeping tick: retries the initial seed until it takes and runs the
  * auto-calibration pass when one is due. Cheap no-op otherwise. Call every

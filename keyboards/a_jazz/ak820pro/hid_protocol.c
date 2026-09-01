@@ -348,6 +348,16 @@ static void health_command(uint8_t *data, uint8_t length) {
             /* Boot reset cause (raw RSTST bits): names what kind of reset a
              * slider flip produces (POR vs LVD brownout vs external). */
             data[7] = watchdog_boot_rstst();
+            /* RTC divider periods, LE u16: [8..9] persisted seed (0 = unset),
+             * [10..11] live trimmed register value. A large gap between them,
+             * or either far from ~33600 on this unit, explains a clock that
+             * runs fast/slow from boot. */
+            {
+                uint16_t sp = kb_eeconfig_get_rtc_period();
+                uint16_t lp = (uint16_t)rtc_get_period();
+                data[8]  = (uint8_t)(sp & 0xFF); data[9]  = (uint8_t)(sp >> 8);
+                data[10] = (uint8_t)(lp & 0xFF); data[11] = (uint8_t)(lp >> 8);
+            }
             break;
 #ifdef WDT_TEST_HOOKS
         case HC_INJECT:

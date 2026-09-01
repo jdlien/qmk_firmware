@@ -297,6 +297,12 @@ static void rtc_second_cb(RTCDriver *rtcp, rtcevent_t event)
 #endif
 }
 
+/* Live SN32 divider period (the trimmed value in the register), for the
+ * HC_CONN readout -- lets the host compare it against the persisted seed. */
+uint32_t rtc_get_period(void) {
+    return rtc_lld_get_period(&RTCD1);
+}
+
 uint32_t rtc_get_seconds(void) {
     return rtc_seconds_count;
 }
