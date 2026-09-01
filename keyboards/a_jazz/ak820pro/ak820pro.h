@@ -54,3 +54,13 @@ enum ak820pro_keycodes {
     SCR_DN,                // LCD backlight dimmer
     AK820PRO_SAFE_RANGE
 };
+
+/* Loop-stall attribution (see loop_gap_task in ak820pro.c). Which long
+ * operation was in progress when the main loop stalled -- the three suspects
+ * need entirely different fixes, so the probe reports the culprit, not just
+ * the duration. */
+#define LOOP_MARK_NONE  0
+#define LOOP_MARK_FLASH 1
+#define LOOP_MARK_BLIT  2
+#define LOOP_MARK_I2C   3
+extern volatile uint8_t loop_stall_mark;

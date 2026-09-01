@@ -386,6 +386,52 @@ static void draw_playback(void) {
     pb_last_big = big;
 }
 
+/* Bootloader splash.
+ *
+ * Bootloader mode is indistinguishable from a dead board -- no RGB, dark LCD,
+ * no typing, and no subtle indicator. That has cost real diagnostic time.
+ *
+ * The GC9107 holds its own GRAM and has its own supply, so an image drawn here
+ * survives the MCU reset that follows. Whether the BACKLIGHT survives is the
+ * open question: PANEL_BKL (A16) goes high-impedance on reset, so if the board
+ * has no pull-up the panel keeps the picture but goes unlit. If that turns out
+ * to be the case the fix is to re-assert A16 after the reset, before the ROM
+ * jump -- but this version is a pure no-op on failure, which is why it is
+ * worth trying first.
+ *
+ * Layout is measured, not eyeballed. Cozette is 6x14 and Iosevka-Medium-20 is
+ * 10x23; every line clears the recessed bezel by >=10px (BATT_X0 is 5 for the
+ * same reason). Groups are 8px apart with 2 rows of margin:
+ *
+ *        BOOTLOADER        20px   y 2
+ *     Awaiting firmware    13px   y 33
+ *     Unplug and replug    13px   y 55
+ *     to exit bootloader   13px   y 69
+ *       USB Device ID:     13px   y 91
+ *         0C45:7140        20px   y 105
+ */
+void display_bootloader_splash(void) {
+    /* Force the panel on and to full brightness -- the user may have been
+     * running it at the dimmest step, and this is the one screen that must be
+     * readable. */
+    display_set_power(true);
+    display_set_brightness(display_get_brightness_max());
+    gpio_write_pin(PANEL_BKL, 1);   // and bypass the software PWM entirely
+
+    lcd_clear_rect(0, 0, PANEL_WIDTH, PANEL_HEIGHT);
+
+    lcd_draw_flash_text(FONT_STATUS, 14,   2, "BOOTLOADER");
+    lcd_draw_flash_text(FONT_SMALL,  13,  33, "Awaiting firmware");
+    lcd_draw_flash_text(FONT_SMALL,  13,  55, "Replug exits IF");
+    lcd_draw_flash_text(FONT_SMALL,  10,  69, "firmware is intact");
+    lcd_draw_flash_text(FONT_SMALL,  22,  91, "USB Device ID:");
+    lcd_draw_flash_text(FONT_STATUS, 19, 105, "0C45:7140");
+
+    /* Let the last blit drain before the caller resets the MCU, or the DMA is
+     * cut mid-transfer and the panel keeps a half-drawn frame. */
+    lcd_blit_wait();
+}
+
 void draw_clock(void) {
     if (pb_active) {
         /* Leaving playback needs the band cleared of the wider/other-sized

@@ -723,6 +723,42 @@ void sn32f2xx_init(void) {
     shared_matrix_rgb_enable();
 }
 
+/* Blank the matrix and leave it blank.
+ *
+ * The row scan is a MUX: exactly one of the 18 row slots is energised at any
+ * instant, and the ISR moves it on. Stop the ISR -- by masking interrupts, or
+ * by the CPU stalling on an internal-flash write -- and whichever row and
+ * channel happened to be live stays live, at full duty instead of its 1/18
+ * share. That is the stuck bright row seen during flash writes, and after
+ * jumping to the ROM bootloader it is permanent.
+ *
+ * Callers that are about to stop the ISR should call this FIRST. It is the
+ * driver's own teardown, exported: outputs off on every column and every row
+ * channel, so no slot can be left driving. */
+void sn32f2xx_blank(void) {
+#if defined(SHARED_MATRIX)
+    shared_matrix_rgb_disable_output();
+#endif
+    /* Then force every LED pin to HIGH-IMPEDANCE.
+     *
+     * The driver's own teardown above writes row pins to an inactive LEVEL,
+     * which depends on SN32F2XX_RGB_OUTPUT_ACTIVE_LEVEL -- a define this board
+     * never sets, so it takes a default that may not match the hardware. If it
+     * is wrong, "blanking" drives rows to the ACTIVE state instead, which is
+     * how a row stayed lit after the mux was stopped.
+     *
+     * High-Z sidesteps the question: an input pin cannot source or sink, so
+     * there is no current path through any LED regardless of polarity. Only
+     * safe when the scan is being stopped for good -- which is the one caller
+     * here, on the way into the ROM bootloader. */
+    for (uint8_t y = 0; y < SN32F2XX_RGB_MATRIX_COLS; y++) {
+        gpio_set_pin_input(led_col_pins[y]);
+    }
+    for (uint8_t x = 0; x < SN32F2XX_RGB_MATRIX_ROWS_HW; x++) {
+        gpio_set_pin_input(led_row_pins[x]);
+    }
+}
+
 void sn32f2xx_flush(void) {
     if (led_state_buf_update_required) {
         /* The row ISR reads led_state[] to set each channel's duty, and this

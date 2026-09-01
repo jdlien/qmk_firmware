@@ -78,6 +78,16 @@ void early_hardware_init_post(void) {
 static void pwm_tick_init(void);
 
  void keyboard_post_init_kb(void) {
+#ifdef FORCE_EEPROM_RESET
+    /* ONE-SHOT RECOVERY BUILD -- not for normal use.
+     * An interrupted `flash write` erased the whole application region,
+     * including the wear-levelling EEPROM store. A corrupt store makes QMK
+     * rewrite it continually; every write stalls the main loop while the flash
+     * array is busy, which presents as stuck and repeating keys. This wipes it
+     * back to a known state. Flash the normal build immediately after. */
+    eeconfig_init();
+#endif
+
     // Windows Lock and Charging LEDs: outputs, off initially. update_leds() then
     // tracks their real state, writing only on a change.
     pwm_tick_init();
@@ -292,33 +302,70 @@ static uint16_t param_force_kc = KC_NO;
  *
  * Remove with LOOPGAP_INSTRUMENT once the console work is validated. */
 #ifdef LOOPGAP_INSTRUMENT
-static uint32_t loop_gap_max = 0;
+
+/* WHICH long operation was running when the loop stalled.
+ *
+ * The probe measured a 59 ms in-use stall -- easily enough to swallow a
+ * keystroke, since a character arrives roughly every 125 ms at typing speed.
+ * Magnitude alone does not say what to fix, and the three suspects need
+ * completely different remedies, so each marks itself on the way in. */
+volatile uint8_t loop_stall_mark = 0;   /* see LOOP_MARK_* in ak820pro.h */
+
+static const char *loop_mark_name(uint8_t m) {
+    switch (m) {
+        case LOOP_MARK_FLASH: return "flash";   /* internal-flash program/erase */
+        case LOOP_MARK_BLIT:  return "blit";    /* flash->LCD DMA wait */
+        case LOOP_MARK_I2C:   return "i2c";     /* bit-banged PCF8563 */
+        default:              return "?";
+    }
+}
 
 static void loop_gap_task(void) {
-    static uint32_t last = 0;
-    /* IGNORE THE FIRST LOOPGAP_SETTLE_MS. Boot does a lot of deliberate
-     * blocking -- lcd_init() alone spends 240 ms in wait_ms(), plus the asset
-     * index read, the RTC I2C seed and the splash blit. Because this is a
-     * MAX-HOLD, a large startup gap sets the ceiling and then nothing smaller
-     * ever reports again, so the instrument silently measured boot instead of
-     * the steady state it was built for. Nobody types during boot; the gaps
-     * that matter are the ones after it. */
-    if (timer_read32() < LOOPGAP_SETTLE_MS) {
+    static uint32_t last = 0, report_at = 0;
+    static uint16_t n_gaps = 0;
+    static uint32_t worst = 0;
+    static uint8_t  worst_mark = 0;
+
+    if (timer_read32() < LOOPGAP_SETTLE_MS) {   /* boot blocks deliberately */
         last = timer_read32();
         return;
     }
     if (last) {
         uint32_t gap = timer_elapsed32(last);
-        /* Only report a new max above a floor, so ordinary jitter stays quiet
-         * and the LCD write itself cannot become the thing being measured. */
-        if (gap > loop_gap_max && gap >= 4) {   /* main loop is ~2.5 ms at 400 Hz */
-            loop_gap_max = gap;
-            char buf[24];
-            snprintf(buf, sizeof(buf), "Gap %lums", (unsigned long)gap);
-            display_set_param_status(buf);
+        if (gap >= 4) {                          /* main loop is ~2.5 ms */
+            n_gaps++;
+            if (gap > worst) { worst = gap; worst_mark = loop_stall_mark; }
         }
     }
     last = timer_read32();
+    loop_stall_mark = LOOP_MARK_NONE;
+
+    /* Report at most once a second, and only when something happened.
+     *
+     * A MAX-HOLD WAS THE WRONG INSTRUMENT for the observed fault: typing goes
+     * janky for a stretch, then recovers. Once a max latches, every later stall
+     * is invisible, so a burst of thirty 12 ms stalls looks identical to
+     * silence. The COUNT is what distinguishes a periodic storm from a one-off,
+     * and the count is what the symptom actually is. */
+    /* Report on the CONSOLE, never the panel.
+     *
+     * The previous version called display_set_param_status(), which draws ~12
+     * glyphs, each a blocking DMA blit -- i.e. it reported by doing the exact
+     * thing it was measuring. That fed back and ran away to a 154 ms stall and
+     * an unusable board. An instrument must not touch the subsystem under test.
+     *
+     * Console writes are one line per second and the endpoint's sticky
+     * timed_out flag bounds the worst case; that path was measured earlier and
+     * exonerated. Also prints uptime, because the fault is WORST RIGHT AFTER
+     * BOOT and settles over minutes -- so when it happens matters as much as
+     * what. */
+    if (n_gaps && timer_elapsed32(report_at) >= 1000) {
+        report_at = timer_read32();
+        dprintf("[stall] t=%lus %ux worst=%lums %s\n",
+                (unsigned long)(timer_read32() / 1000), (unsigned)n_gaps,
+                (unsigned long)worst, loop_mark_name(worst_mark));
+        n_gaps = 0; worst = 0; worst_mark = LOOP_MARK_NONE;
+    }
 }
 #endif
 
@@ -466,6 +513,48 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
 #endif
             }
             return false;
+        case QK_BOOT:
+            /* Draw the bootloader notice BEFORE handing off to QMK, which then
+             * resets into the ROM bootloader.
+             *
+             * Bootloader mode is otherwise indistinguishable from a dead board
+             * -- no RGB, dark LCD, no typing, no indicator of any kind -- which
+             * has cost real diagnostic time. The GC9107 keeps its own GRAM
+             * across the MCU reset, so the picture survives; whether the
+             * BACKLIGHT does is the open question (PANEL_BKL goes high-Z on
+             * reset). If it goes dark this is simply a no-op, which is why it
+             * is worth trying in this form first.
+             *
+             * Returns TRUE so QMK still performs the reset -- we are only
+             * decorating it. This covers Fn+Esc; holding ESC while plugging in
+             * is handled by the ROM before any of our code runs, and cannot be
+             * decorated. */
+            /* Draw the notice, then let QMK do its normal magic-flag reset.
+             *
+             * ⚠️ DO NOT "improve" this by jumping straight to the ROM at
+             * SN32_BOOTLOADER_ADDRESS. That DOES keep the splash lit -- GPIOs
+             * retain state without a reset, so the backlight survives -- but it
+             * hands the ROM a live machine (48 MHz clocks, SPI/PWM/UART/timers
+             * configured, USB half torn down) and flashing then becomes
+             * unreliable: sonixflasher stalls partway through the erase and
+             * only a REPLUG clears the ROM's ISP session. Tried 2026-08-31 and
+             * reverted. Entry via a clean power-on reset worked every time;
+             * entry via the direct jump failed every time.
+             *
+             * The splash is therefore only visible for the moment before the
+             * reset. A barely-visible message that flashes reliably beats a
+             * readable one that does not. */
+            if (record->event.pressed) {
+                display_bootloader_splash();
+                /* Hold it long enough to READ before QMK resets into the ROM.
+                 * The reset drops PANEL_BKL to high-Z so the panel goes dark
+                 * the instant it fires; without this pause the notice is
+                 * present for a few milliseconds and effectively invisible.
+                 * Costs 1.5 s on the way into the bootloader, which is nothing
+                 * against a flash cycle. */
+                wait_ms(1500);
+            }
+            return true;
         case KC_MEDIA_PLAY_PAUSE:
             /* Guess the new state so the icon flips instantly instead of after
              * the host's next poll. Returns TRUE: the keypress must still reach
@@ -1330,6 +1419,9 @@ void housekeeping_task_kb(void) {
  * intermittent hang for a guaranteed one if a completion interrupt is ever
  * genuinely lost. */
 void backing_store_pre_write_hook(void) {
+#ifdef LOOPGAP_INSTRUMENT
+    loop_stall_mark = LOOP_MARK_FLASH;   /* every internal-flash writer passes here */
+#endif
     /* lcd_blit_wait() rather than a bare spin: a blit whose completion IRQ was
      * missed never clears, so the old loop burned its full second here on every
      * single flash write and left the bus asserted. See lcd_blit_wait(). */

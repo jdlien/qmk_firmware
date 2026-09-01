@@ -65,6 +65,10 @@ void display_set_text(uint8_t icon, const char *s, uint8_t len);
 void display_set_text_line(uint8_t line, uint8_t icon, const char *s, uint8_t len);
 void display_clear_text(void);
 
+/* Draw the bootloader notice. Called just before the MCU reset that enters the
+ * ROM bootloader; the panel retains the image across that reset. */
+void display_bootloader_splash(void);
+
 /* Playback position, drawn in place of the clock while media is PLAYING.
  * pos/dur are whole seconds; state 0 hands the band back to the clock.
  * The firmware advances pos itself once per second, so the host only has to

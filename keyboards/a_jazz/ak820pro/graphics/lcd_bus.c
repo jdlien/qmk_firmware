@@ -15,6 +15,7 @@
 #include "gpio.h"
 #include "lcd_bus.h"
 #include "../rtc/rtc.h"
+#include "../ak820pro.h"
 
 extern void display_set_paused(bool paused);   // graphics/display.c
 
@@ -592,25 +593,32 @@ bool lcd_blit_busy(void) { return !blit_done; }
  * full-screen animation frame is ~11 ms) and 4x tighter than the old 4,000,000
  * that made each stall a full second. */
 #define BLIT_WAIT_SPINS 1000000u
-/* ~10 ms. Long enough to see the DMA MOVE, which is all phase 1 asks.
+/* ~1 ms. Only long enough to see whether the DMA STARTED.
  *
- * The old single 250 ms bound was sized for the worst plausible transfer,
- * because the failure was assumed to be a lost completion. The captured data
- * says otherwise: every failure has cnt still at the programmed length, i.e.
- * the transfer never began. So there is no need to wait out a transfer that
- * was never running -- only long enough to distinguish "not started" from
- * "started and still going".
+ * MEASURED CONSEQUENCE OF GETTING THIS WRONG: with the window at 10 ms, a
+ * never-started blit cost 10 ms to detect plus 10 ms for the retry, and the
+ * loop-gap probe reported "Gap 24 blit" -- a 24 ms main-loop stall. At typing
+ * speed a character arrives roughly every 125 ms, so a 24 ms hole in the scan
+ * is enough to LOSE A KEYSTROKE. This is the link between the DMA fault and
+ * the dropped-character reports.
  *
- * Cost of getting this wrong in one direction only: too short and a slow-to-
- * start transfer is misread as never-started and retried, which is harmless
- * (nothing partial happened). Too long and every failure costs a visible
- * scan-rate dip, which is what this replaces -- one measured at 55 Hz against
- * a normal ~380. */
-#define BLIT_START_SPINS 40000u
+ * 10 ms was sized against the worst plausible TRANSFER (a 32 KB full-screen
+ * frame is ~11 ms). That was the wrong quantity: phase 1 only has to see the
+ * counter move, and the DMA request fires off the SPI1 RX threshold within
+ * microseconds of arming. A millisecond is three orders of magnitude of
+ * headroom over that.
+ *
+ * Failure is one-directional: too short and a slow-to-start transfer is
+ * misread as never-started and retried, which is harmless because nothing
+ * partial happened. Too long and every occurrence costs a keystroke. */
+#define BLIT_START_SPINS 4000u
 
 static uint16_t blit_timeouts = 0;
 
 bool lcd_blit_wait(void) {
+#ifdef LOOPGAP_INSTRUMENT
+    loop_stall_mark = LOOP_MARK_BLIT;
+#endif
     /* PHASE 1 -- did the DMA actually start? Watch DMACNT move (or a transfer
      * flag appear) rather than waiting out a whole transfer. A blit that never
      * starts is detected in ~10 ms instead of 250 ms, so the retry lands before

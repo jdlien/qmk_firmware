@@ -78,3 +78,7 @@ void sn32f2xx_init(void);
 void sn32f2xx_flush(void);
 void sn32f2xx_set_color(int index, uint8_t r, uint8_t g, uint8_t b);
 void sn32f2xx_set_color_all(uint8_t r, uint8_t g, uint8_t b);
+
+/* Turn every LED output off and leave it off. Call before stopping the row
+ * ISR, or the mux freezes with one row/channel driving at full duty. */
+void sn32f2xx_blank(void);

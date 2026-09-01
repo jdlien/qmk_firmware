@@ -279,7 +279,13 @@
  * during a long hold. */
 /* Stage 2 of the console investigation: report the worst main-loop gap on the
  * LCD. Comment out once the console change is validated -- see the plan. */
-#define LOOPGAP_INSTRUMENT
+/* ⚠️ DISABLED. The probe reported by DRAWING to the panel, and drawing is what
+ * it was measuring: each report issues ~12 glyph blits, each blit blocks the
+ * main loop, which produces more stalls, which triggers another report. On
+ * hardware 2026-08-31 that ran away to "8x 154 blit" -- a 154 ms stall -- and
+ * left the board unusable. Any future probe must report somewhere that is not
+ * the thing under test. */
+// #define LOOPGAP_INSTRUMENT   /* diagnostics off for daily use */
 #define LOOPGAP_SETTLE_MS 10000  /* skip boot; measure steady state only */
 
 #define RGB_REPEAT_DELAY_MS    400   /* hold this long before repeating starts */

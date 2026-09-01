@@ -6,6 +6,7 @@
 #include "quantum.h"
 #include "hal.h"
 #include "../graphics/lcd_bus.h"
+#include "../ak820pro.h"
 
 #include <time.h>
 
@@ -97,6 +98,9 @@ static uint16_t i2c_blit_overlap = 0;
 uint16_t rtc_i2c_overlaps(void) { return i2c_blit_overlap; }
 
 static void rtc_bus_guard(void) {
+#ifdef LOOPGAP_INSTRUMENT
+    loop_stall_mark = LOOP_MARK_I2C;
+#endif
     if (lcd_blit_busy() && i2c_blit_overlap < 0xFFFFu) {
         i2c_blit_overlap++;
     }
