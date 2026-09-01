@@ -1,0 +1,412 @@
+// Copyright 2026 Fernando Birra, JD Lien
+// SPDX-License-Identifier: GPL-2.0-or-later
+/* The raw-HID protocol: the RTC (0x10), flash-provisioning (0x11), host-text
+ * (0x12) and health (0x13) channels, and the dispatch -- VIA builds route
+ * through via_custom_value_command_kb, non-VIA through raw_hid_receive.
+ * Moved verbatim from ak820pro.c in the phase-3 module split. */
+#include "quantum.h"
+#include "ak820pro.h"
+#include "raw_hid.h"
+#include "rtc/rtc.h"
+#include "graphics/display.h"
+#include "graphics/lcd_bus.h"
+#include "health.h"
+#include "kb_eeconfig.h"
+
+// Apply a 7-byte time payload to the RTC:
+//   [0]=year-2000 [1]=month [2]=day [3]=weekday [4]=hour [5]=min [6]=sec
+// Sets both the PCF8563 (persist) and the live SN32 clock; the display picks it up
+// within a second via rtc_get_time(). Returns the PCF (persistence) write status.
+static bool rtc_apply_bytes(const uint8_t *p) {
+    /* Validate BEFORE touching hardware: these bytes go into a BATTERY-BACKED
+     * part, so garbage persists across power cycles -- and dec2bcd(sec >= 80)
+     * would even set the PCF8563's VL (voltage-low) flag via bit 7 of the
+     * seconds register. Any local HID-capable process can send this packet;
+     * "the host script is well-behaved" is not a guard. (Audit finding
+     * IV-1, hardening-plan/findings-input-validation.md.) */
+    if (p[0] > 99 ||               /* year -- the PCF stores year %100 but
+                                    * reads reconstruct 2000+yy, so 100..255
+                                    * would set one year live and persist
+                                    * another (Codex phase-2 review #1) */
+        p[1] < 1 || p[1] > 12 ||   /* month   */
+        p[2] < 1 || p[2] > 31 ||   /* day     */
+        p[3] > 6 ||                /* weekday */
+        p[4] > 23 ||               /* hours   */
+        p[5] > 59 ||               /* minutes */
+        p[6] > 59) {               /* seconds */
+        return false;
+    }
+    rtc_time_t t = {
+        .year    = (uint16_t)(2000 + p[0]),
+        .month   = p[1],
+        .day     = p[2],
+        .weekday = p[3],
+        .hours   = p[4],
+        .minutes = p[5],
+        .seconds = p[6],
+    };
+    return rtc_set_time(&t);
+}
+
+// Clock-set command framing, identical for VIA and non-VIA builds so the host
+// set-clock utility speaks ONE protocol. It's VIA's custom-value layout:
+//   [SET_VALUE, RTC_CHANNEL, RTC_SET_TIME, year-2000, month, day, weekday,
+//    hour, min, sec]
+// The reply echoes the packet: data[0] stays SET_VALUE when handled, or becomes
+// UNHANDLED (0xFF) when rejected. SET_VALUE/UNHANDLED mirror VIA's
+// id_custom_set_value / id_unhandled so the same bytes work against either build.
+enum {
+    RTC_SET_VALUE = 0x07, // == VIA id_custom_set_value
+    RTC_UNHANDLED = 0xFF, // == VIA id_unhandled
+    RTC_CHANNEL   = 0x10,
+    RTC_SET_TIME  = 0x01,
+    /* Read the live clock back. Exists so post-set phase error is MEASURABLE:
+     * without it the only way to see the offset is to film the panel next to a
+     * screen showing `date` and step frames. Reply reuses the request buffer:
+     *   [SET_VALUE, RTC_CHANNEL, RTC_GET_TIME, ok, yy, mm, dd, wday, hh, mm, ss]
+     * `ok` is 1 when rtc_get_time() succeeded.
+     *
+     * Whole seconds only, deliberately -- the sub-second phase is recovered by
+     * POLLING this fast and watching for the increment, which needs no extra
+     * protocol and no sub-second field on the wire. */
+    RTC_GET_TIME  = 0x02,
+};
+
+// ---------------------------------------------------------------------------
+// Flash provisioning channel (Stage D). Same VIA custom-value framing as the
+// clock above, on its own channel, so one host tool speaks one protocol:
+//   [SET_VALUE, FLASH_CHANNEL, cmd, payload...]
+// Replies are written back into the same buffer (VIA echoes it); data[3] is a
+// status byte, with any returned data from data[4].
+//
+// Nothing here ever blocks on the chip. A page program is ~1-3 ms and a sector
+// erase 50-300 ms; waiting for either inside the HID callback would stall the
+// matrix scan (measured: a blocking erase costs ~6% of one scan window). So a
+// command that needs an idle chip returns FS_BUSY and the host re-sends.
+enum {
+    FLASH_CHANNEL   = 0x11,
+    // commands
+    FC_INFO         = 0x01,  // -> jedec[3], asset_base[3]
+    FC_ERASE        = 0x02,  // addr[3]            (4K sector)
+    FC_WRITE_BEGIN  = 0x03,  // addr[3]
+    FC_WRITE_DATA   = 0x04,  // len[1], bytes...
+    FC_WRITE_END    = 0x05,  // flush a partial page
+    FC_CRC32        = 0x06,  // addr[3], len[3]  -> crc[4]
+    FC_STATUS       = 0x07,  // -> busy[1]
+    FC_UNLOCK       = 0x08,  // on[1]  (animation slots)
+    FC_CRC_NEXT     = 0x09,  // continue a running CRC -> crc[4] when done
+    // status codes returned in data[3]
+    FS_OK           = 0x00,
+    FS_BUSY         = 0x01,  // chip busy -- resend this packet
+    FS_REFUSED      = 0x02,  // write floor / locked / animation owns the bus
+    FS_BADARG       = 0x03,
+    FS_MORE         = 0x04,  // CRC still running -- send FC_CRC_NEXT
+};
+
+// CRC is computed in slices. Reading a whole range inside one HID callback
+// blocks the matrix scan for the entire read -- a 184 KB verify measured a drop
+// from ~1396 Hz to ~300 Hz. Everything else in this channel is non-blocking, so
+// the CRC must be too: each call folds at most CRC_SLICE bytes (~0.3 ms of SPI)
+// and returns FS_MORE until the range is consumed.
+#define CRC_SLICE 1024u
+static uint32_t crc_addr, crc_left, crc_acc;
+
+// Streaming write state. Bytes accumulate here until a 256-byte page boundary,
+// because the chip WRAPS rather than continuing when a program crosses one.
+static uint32_t fw_addr  = 0;      // flash address of pg[0]
+static uint16_t fw_fill  = 0;      // bytes buffered
+static uint8_t  fw_pg[256];
+static bool     fw_open  = false;
+
+static uint8_t flash_flush_page(void) {
+    if (!fw_fill) return FS_OK;
+    if (flash_busy()) return FS_BUSY;
+    if (!flash_page_program(fw_addr, fw_pg, fw_fill)) return FS_REFUSED;
+    fw_addr += fw_fill;
+    fw_fill  = 0;
+    return FS_OK;
+}
+
+static void flash_command(uint8_t *data, uint8_t length) {
+    uint8_t  cmd = data[2];
+    uint8_t *p   = &data[3];
+    uint32_t a   = ((uint32_t)p[0] << 16) | ((uint32_t)p[1] << 8) | p[2];
+
+    switch (cmd) {
+        case FC_INFO: {
+            uint32_t id = flash_jedec_id();
+            data[3] = FS_OK;
+            data[4] = (uint8_t)(id >> 16); data[5] = (uint8_t)(id >> 8); data[6] = (uint8_t)id;
+            data[7] = (uint8_t)(FLASH_ASSET_BASE >> 16);
+            data[8] = (uint8_t)(FLASH_ASSET_BASE >> 8);
+            data[9] = (uint8_t)(FLASH_ASSET_BASE);
+            return;
+        }
+        case FC_STATUS:
+            data[3] = FS_OK;
+            data[4] = flash_busy() ? 1 : 0;
+            return;
+
+        case FC_UNLOCK:
+            flash_set_unlocked(p[0] != 0);
+            data[3] = FS_OK;
+            return;
+
+        case FC_ERASE:
+            if (flash_busy())               { data[3] = FS_BUSY;    return; }
+            data[3] = flash_erase_sector(a) ? FS_OK : FS_REFUSED;
+            return;
+
+        case FC_WRITE_BEGIN:
+            // A page-aligned start keeps every later flush inside one page.
+            if (a & 0xFFu)                  { data[3] = FS_BADARG;  return; }
+            if (!flash_writable(a, 1))      { data[3] = FS_REFUSED; return; }
+            fw_addr = a; fw_fill = 0; fw_open = true;
+            data[3] = FS_OK;
+            return;
+
+        case FC_WRITE_DATA: {
+            if (!fw_open)                   { data[3] = FS_BADARG;  return; }
+            uint8_t n = p[0];
+            if (n == 0 || n > length - 4)   { data[3] = FS_BADARG;  return; }
+            // Buffer, flushing whenever a full page is ready. On FS_BUSY nothing
+            // is consumed, so the host simply re-sends the identical packet.
+            for (uint8_t i = 0; i < n; i++) {
+                fw_pg[fw_fill++] = p[1 + i];
+                if (fw_fill == sizeof fw_pg) {
+                    uint8_t st = flash_flush_page();
+                    if (st != FS_OK) { fw_fill -= (uint16_t)(i + 1); data[3] = st; return; }
+                }
+            }
+            data[3] = FS_OK;
+            return;
+        }
+
+        case FC_WRITE_END:
+            data[3] = flash_flush_page();
+            if (data[3] == FS_OK) fw_open = false;
+            return;
+
+        case FC_CRC32: {
+            uint32_t len = ((uint32_t)p[3] << 16) | ((uint32_t)p[4] << 8) | p[5];
+            if (!len)                       { data[3] = FS_BADARG;  return; }
+            crc_addr = a; crc_left = len; crc_acc = 0xFFFFFFFFu;
+        }
+        /* fall through: fold the first slice immediately */
+        case FC_CRC_NEXT: {
+            if (!crc_left)                  { data[3] = FS_BADARG;  return; }
+            uint32_t n = crc_left < CRC_SLICE ? crc_left : CRC_SLICE;
+            crc_acc   = flash_crc32_acc(crc_acc, crc_addr, n);
+            crc_addr += n;
+            crc_left -= n;
+            if (crc_left) { data[3] = FS_MORE; return; }
+            uint32_t c = ~crc_acc;
+            data[3] = FS_OK;
+            data[4] = (uint8_t)(c >> 24); data[5] = (uint8_t)(c >> 16);
+            data[6] = (uint8_t)(c >> 8);  data[7] = (uint8_t)c;
+            return;
+        }
+        default:
+            data[0] = RTC_UNHANDLED;
+            return;
+    }
+}
+
+static inline bool is_flash_cmd(const uint8_t *data, uint8_t length) {
+    return length >= 4 && data[0] == RTC_SET_VALUE && data[1] == FLASH_CHANNEL;
+}
+
+/* --- Host text channel ----------------------------------------------------
+ *   [SET_VALUE, TEXT_CHANNEL, TEXT_SET,   icon, bytes...]   up to 12 bytes
+ *   [SET_VALUE, TEXT_CHANNEL, TEXT_CLEAR]
+ *
+ * One packet carries the whole payload: the band fits 12 glyphs and a raw-HID
+ * report has ~27 usable bytes, so there is no framing to design. The firmware
+ * assigns no meaning to the text -- a host script decides what it says.
+ * Platform-agnostic on purpose: a launchd agent on macOS and a Task Scheduler
+ * script on Windows produce the same bytes, so moving machines needs no reflash. */
+enum {
+    TEXT_CHANNEL = 0x12,
+    TEXT_SET     = 0x01,
+    TEXT_CLEAR   = 0x02,
+    /* Per-line set: [.., TEXT_SET_LINE, line, icon, ASCII...].
+     * A second line does not fit in one packet -- 32 bytes leaves ~27 for text
+     * after framing, and two 16-char lines is 32 -- so each line gets its own
+     * report. Torn updates are harmless: the lines are independently meaningful
+     * (title / artist) and the producer polls every 3 s. */
+    TEXT_SET_LINE = 0x03,
+    /* Playback position: [.., TEXT_PLAYBACK, state, pos_hi, pos_lo, dur_hi,
+     * dur_lo]. Seconds, big-endian, 16 bits -> 18.2 h, well past any track.
+     * state 0 hands the band back to the clock. */
+    TEXT_PLAYBACK = 0x04,
+};
+
+static inline bool is_text_cmd(const uint8_t *data, uint8_t length) {
+    return length >= 3 && data[0] == RTC_SET_VALUE && data[1] == TEXT_CHANNEL;
+}
+
+static void text_command(uint8_t *data, uint8_t length) {
+    switch (data[2]) {
+        case TEXT_SET:
+            /* data[3] = icon id, data[4..] = ASCII. Length is whatever the host
+             * sent; display_set_text() clamps and sanitises. */
+            if (length >= 4) {
+                display_set_text(data[3], (const char *)&data[4],
+                                 (uint8_t)(length - 4));
+            }
+            break;
+        case TEXT_SET_LINE:
+            /* data[3] = line, data[4] = icon, data[5..] = ASCII. */
+            if (length >= 5) {
+                display_set_text_line(data[3], data[4], (const char *)&data[5],
+                                      (uint8_t)(length - 5));
+            }
+            break;
+        case TEXT_PLAYBACK:
+            if (length >= 8) {
+                display_set_playback(data[3],
+                                     (uint16_t)((data[4] << 8) | data[5]),
+                                     (uint16_t)((data[6] << 8) | data[7]));
+            }
+            break;
+        case TEXT_CLEAR:
+            display_clear_text();
+            break;
+        default:
+            data[0] = RTC_UNHANDLED;
+            break;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Health channel: read the unified health counters over raw HID (health.c).
+// Same VIA custom-value framing as the channels above:
+//   [SET_VALUE, HEALTH_CHANNEL, HC_GET] -> [.., .., HC_GET, version, 28 bytes]
+// Raw HID is the PRIMARY health readout -- it exists in every build flavor,
+// where the console exists only in instrumented ones. Replies route through
+// the active host driver, so like ak820ctl this needs the dip switch in wired
+// mode; the counters themselves accumulate in any mode.
+enum {
+    HEALTH_CHANNEL = 0x13,
+    HC_GET         = 0x01,
+#ifdef WDT_TEST_HOOKS
+    /* Test-only, instrumented builds: deliberately wedge the main loop to
+     * prove the watchdog resets the board and the boot accounting works.
+     *   [SET_VALUE, HEALTH_CHANNEL, HC_STALL, mode]
+     * mode 1: spin forever (interrupts still running -- the historical hang
+     *         signature). mode 2: force a kb-eeconfig flash write, then spin,
+     *         so the reset lands as close after a program cycle as this test
+     *         can arrange. The reply never arrives, by design. */
+    HC_STALL       = 0x7E,
+#endif
+};
+#define HEALTH_PROTO_VERSION 1
+
+static inline bool is_health_cmd(const uint8_t *data, uint8_t length) {
+    return length >= 3 && data[0] == RTC_SET_VALUE && data[1] == HEALTH_CHANNEL;
+}
+
+static void health_command(uint8_t *data, uint8_t length) {
+    switch (data[2]) {
+        case HC_GET:
+            if (length >= 32) {
+                data[3] = HEALTH_PROTO_VERSION;
+                health_fill(&data[4]);   /* 28 bytes: exactly fills the report */
+            } else {
+                data[0] = RTC_UNHANDLED;
+            }
+            break;
+#ifdef WDT_TEST_HOOKS
+        case HC_STALL:
+            if (length >= 4) {
+                if (data[3] == 2) {
+                    kb_eeconfig_test_write();   /* a REAL flash program first */
+                }
+                for (;;) { /* wedge: the watchdog must get us out of here */ }
+            }
+            break;
+#endif
+        default:
+            data[0] = RTC_UNHANDLED;
+            break;
+    }
+}
+
+static inline bool rtc_is_set_time_cmd(const uint8_t *data, uint8_t length) {
+    return length >= 10 && data[0] == RTC_SET_VALUE &&
+           data[1] == RTC_CHANNEL && data[2] == RTC_SET_TIME;
+}
+
+static inline bool rtc_is_get_time_cmd(const uint8_t *data, uint8_t length) {
+    return length >= 3 && data[0] == RTC_SET_VALUE &&
+           data[1] == RTC_CHANNEL && data[2] == RTC_GET_TIME;
+}
+
+/* Fill the reply in place with the live clock. */
+static void rtc_read_into(uint8_t *data) {
+    /* Zeroed up front: rtc_get_time() leaves t untouched when it fails, and the
+     * fields below are serialized regardless of ok. Without this the reply
+     * carries stack garbage -- nondeterministic, and a small leak of whatever
+     * was on the stack. data[3] already tells the host the reading is invalid. */
+    rtc_time_t t = {0};
+    bool ok = rtc_get_time(&t);
+    data[3] = ok ? 1 : 0;
+    data[4] = (uint8_t)(t.year >= 2000 ? t.year - 2000 : 0);
+    data[5] = t.month;
+    data[6] = t.day;
+    data[7] = t.weekday;
+    data[8] = t.hours;
+    data[9] = t.minutes;
+    data[10] = t.seconds;
+}
+
+#if defined(VIA_ENABLE)
+
+// VIA owns raw_hid_receive() and dispatches custom-value commands here. VIA echoes
+// the buffer back itself -- do NOT call raw_hid_send().
+void via_custom_value_command_kb(uint8_t *data, uint8_t length) {
+    if (rtc_is_get_time_cmd(data, length)) {
+        rtc_read_into(data);
+        return;
+    }
+    if (rtc_is_set_time_cmd(data, length)) {
+        // Honest reply: a rejected packet or failed I2C write must not echo
+        // back as "handled" -- the host's next poll is its only truth.
+        if (!rtc_apply_bytes(&data[3])) data[0] = RTC_UNHANDLED;
+        return;
+    }
+    if (is_flash_cmd(data, length)) {
+        flash_command(data, length);
+        return;
+    }
+    if (is_text_cmd(data, length)) {
+        text_command(data, length);
+        return;
+    }
+    if (is_health_cmd(data, length)) {
+        health_command(data, length);
+        return;
+    }
+    data[0] = RTC_UNHANDLED;
+}
+
+#else // no VIA: handle the same packet directly and echo it back like VIA would.
+
+void raw_hid_receive(uint8_t *data, uint8_t length) {
+    if (rtc_is_get_time_cmd(data, length)) {
+        rtc_read_into(data);
+    } else if (rtc_is_set_time_cmd(data, length)) {
+        if (!rtc_apply_bytes(&data[3])) data[0] = RTC_UNHANDLED;
+    } else if (is_flash_cmd(data, length)) {
+        flash_command(data, length);
+    } else if (is_text_cmd(data, length)) {
+        text_command(data, length);
+    } else if (is_health_cmd(data, length)) {
+        health_command(data, length);
+    } else {
+        data[0] = RTC_UNHANDLED;
+    }
+    raw_hid_send(data, length);
+}
+
+#endif
