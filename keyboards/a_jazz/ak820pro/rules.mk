@@ -30,6 +30,7 @@ SRC += health.c     # unified health counters; raw HID channel 0x13
 SRC += kb_eeconfig.c # owner of the persisted kb datablock
 SRC += bt_ui.c      # wireless slider, BT slot keys, hold-to-pair
 SRC += consumer_mod.c # modified-consumer endpoint-ordering sequencer
+SRC += param_overlay.c # RGB hold-to-repeat + parameter readout overlay
 VPATH += bluetooth
 VPATH += graphics
 VPATH += rtc
