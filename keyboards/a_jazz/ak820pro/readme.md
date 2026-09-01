@@ -41,6 +41,28 @@ and/or colour-inverted**, you have the other one — rebuild with:
 (The default suits units shipped on stock v1.10; the flag suits fpb-style
 units. It is one MADCTL byte and one INVON toggle — `graphics/lcd_bus.c`.)
 
+## The mode slider reboots the board (normal, not a crash)
+
+The tri-state slider (2.4G / cable / BT) is also a **power-source switch**:
+the wireless positions run the MCU from the battery, the cable position
+from USB. Nearly every flip browns out the supply during the switchover and
+resets the board — you'll see the boot splash. Measured transition matrix
+(reset cause read from the chip's RSTST register):
+
+| Flip | Result |
+|---|---|
+| cable → BT | survives, no reboot (the only one) |
+| BT → cable | brownout reset |
+| cable → 2.4G / 2.4G → cable | brownout reset |
+
+This is analog contact-timing in the switch hardware, not firmware, and it
+is harmless: settings (keymap, RGB, backlight level, BT slot, RTC trim)
+live in EEPROM and survive. Two things it does mean: a mode switch costs a
+~2 s reboot, and any in-RAM diagnostics (the raw-HID health counters) are
+wiped by the flip — so a Bluetooth session's counters cannot be read by
+flipping to wired afterwards. Do not build habits that depend on the one
+surviving edge; it is marginal and may differ on other units.
+
 ## Building
 
 The ChibiOS patches this board needs are COMMITS on the pinned
