@@ -303,15 +303,12 @@ static bool     pb_active = false;
 static bool     pb_ticking = false;
 static uint16_t pb_pos = 0, pb_dur = 0;
 static uint32_t pb_stamp = 0;
-static char     pb_last[PLAYBACK_MAX + 1] = {0};
-static bool     pb_last_big = false;
 
 void display_set_playback(uint8_t state, uint16_t pos, uint16_t dur) {
     bool want = (state != 0);
     if (want != pb_active) {
         pb_active = want;
         clock_force_repaint = true;     // band changes owner: repaint it whole
-        pb_last[0] = '\0';
     }
     pb_pos     = pos;
     pb_dur     = dur;
@@ -341,7 +338,6 @@ void display_playback_tick(void) {
     if (timer_elapsed32(pb_stamp) > PLAYBACK_TIMEOUT_MS) {
         pb_active = false;
         clock_force_repaint = true;
-        pb_last[0] = '\0';
         return;
     }
     if (!pb_ticking) return;    // paused: hold the value, do not advance it
@@ -363,6 +359,16 @@ static uint8_t fmt_hms(char *out, uint16_t sec) {
                        : snprintf(out, 9, "%u:%02u", m, s));
 }
 
+/* Forward decls: the clock band shares the glyph queue defined further down. */
+static void queue_line(uint8_t slot, uint16_t font, uint16_t x, uint16_t y,
+                       const char *str);
+static void band_clear(uint16_t x, uint16_t y, uint16_t w, uint16_t h);
+static bool gq_pending(void);
+static void display_queue_discard(void);
+/* Slot 2 of the glyph queue is the CLOCK BAND -- the clock or the playback
+ * timer, whichever owns it (defined with the queue further down). */
+#define GQ_SLOT_CLOCK 2
+
 static void draw_playback(void) {
     char buf[PLAYBACK_MAX + 1];
     uint8_t n = fmt_hms(buf, pb_pos);
@@ -375,27 +381,23 @@ static void draw_playback(void) {
     /* Same adaptive rule as the text slot: the big face unless the string is
      * too wide for the panel, which only happens once a duration reaches an
      * hour. A 20px cell is 23 rows against this band's 22, so it borrows one
-     * row from the 4-row gap below -- covered by the clear rect below. */
-    bool     big = (n * 10u) <= PANEL_WIDTH;
-    uint8_t  adv = big ? FONT_STATUS_ADV : FONT_SMALL_ADV;
-    uint16_t x0  = (uint16_t)((PANEL_WIDTH - n * adv) / 2);
-    uint16_t y   = big ? CLOCK_Y : (CLOCK_Y + 4);
+     * row from the 4-row gap below -- covered by the band clear. */
+    bool     big  = (n * FONT_STATUS_ADV) <= PANEL_WIDTH;
+    uint16_t font = big ? FONT_STATUS : FONT_SMALL;
+    uint8_t  adv  = big ? FONT_STATUS_ADV : FONT_SMALL_ADV;
+    uint16_t x0   = (uint16_t)((PANEL_WIDTH - n * adv) / 2);
+    uint16_t y    = big ? CLOCK_Y : (CLOCK_Y + 4);
 
-    bool relayout = (big != pb_last_big) || (strlen(pb_last) != n) || clock_force_repaint;
-    if (relayout) {
-        lcd_clear_rect(0, CLOCK_Y, PANEL_WIDTH, CLOCK_BAND_H);
-        pb_last[0] = '\0';
-    }
-    /* Monospace, so redraw only the cells that changed -- usually just the
-     * seconds digit. Same reason as the clock: this runs every second. */
-    for (uint8_t i = 0; i < n; i++) {
-        if (relayout || buf[i] != pb_last[i]) {
-            char ch[2] = {buf[i], 0};
-            lcd_draw_flash_text(big ? FONT_STATUS : FONT_SMALL, x0 + i * adv, y, ch);
-        }
-    }
-    strcpy(pb_last, buf);
-    pb_last_big = big;
+    /* Ownership change (clock <-> playback): clear the whole band through
+     * band_clear so every overlapping shadow is invalidated. */
+    if (clock_force_repaint) band_clear(0, CLOCK_Y, PANEL_WIDTH, CLOCK_BAND_H);
+
+    /* Through the glyph queue (audit BW-2): the per-second case still diffs
+     * to 1-2 glyphs against the shadow, and a RELAYOUT -- font or length
+     * change moves x0/y, which queue_line detects as a move -- clears the old
+     * run and queues the full new one WITHOUT blocking the main loop. The old
+     * blocking version cost ~22 ms at every start/stop/hour boundary. */
+    queue_line(GQ_SLOT_CLOCK, font, x0, y, buf);
 }
 
 /* Bootloader splash.
@@ -430,6 +432,7 @@ void display_bootloader_splash(void) {
     display_set_brightness(display_get_brightness_max());
     gpio_write_pin(PANEL_BKL, 1);   // and bypass the software PWM entirely
 
+    display_queue_discard();
     lcd_clear_rect(0, 0, PANEL_WIDTH, PANEL_HEIGHT);
 
     lcd_draw_flash_text(FONT_STATUS, 14,   2, "BOOTLOADER");
@@ -454,15 +457,11 @@ void draw_clock(void) {
         clock_force_repaint = false;
         return;
     }
-    if (clock_force_repaint) lcd_clear_rect(0, CLOCK_Y, PANEL_WIDTH, CLOCK_BAND_H);
+    if (clock_force_repaint) band_clear(0, CLOCK_Y, PANEL_WIDTH, CLOCK_BAND_H);
     rtc_time_t shown;
     bool valid = rtc_get_time(&shown);
     if (!valid) memset(&shown, 0, sizeof(shown));
 
-    // Time HH:MM:SS -- redraw only the character cells that changed (usually just the
-    // seconds). The clock font is monospace, so every cell has the same width.
-    static char last_time[12] = {0};
-    if (clock_force_repaint) memset(last_time, 0, sizeof(last_time)); // invalidate -> full repaint
     char time_str[12];
 #if DISPLAY_CLOCK_SHOW_SECONDS
     snprintf(time_str, sizeof(time_str), "%02u:%02u:%02u",
@@ -471,25 +470,27 @@ void draw_clock(void) {
     snprintf(time_str, sizeof(time_str), "%02u:%02u",
              (unsigned)shown.hours, (unsigned)shown.minutes);
 #endif
-    if (strcmp(time_str, last_time) != 0) {
-        uint8_t  n       = (uint8_t)strlen(time_str);        // 8 (HH:MM:SS) or 5 (HH:MM)
-        uint16_t total_w = lcd_flash_text_width(FONT_CLOCK, time_str);
-        int16_t  x0      = (PANEL_WIDTH - total_w) / 2;
-        int16_t  cw      = total_w / n;                      // monospace cell width
-        for (uint8_t i = 0; i < n; i++) {
-            if (time_str[i] != last_time[i]) {
-                int16_t cx = x0 + i * cw;
-                char ch[2] = {time_str[i], 0};
-                lcd_draw_flash_text(FONT_CLOCK, cx, CLOCK_Y, ch);
-            }
-        }
-        strcpy(last_time, time_str);
+    /* Through the glyph queue (audit BW-3): queue_line diffs against the
+     * band's shadow, so the per-second case queues 1-2 glyphs exactly as the
+     * old last_time[] compare did, and a force repaint (band_clear above
+     * invalidated the shadow) queues all 8 -- painted by the pump at main-
+     * loop rate instead of ~16 ms of blocking waits. */
+    uint16_t adv = lcd_font_advance(FONT_CLOCK);
+    if (adv) {
+        uint8_t  n  = (uint8_t)strlen(time_str);   // 8 (HH:MM:SS) or 5 (HH:MM)
+        uint16_t x0 = (uint16_t)((PANEL_WIDTH - n * adv) / 2);
+        queue_line(GQ_SLOT_CLOCK, FONT_CLOCK, x0, CLOCK_Y, time_str);
     }
-    clock_force_repaint = false; // consumed by the time above
+    clock_force_repaint = false;
 }
 
 uint32_t display_redraw_dashboard(uint32_t trigger_time, void *cb_arg) {
     splash_cleared = true;
+
+    /* Anything still queued belongs to the pre-clear frame -- painting it
+     * after this clear would scatter stale glyphs over the fresh dashboard
+     * (the resume-from-animation path made that reachable). */
+    display_queue_discard();
 
     // Clear background.
     lcd_clear_rect(0, 0, PANEL_WIDTH, PANEL_HEIGHT);
@@ -1261,8 +1262,15 @@ static void conn_status_update(void) {
  * anyone sees it arrive. The earlier one-glyph-per-HOUSEKEEPING-tick version
  * looked identical on paper and took 2 s, because 10 Hz was the wrong clock.
  * Granularity was never the problem; the tick was. */
-#define GQ_RUNS  2                      /* line 0, line 1                  */
-#define GQ_MAX  (DISPLAY_TEXT_MAX_L0 + DISPLAY_TEXT_MAX_L1)
+#define GQ_RUNS  3                      /* line 0, line 1, clock band      */
+/* Slot 2 (GQ_SLOT_CLOCK, defined above) carries the clock band. Routing it
+ * through the same queue+shadow machinery is what removed the blocking full
+ * repaints (audit BW-2/3: playback relayout ~22 ms, clock force repaint
+ * ~16 ms, both on the loop that scans the matrix). */
+/* Longest single run any slot can queue (the playback buffer). Text callers
+ * clamp to their own budgets before reaching queue_line. */
+#define GQ_LINE_MAX PLAYBACK_MAX
+#define GQ_MAX  (DISPLAY_TEXT_MAX_L0 + DISPLAY_TEXT_MAX_L1 + GQ_LINE_MAX)
 
 /* The queue holds INDIVIDUAL GLYPHS, not runs, because a repaint normally
  * touches only the cells whose character actually changed -- "Bright 25%" to
@@ -1273,7 +1281,7 @@ static uint8_t gq_n = 0, gq_i = 0;
 /* What is CURRENTLY on the panel, so the next repaint can diff against it. */
 static struct {
     uint16_t font, x, y;
-    char     s[DISPLAY_TEXT_MAX_L1 + 1];
+    char     s[GQ_LINE_MAX + 1];
     bool     valid;
 } shadow[GQ_RUNS];
 
@@ -1330,6 +1338,7 @@ static void band_clear(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
 }
 
 static void gq_reset(void) { gq_n = gq_i = 0; }
+static bool gq_pending(void) { return gq_i < gq_n; }
 
 static void shadow_invalidate(void) {
     for (uint8_t i = 0; i < GQ_RUNS; i++) shadow[i].valid = false;
@@ -1351,14 +1360,16 @@ void display_blit_pump(void) {
     if (++gq_i >= gq_n) gq_reset();
 }
 
-/* Finish any queued glyphs synchronously. The other band owners (clock,
- * battery, locks) blit too, and interleaving their windows with a half-painted
- * line would scramble both. Normally a no-op: a diff is a handful of glyphs. */
-static void gq_flush(void) {
-    while (gq_i < gq_n) {
-        if (!lcd_blit_wait()) { gq_reset(); shadow_invalidate(); return; }
-        display_blit_pump();
-    }
+/* Throw away everything queued and forget the panel contents. For the two
+ * moments the queue's contents become lies: a full-screen clear, and the
+ * bootloader splash. NOT a flush -- the old synchronous gq_flush() drained up
+ * to a full two-line repaint (~40 glyphs ~= 52 ms, the original keystroke-
+ * eater number) on the loop that scans the matrix whenever a band transition
+ * met another owner's redraw (audit BW-1). Nothing waits for the pump any
+ * more; owners DEFER instead (see display_housekeeping_task). */
+static void display_queue_discard(void) {
+    gq_reset();
+    shadow_invalidate();
 }
 
 /* Queue one line, drawing ONLY what differs from what is already on the panel.
@@ -1378,7 +1389,7 @@ static void queue_line(uint8_t slot, uint16_t font, uint16_t x, uint16_t y,
     if (!adv || !h) return;
 
     uint8_t n = (uint8_t)strlen(str);
-    if (n > DISPLAY_TEXT_MAX_L1) n = DISPLAY_TEXT_MAX_L1;
+    if (n > GQ_LINE_MAX) n = GQ_LINE_MAX;
 
     bool moved = !shadow[slot].valid || shadow[slot].font != font ||
                  shadow[slot].x != x || shadow[slot].y != y;
@@ -1428,9 +1439,12 @@ static void draw_text_slot(bool force) {
         text_dirty   = true;
     }
     if (!force && !text_dirty) return;
+    /* A previous diff is still being pumped: computing a new one against a
+     * half-painted panel would corrupt the shadows. Keep the dirty flag and
+     * come back next tick -- the pump finishes a full line in ~50 ms at
+     * main-loop rate, so the deferral is at most one 100 ms tick. */
+    if (!force && gq_pending()) return;
     text_dirty = false;
-
-    gq_flush();   /* land the previous diff before computing the next one */
     icon_clobbered = false;
 
     if (force) {
@@ -1503,9 +1517,14 @@ void display_housekeeping_task(void) {
     if (display_paused) return;   // animation owns the bus
 
     if (splash_cleared) {
-        /* The pump normally finished this line long ago (~50 ms against a
-         * 100 ms tick); this only bites if a blit had to be abandoned. */
-        gq_flush();
+        /* A queued line is mid-paint: let the pump finish before any owner
+         * draws or diffs. The pump completes a worst-case line in ~50 ms at
+         * main-loop rate, so this defers at most one 100 ms tick -- where the
+         * old synchronous gq_flush() here could block ~52 ms on the matrix-
+         * scanning loop (audit BW-1). The 1 Hz clock latch below is only
+         * reached when this passes, so a deferred second paints on the next
+         * tick rather than being skipped. */
+        if (gq_pending()) return;
 
         // Connection digit every tick (~10 Hz) so its blink animates; self-guarded.
         draw_conn_number(false);
