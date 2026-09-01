@@ -1201,8 +1201,8 @@ static const char *rgb_mode_short(uint8_t mode) {
 #ifdef ENABLE_RGB_MATRIX_BREATHING
         case RGB_MATRIX_BREATHING:               return "Breathing";
 #endif
-#ifdef ENABLE_RGB_MATRIX_PIXEL_RAIN
-        case RGB_MATRIX_PIXEL_RAIN:              return "Pixel Rain";
+#if defined(RGB_MATRIX_CUSTOM_KB)
+        case RGB_MATRIX_CUSTOM_RAINFALL:                return "Rainfall";
 #endif
 #ifdef ENABLE_RGB_MATRIX_CYCLE_ALL
         case RGB_MATRIX_CYCLE_ALL:               return "Cycle All";

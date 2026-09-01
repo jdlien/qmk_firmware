@@ -129,7 +129,14 @@
 #define RGB_MATRIX_HUE_STEP 1
 #define RGB_MATRIX_SAT_STEP 4    /* 64 values */
 #define RGB_MATRIX_VAL_STEP 2    /* 128 values -- the dim end is where this board lives */
-#define RGB_MATRIX_SPD_STEP 8    /* 32 values */
+#define RGB_MATRIX_SPD_STEP 4    /* 64 values -- 1.6% per press.
+                                  * Fine because hold-to-repeat covers the
+                                  * distance, and because speed is the SECOND
+                                  * HUE in ALPHAS_MODS (5.6 deg per press) and
+                                  * the drop density in RAINFALL. Free only
+                                  * because SN32F2XX_RGB_PWM_FREQ pins the PWM
+                                  * clock -- before that this would have HALVED
+                                  * the LED field rate. */
 
 // Columns are shared between the key matrix and the (column-active-LOW) LED matrix.
 // Drive unselected key-rows HIGH (instead of leaving them high-Z): a pressed switch

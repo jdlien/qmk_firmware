@@ -28,3 +28,6 @@ SRC += rtc/rtc.c
 VPATH += bluetooth
 VPATH += graphics
 VPATH += rtc
+
+# Board-local RGB effects (rgb_matrix_kb.inc): RAINFALL
+RGB_MATRIX_CUSTOM_KB = yes
