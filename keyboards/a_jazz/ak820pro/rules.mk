@@ -31,6 +31,7 @@ SRC += kb_eeconfig.c # owner of the persisted kb datablock
 SRC += bt_ui.c      # wireless slider, BT slot keys, hold-to-pair
 SRC += consumer_mod.c # modified-consumer endpoint-ordering sequencer
 SRC += param_overlay.c # RGB hold-to-repeat + parameter readout overlay
+SRC += indicators.c  # Caps/WinLock/Charging PWM, 20 kHz tick, lock states
 VPATH += bluetooth
 VPATH += graphics
 VPATH += rtc

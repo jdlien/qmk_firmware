@@ -1,0 +1,215 @@
+// Copyright 2026 Fernando Birra, JD Lien
+// SPDX-License-Identifier: GPL-2.0-or-later
+/* Moved verbatim from ak820pro.c in the phase-3 module split. */
+#include "quantum.h"
+#include "indicators.h"
+#include "graphics/display.h"
+#include <hal.h>
+
+/* --- Indicator LEDs -------------------------------------------------------
+ *
+ * Caps Lock (D15), Win Lock (C15) and Charging (B18) are plain GPIOs, and at
+ * full drive they are painfully bright on a desk in a dark room -- the charging
+ * one especially, since it is not under user control at all.
+ *
+ * So they are software-PWM'd rather than switched, sharing the 20 kHz CT16B3
+ * tick the LCD backlight uses (pwm_tick_cb below). Same duty curve and the same
+ * reasoning: perceptually spaced, because a linear ramp wastes its steps at the
+ * top and gives nothing usable at the bottom. Level 0 is fully off, if you would
+ * rather lose an indicator than see it.
+ *
+ * These functions only record desired state now; the ISR drives the pins. */
+/* 96 rather than the backlight's 64, tuned on hardware.
+ *
+ * Minimum brightness is always 1 tick, so a dimmer floor needs a longer period
+ * -- which lowers the switching frequency, since one pulse per period IS the
+ * fundamental. At a given low brightness and tick rate the flicker frequency is
+ * therefore fixed; the only real lever is the tick rate, and raising that costs
+ * matrix scan rate.
+ *
+ * Measured on this unit:
+ * Measured at the OLD 18750/s ISR rate:
+ *   64 ticks  -> 293 Hz, 1/64 (1.6%)   no flicker, slightly too bright
+ *   128 ticks -> 146 Hz, 1/128 (0.78%) good brightness, Caps visibly flickered
+ *   96 ticks  -> 195 Hz, 1/96 (1.0%)   the compromise
+ *
+ * This no longer rides the RGB row ISR. It ticks from CT16B3 (GPTD4) at a
+ * measured 20000 Hz, so RGB_MATRIX_SPD_STEP does not affect it and the old
+ * three-way coupling between LED field rate, backlight and indicators is gone.
+ *
+ * If flicker reappears, shorten this (brighter, faster) rather than reaching for
+ * the ISR rate. */
+#define IND_PWM_TICKS 48   /* 20000/48 = 417 Hz, floor 1/48 = 2.1%. The earlier
+                            * flicker at 96 ticks was measured against a tick
+                            * that was dropping 23% of its interrupts; with a
+                            * steady 20000 the same period is now 208 Hz. */
+static const uint8_t ind_duty[] = { 0, 1, 2, 3, 5, 8, 12, 18, 28, 48 };
+
+/* Per-LED levels: the charging LED is not under user control and duplicates
+ * what the battery icon already shows, so it defaults to 0 (off) while the
+ * locks stay dimly lit. */
+#ifndef INDICATOR_BRIGHTNESS_DEFAULT
+#    define INDICATOR_BRIGHTNESS_DEFAULT 1
+#endif
+#ifndef CHARGING_LED_BRIGHTNESS
+#    define CHARGING_LED_BRIGHTNESS 0
+#endif
+
+static volatile uint8_t ind_phase = 0;
+static volatile bool    ind_caps     = false;
+static volatile bool    ind_winlock  = false;
+static volatile bool    ind_scroll   = false;   /* host-reported; no key on this board */
+static volatile bool    ind_charging = false;
+
+static volatile uint8_t ind_lvl_caps     = INDICATOR_BRIGHTNESS_DEFAULT;
+static volatile uint8_t ind_lvl_winlock  = INDICATOR_BRIGHTNESS_DEFAULT;
+static volatile uint8_t ind_lvl_charging = CHARGING_LED_BRIGHTNESS;
+
+/* ISR context. `phase < duty` handles both ends without special-casing: duty 0
+ * is never true (always off) and duty == IND_PWM_TICKS is always true (full on).
+ * Writes are suppressed unless an output actually changes, so a steady indicator
+ * costs two pin writes per PWM period rather than one per tick. */
+static void indicators_tick(void) {
+    uint8_t phase = ind_phase + 1;
+    if (phase >= IND_PWM_TICKS) phase = 0;
+    ind_phase = phase;
+
+    uint8_t out = 0;
+    if (ind_caps     && phase < ind_duty[ind_lvl_caps])     out |= 1u;
+    if (ind_winlock  && phase < ind_duty[ind_lvl_winlock])  out |= 2u;
+    if (ind_charging && phase < ind_duty[ind_lvl_charging]) out |= 4u;
+
+    static uint8_t last_out = 0xFFu;
+    if (out == last_out) return;
+    last_out = out;
+
+    gpio_write_pin(LED_CAPS_LOCK_PIN, (out & 1u) != 0u);
+    gpio_write_pin(LED_WINLOCK_PIN, (out & 2u) != 0u);
+    gpio_write_pin(LED_CHARGING_PIN, (out & 4u) != 0u);
+}
+
+/* Backlight + indicator software PWM tick, on its OWN timer (CT16B3/GPTD4).
+ *
+ * This used to hang off a weak hook in the RGB row-scan ISR (since removed from
+ * drivers/led/sn32f2xx.c), which coupled the PWM rate to RGB_MATRIX_SPD_STEP.
+ * That was a mistake: raising
+ * SPD_STEP for a dimmer backlight starved the CH582F UART and Bluetooth typing
+ * collapsed to ~7 characters/second (measured: 3.7 ACK retransmits per frame at
+ * an 8963/s row ISR, versus 0.38 at the stock 2180/s).
+ *
+ * The two jobs want opposite things, so they get separate timers. What made the
+ * row ISR harmful was its WORK -- it reloads 15 PWM channels per invocation --
+ * not merely its rate. This handler is a counter, a compare and a few GPIO
+ * writes, roughly a microsecond, so it can run fast without denying the UART.
+ *
+ * 1 MHz timebase / 50 = 20 kHz tick. Keep this comfortably shorter than the
+ * ~87us UART byte time at 115200. */
+#define PWM_TICK_HZ       20000U
+#define PWM_TICK_TIMEBASE 1000000U   /* 48 MHz / 48, an exact prescaler */
+
+/* The configured tick rate and the real one have diverged before (the GPT LLD
+ * never enabled reset-on-match, giving ~15 Hz instead of 20 kHz), and a slow
+ * tick is also the first sign the MCU is out of CPU. To measure it again, add a
+ * `static volatile uint32_t pwm_tick_count` incremented here, and print the
+ * delta once a second from housekeeping_task_kb():
+ *
+ *     [pwmtick] 20000 Hz   -- healthy
+ *     [pwmtick] 15385 Hz   -- ticks being lost (priority inversion; see mcuconf.h)
+ *     [pwmtick] 20250 Hz   -- CANNOT speed up: the ms timebase has slowed, i.e.
+ *                             systick is being lost under interrupt load
+ *
+ * Removed from the shipped build because it prints every second. */
+static void pwm_tick_cb(GPTDriver *gptp) {
+    (void)gptp;
+    display_backlight_tick();
+    indicators_tick();
+}
+
+static const GPTConfig pwm_tick_cfg = {
+    .frequency = PWM_TICK_TIMEBASE,
+    .callback  = pwm_tick_cb,
+};
+
+void pwm_tick_init(void) {
+    gptStart(&GPTD4, &pwm_tick_cfg);
+    gptStartContinuous(&GPTD4, PWM_TICK_TIMEBASE / PWM_TICK_HZ);
+
+    /* WORKAROUND: the SN32 GPT LLD's continuous mode enables the MR0 match
+     * INTERRUPT but never reset-on-match, so the counter free-runs the full
+     * 16-bit range and the callback fires once per wrap instead of once per
+     * interval -- 1 MHz / 65536 = 15 Hz, not the 20 kHz asked for. Observed as
+     * the backlight blinking at full brightness every ~4.5 s.
+     *
+     * Enable MR0RST ourselves. MCTRL on every CT16 except CT16B1 ignores writes
+     * without 0x5A in bits[31:24] (see docs/HARDWARE_PWM.md "Register-model
+     * gotchas"), hence the unlock -- the same trap that bit the PWM driver.
+     *
+     * Belongs upstream in hal_gpt_lld.c; kept here to avoid another ChibiOS
+     * working-tree patch to reapply after every submodule update. */
+    SN_CT16B3->MCTRL = CT16_PWM_UNLOCK(SN_CT16B3->MCTRL | mskCT16_MRnRST_EN(0));
+}
+
+/* The row-scan hook is now unused; leave the weak no-op in the driver. */
+
+/* Claim Caps Lock from QMK core: returning false skips led_update_ports(), so
+ * the pin is ours to PWM. keyboard.json keeps the `indicators` entry, which is
+ * what defines LED_CAPS_LOCK_PIN and configures it as an output at init. */
+bool led_update_kb(led_t led_state) {
+    if (!led_update_user(led_state)) return false;
+    ind_caps   = led_state.caps_lock;
+    ind_scroll = led_state.scroll_lock;
+    /* NOTE: led_state comes from whichever host driver is active
+     * (host_keyboard_leds -> host_get_active_driver). In cable mode that is the
+     * USB LED report and it is reliable. In BT/2.4G it is the CH582F's
+     * host_leds, which ch582f_ajazz.c gates on is_module_connected and zeroes on
+     * every 5B link-down -- so a wrong link state silently drops LED reports and
+     * this LED goes dark while the host thinks Caps is on. Confirmed on hardware
+     * 2026-08-28: flaky over BT, reliable wired. Same root cause as the BT
+     * channel-digit bug. */
+    return false;
+}
+
+bool charge_is_charging(void) {
+    return ind_charging;
+}
+
+/* Lock states for the LCD indicator band. Caps and Scroll are host-reported (and
+ * so unreliable over BT -- see led_update_kb); GUI lock is a local QMK flag and
+ * is always trustworthy. */
+/* Fn-layer state. Layer indices rather than the keymap's enum (WINFN=1,
+ * MACFN=3) because that enum lives in keymap.c and is not visible here. */
+#define FN_LAYER_MASK ((layer_state_t)((1UL << 1) | (1UL << 3)))
+
+static volatile bool ind_fn = false;
+
+layer_state_t layer_state_set_kb(layer_state_t state) {
+    state  = layer_state_set_user(state);
+    ind_fn = (state & FN_LAYER_MASK) != 0;
+    return state;
+}
+
+bool lock_state_fn(void)      { return ind_fn; }
+bool lock_state_caps(void)    { return ind_caps; }
+bool lock_state_gui(void)     { return ind_winlock; }
+bool lock_state_scroll(void)  { return ind_scroll; }
+
+uint8_t indicator_get_brightness(void) {
+    return ind_lvl_caps;
+}
+
+void indicator_set_brightness(uint8_t level) {
+    if (level > (uint8_t)(sizeof(ind_duty) / sizeof(ind_duty[0])) - 1) {
+        level = (uint8_t)(sizeof(ind_duty) / sizeof(ind_duty[0])) - 1;
+    }
+    ind_lvl_caps    = level;
+    ind_lvl_winlock = level;
+}
+
+void update_leds(void) {
+    // Charging: on only while actively charging -- CHRG low (active) AND
+    // STDBY high (not "done").
+    ind_charging = !gpio_read_pin(CHARGE_CHRG_PIN) && gpio_read_pin(CHARGE_STDBY_PIN);
+
+    // Windows Lock: mirrors the GUI-lock flag.
+    ind_winlock = keymap_config.no_gui;
+}
