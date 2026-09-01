@@ -12,6 +12,7 @@
 #include "graphics/lcd_bus.h"
 #include "health.h"
 #include "kb_eeconfig.h"
+#include "bluetooth/ch582f_ajazz.h"   /* HC_CONN readout + fault injection */
 
 // Apply a 7-byte time payload to the RTC:
 //   [0]=year-2000 [1]=month [2]=day [3]=weekday [4]=hour [5]=min [6]=sec
@@ -289,6 +290,17 @@ static void text_command(uint8_t *data, uint8_t length) {
 enum {
     HEALTH_CHANNEL = 0x13,
     HC_GET         = 0x01,
+    /* Connection readout: [.., .., HC_CONN] ->
+     *   [.., .., HC_CONN, conn_state, target_slot, battery, module_flags]
+     * module_flags bit0 = connected, bit1 = pairing, bit2 = usb mode.
+     * Exists so host scripts (and the CH582F fault-injection tests) can
+     * assert link state without eyeballing the panel. */
+    HC_CONN        = 0x02,
+#ifdef WDT_TEST_HOOKS
+    /* Fault injection: [.., .., HC_INJECT, len, bytes...] -- feed up to 27
+     * bytes to the CH582F parser as if received from the module. */
+    HC_INJECT      = 0x7D,
+#endif
 #ifdef WDT_TEST_HOOKS
     /* Test-only, instrumented builds: deliberately wedge the main loop to
      * prove the watchdog resets the board and the boot accounting works.
@@ -316,7 +328,22 @@ static void health_command(uint8_t *data, uint8_t length) {
                 data[0] = RTC_UNHANDLED;
             }
             break;
+        case HC_CONN:
+            data[3] = (uint8_t)ch582_get_conn_state();
+            data[4] = ch582_get_target_slot();
+            data[5] = ch582_get_battery();
+            data[6] = (ch582_is_connected() ? 1 : 0) |
+                      (ch582_is_pairing()   ? 2 : 0) |
+                      (ch582_is_usb()       ? 4 : 0);
+            break;
 #ifdef WDT_TEST_HOOKS
+        case HC_INJECT:
+            if (length >= 4 && data[3] <= length - 4) {
+                ch582_inject(&data[4], data[3]);
+            } else {
+                data[0] = RTC_UNHANDLED;
+            }
+            break;
         case HC_STALL:
             if (length >= 4) {
                 if (data[3] == 2) {

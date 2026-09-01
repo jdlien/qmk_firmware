@@ -54,3 +54,9 @@ uint8_t ch582_get_host_leds(void);
 
 /* Cumulative TX health counters (sent / ACK timeouts / queue-full drops). */
 void ch582_tx_stats(uint32_t *sent, uint32_t *timeouts, uint32_t *drops);
+
+#ifdef WDT_TEST_HOOKS
+/* Fault injection (instrumented builds): queue bytes the parser consumes as
+ * if received from the module. See findings-ch582-states.md. */
+void ch582_inject(const uint8_t *bytes, uint8_t len);
+#endif

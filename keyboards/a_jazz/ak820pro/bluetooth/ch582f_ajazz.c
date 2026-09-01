@@ -155,24 +155,44 @@ static volatile bool    usb_mode = false;
  * reconnects, which need the peripheral to keep advertising uninterrupted. */
 static volatile bool    module_alive = false;
 
-/* Set while an A6 51 has been sent but no 5B 31 has confirmed it yet. */
-/* Set while an A6 <slot> has been sent but the module has not acknowledged it by
- * actually doing something (5B 33/34 attempting, or 32 connected). */
-/* Cancel-pairing bounce: see ch582_set_profile(). */
-static bool     bounce_pending     = false;
-static uint16_t bounce_time        = 0;
-static uint8_t  bounce_target      = 0;
 #ifndef CH582_BOUNCE_MS
 #    define CH582_BOUNCE_MS 700
 #endif
 
-static bool     select_pending     = false;
-static uint16_t select_last_try    = 0;
-static uint8_t  select_tries       = 0;
+/* THE pending control action -- at most one exists at a time, and
+ * supersession is total. This used to be three parallel flag/timer/counter
+ * triplets (bounce_pending/select_pending/pairing_pending), each added by a
+ * separate incident; the next BT bug was going to be an interaction between
+ * two of them. The transition spec, wire captures and do-not-break
+ * invariants live in hardening-plan/findings-ch582-states.md (workspace
+ * repo) -- behaviour here is byte-identical to the triplet version.
+ *
+ *   PA_SELECT: an A6 <slot> sent but the module has not acted on it
+ *              (5B 33/34/32). Re-sent on a 1.5 s clock AND immediately on a
+ *              5B 23 (the moment an advertising module becomes receptive --
+ *              clock-only retries measurably missed that window). MUST stop
+ *              the moment 33/34 arrives: re-selecting an attempting module
+ *              restarts advertising and starves slow macOS reconnects.
+ *   PA_PAIR:   an A6 51 sent but no 5B 31 confirmation -- the module drops
+ *              the pair command while a connect attempt is in flight, so it
+ *              is re-sent every 400 ms until confirmed (or connected, or
+ *              out of budget).
+ *   PA_BOUNCE: cancel-pairing bounce (see ch582_set_profile): a DIFFERENT
+ *              slot was sent to force the advertising module out of its
+ *              same-slot-select-is-a-no-op state; after CH582_BOUNCE_MS the
+ *              action becomes PA_SELECT on the real target.
+ *
+ * The cold-boot select retry below is deliberately NOT a kind here: its
+ * lifecycle (uncapped, until the first ACK proves the module's UART is up,
+ * fires regardless of what else is pending) is genuinely different. */
+typedef enum { PA_NONE = 0, PA_BOUNCE, PA_SELECT, PA_PAIR } pa_kind_t;
+static struct {
+    pa_kind_t kind;
+    uint8_t   target;     /* PA_SELECT/PA_BOUNCE: the REAL slot wanted */
+    uint16_t  last_send;
+    uint8_t   tries;
+} pa = { PA_NONE, 0, 0, 0 };
 
-static bool     pairing_pending    = false;
-static uint16_t pairing_last_try   = 0;
-static uint8_t  pairing_tries      = 0;
 static uint16_t         last_attempt_time = 0;
 /* Last time a battery poll (A6 53) was sent. */
 static uint16_t         last_battery_poll = 0;
@@ -192,6 +212,30 @@ typedef enum {
     STATE_WAIT_DATA,
     STATE_WAIT_CHECKSUM
 } parse_state_t;
+
+#ifdef WDT_TEST_HOOKS
+/* Fault-injection ring (instrumented builds; see the parser loop). Main-loop
+ * only: filled from raw HID (main loop), drained from ch582_task (main loop). */
+#define CH582_INJECT_MAX 64
+static uint8_t inj_buf[CH582_INJECT_MAX];
+static uint8_t inj_head = 0, inj_tail = 0;
+
+void ch582_inject(const uint8_t *bytes, uint8_t len) {
+    for (uint8_t i = 0; i < len; i++) {
+        uint8_t nxt = (uint8_t)((inj_tail + 1) % CH582_INJECT_MAX);
+        if (nxt == inj_head) return;   /* full: drop the rest, tests keep packets small */
+        inj_buf[inj_tail] = bytes[i];
+        inj_tail          = nxt;
+    }
+}
+
+bool ch582_inject_pop(uint8_t *out) {
+    if (inj_head == inj_tail) return false;
+    *out     = inj_buf[inj_head];
+    inj_head = (uint8_t)((inj_head + 1) % CH582_INJECT_MAX);
+    return true;
+}
+#endif
 
 static const SerialConfig serial_cfg = {
     .speed               = 115200,
@@ -469,7 +513,7 @@ void ch582_set_profile(ch582_profile_t profile) {
     uint8_t param        = (uint8_t)profile;
     bool    was_pairing  = (conn_state == CH582_CONN_PAIRING);
 
-    pairing_pending     = false;   /* a new selection supersedes a pending pair */
+    pa.kind             = PA_NONE;  /* a new selection supersedes any pending action */
     requested_profile   = param;
     connect_requested   = true;
     usb_mode            = false;
@@ -499,17 +543,17 @@ void ch582_set_profile(ch582_profile_t profile) {
         uint8_t other = (param == CH582_PROFILE_BT_1)
                             ? (uint8_t)CH582_PROFILE_BT_2
                             : (uint8_t)CH582_PROFILE_BT_1;
-        bounce_target  = param;
-        bounce_pending = true;
-        bounce_time    = timer_read();
-        select_pending = false;      /* no retries until the real select goes out */
+        pa.kind      = PA_BOUNCE;    /* no select retries until the real one goes out */
+        pa.target    = param;
+        pa.last_send = timer_read();
         ch582_send_command(0xA6, &other, 1);
         return;
     }
 
-    select_pending      = true;
-    select_tries        = 1;
-    select_last_try     = timer_read();
+    pa.kind      = PA_SELECT;
+    pa.target    = param;
+    pa.tries     = 1;
+    pa.last_send = timer_read();
     ch582_send_command(0xA6, &param, 1);
 }
 
@@ -522,8 +566,6 @@ void ch582_set_profile(ch582_profile_t profile) {
 #define CH582_PAIR_PARAM 0x51
 
 void ch582_enter_pairing(void) {
-    select_pending      = false;   /* pairing supersedes a pending select */
-    bounce_pending      = false;
     uint8_t param       = CH582_PAIR_PARAM;
     is_module_connected = false;
     is_pairing          = true;
@@ -531,9 +573,9 @@ void ch582_enter_pairing(void) {
      * make it true. Waiting for 5B 31 to update the display would leave the band
      * showing "Link failed" for seconds after the user did the right thing. */
     conn_state          = CH582_CONN_PAIRING;
-    pairing_pending     = true;
-    pairing_tries       = 1;
-    pairing_last_try    = timer_read();
+    pa.kind             = PA_PAIR;   /* supersedes a pending select/bounce */
+    pa.tries            = 1;
+    pa.last_send        = timer_read();
     /* Sent ONCE, matching the @isuua/edthu reference. Stock repeated it, but the
      * ACK/retry queue now guarantees delivery, so one is enough. */
     ch582_send_command(0xA6, &param, 1);
@@ -641,40 +683,46 @@ void ch582_task(void) {
         ch582_send_command(0xA6, &param, 1);
     }
 
-    /* Resend A6 51 until the module confirms with 5B 31 -- see CH582_PAIR_RETRY_MS.
-     * Cleared on 5B 31 (confirmed), 5B 32 (connected instead), or when the slot
-     * is re-selected. Bounded so a module that never answers does not retry
-     * forever. */
-    /* Second half of the cancel-pairing bounce: the real select. */
-    if (bounce_pending && timer_elapsed(bounce_time) >= CH582_BOUNCE_MS) {
-        bounce_pending  = false;
-        select_pending  = true;
-        select_tries    = 1;
-        select_last_try = timer_read();
-        uint8_t p = bounce_target;
-        ch582_send_command(0xA6, &p, 1);
-    }
-
-    if (select_pending) {
-        if (select_tries >= CH582_SELECT_MAX_TRIES) {
-            select_pending = false;
-        } else if (timer_elapsed(select_last_try) >= CH582_SELECT_CONFIRM_MS) {
-            select_last_try = timer_read();
-            select_tries++;
-            uint8_t param = requested_profile;
-            ch582_send_command(0xA6, &param, 1);
-        }
-    }
-
-    if (pairing_pending) {
-        if (pairing_tries >= CH582_PAIR_MAX_TRIES) {
-            pairing_pending = false;
-        } else if (timer_elapsed(pairing_last_try) >= CH582_PAIR_RETRY_MS) {
-            pairing_last_try = timer_read();
-            pairing_tries++;
-            uint8_t param = CH582_PAIR_PARAM;
-            ch582_send_command(0xA6, &param, 1);
-        }
+    /* Drive the pending control action -- one switch instead of three
+     * independent timer blocks. Cadences, budgets and clearing rules are the
+     * table in findings-ch582-states.md. */
+    switch (pa.kind) {
+        case PA_BOUNCE:
+            /* Second half of the cancel-pairing bounce: the real select. */
+            if (timer_elapsed(pa.last_send) >= CH582_BOUNCE_MS) {
+                pa.kind      = PA_SELECT;
+                pa.tries     = 1;
+                pa.last_send = timer_read();
+                uint8_t p = pa.target;
+                ch582_send_command(0xA6, &p, 1);
+            }
+            break;
+        case PA_SELECT:
+            if (pa.tries >= CH582_SELECT_MAX_TRIES) {
+                pa.kind = PA_NONE;
+            } else if (timer_elapsed(pa.last_send) >= CH582_SELECT_CONFIRM_MS) {
+                pa.last_send = timer_read();
+                pa.tries++;
+                uint8_t param = requested_profile;
+                ch582_send_command(0xA6, &param, 1);
+            }
+            break;
+        case PA_PAIR:
+            /* Resend A6 51 until the module confirms with 5B 31 -- it drops
+             * the pair command while its own connect attempt is in flight.
+             * Bounded so a module that never answers does not retry forever. */
+            if (pa.tries >= CH582_PAIR_MAX_TRIES) {
+                pa.kind = PA_NONE;
+            } else if (timer_elapsed(pa.last_send) >= CH582_PAIR_RETRY_MS) {
+                pa.last_send = timer_read();
+                pa.tries++;
+                uint8_t param = CH582_PAIR_PARAM;
+                ch582_send_command(0xA6, &param, 1);
+            }
+            break;
+        case PA_NONE:
+        default:
+            break;
     }
 
     /* Periodically poll the module for battery level. The module only emits 5C
@@ -714,8 +762,20 @@ void ch582_task(void) {
     /* Drain the queue fully (capped to bound worst-case latency) so a connect
      * burst doesn't overflow the serial input buffer and shed bytes. */
     while (bytes_processed < 64) {
+#ifdef WDT_TEST_HOOKS
+        /* Fault injection (instrumented builds): bytes queued via
+         * ch582_inject() are consumed BEFORE real UART bytes, as if received
+         * from the module -- so a host script can replay every wire capture
+         * in findings-ch582-states.md (missed 5B 32, the advertising
+         * decline, byte soup) against the REAL parser and assert the
+         * resulting state over raw HID. */
+        extern bool ch582_inject_pop(uint8_t *out);
+        if (ch582_inject_pop(&c)) {
+            bytes_processed++;
+        } else
+#endif
         if (chnReadTimeout(&CH582_SERIAL_DRIVER, &c, 1, TIME_IMMEDIATE) == 0) break;
-        bytes_processed++;
+        else bytes_processed++;
 
         b2 = b1;
         b1 = b0;
@@ -762,16 +822,21 @@ void ch582_task(void) {
                 case 0x5B: /* connection state code (NOT a slot number) */
                     switch (d) {
                         case 0x32: /* link established - the only "connected" signal */
-                            select_pending      = false;   /* module acted */
-                            pairing_pending     = false;   /* connected instead */
+                            /* A PA_BOUNCE survives: this 5B 32 may be the BOUNCE
+                             * slot linking up mid-window, and the real target's
+                             * select must still follow at the 700 ms mark --
+                             * clearing it would strand the user on the wrong
+                             * slot. (The triplet version's 5B 32 case never
+                             * touched bounce_pending either.) */
+                            if (pa.kind != PA_BOUNCE) pa.kind = PA_NONE;
                             is_module_connected = true;
                             is_pairing          = false;
                             conn_state          = CH582_CONN_CONNECTED;
                             connected_slot      = profile_to_slot(requested_profile);
                             break;
                         case 0x31: /* advertising / pairing, waiting for a device */
-                            select_pending      = false;   /* module acted */
-                            pairing_pending     = false;   /* confirmed: stop retrying */
+                            /* PA_BOUNCE survives here too, same reason as 32. */
+                            if (pa.kind != PA_BOUNCE) pa.kind = PA_NONE;
                             is_pairing          = true;
                             is_module_connected = false;
                             conn_state          = CH582_CONN_PAIRING;
@@ -782,8 +847,10 @@ void ch582_task(void) {
                         case 0x34:
                             /* The module IS attempting: never re-issue the select
                              * now, or a slow (macOS directed-advertising)
-                             * reconnect gets restarted and never completes. */
-                            select_pending      = false;
+                             * reconnect gets restarted and never completes. A
+                             * pending PAIR survives -- the module ignores A6 51
+                             * mid-attempt, which is why that retry exists. */
+                            if (pa.kind == PA_SELECT) pa.kind = PA_NONE;
                             is_module_connected = false;
                             is_pairing          = false;
                             if (conn_state != CH582_CONN_LINKING) linking_since = timer_read32();
@@ -817,10 +884,10 @@ void ch582_task(void) {
                              * select sent while advertising is ignored, and the
                              * 5B 23 lands ~6 s later. Retrying on the clock
                              * alone kept missing this window. */
-                            if (select_pending && d == 0x23 &&
-                                select_tries < CH582_SELECT_MAX_TRIES) {
-                                select_last_try = timer_read();
-                                select_tries++;
+                            if (pa.kind == PA_SELECT && d == 0x23 &&
+                                pa.tries < CH582_SELECT_MAX_TRIES) {
+                                pa.last_send = timer_read();
+                                pa.tries++;
                                 uint8_t p = requested_profile;
                                 ch582_send_command(0xA6, &p, 1);
                             }
