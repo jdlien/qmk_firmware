@@ -1226,24 +1226,53 @@ static struct {
 static uint8_t last_icon_drawn = DISPLAY_ICON_NONE;
 static uint16_t last_icon_y    = 0;
 
-/* Set when a text clear lands on the icon's columns. See band_clear(). */
+#define TEXT_ICON_H 12          /* draw_text_icon paints rows y..y+11 */
+
 static bool icon_clobbered = false;
 
-/* Every clear issued by the text path goes through here.
+static bool rects_overlap(uint16_t ax, uint16_t ay, uint16_t aw, uint16_t ah,
+                          uint16_t bx, uint16_t by, uint16_t bw, uint16_t bh) {
+    return ax < bx + bw && bx < ax + aw && ay < by + bh && by < ay + ah;
+}
+
+/* EVERY clear in this band goes through here, and it is the invariant the whole
+ * diffing scheme rests on: a shadow may only claim "already painted" for pixels
+ * that are still on the panel.
  *
- * The transport icon occupies x 0..TEXT_ICON_W-1, and the overlay deliberately
- * starts at CONN_STATUS_X (4) rather than TEXT_X (16) to buy a twelfth
- * character -- so the two OVERLAP. When the overlay retires, the clear that
- * removes it also removes most of the icon that was painted earlier in the same
- * pass, leaving only columns 0..3 and whatever rows sit above the cleared band.
+ * The band has three overlapping owners in a 14px-wide gutter -- the transport
+ * icon (x 0..11), the overlay (x 4.., it starts left of TEXT_X to buy a twelfth
+ * character) and line 1 (x 2..). So one owner's cleanup routinely erases
+ * another's pixels, and a diffing renderer will then never repaint them,
+ * because its shadow still says they are there. That is not an edge case; it
+ * happened twice, and both times it was permanent damage rather than a flicker:
  *
- * ⚠️ DO NOT "FIX" THIS BY DRAWING THE ICON AFTER THE TEXT. That breaks the
- * other direction: entering the overlay, the icon block's gutter clear (x
- * 0..TEXT_X) erases the overlay's first glyph at x=4. Icon-first is required;
- * this flag is what makes it survive. */
+ *   - the retiring overlay's clear (x 4..) ate the icon, leaving columns 0..3
+ *   - the icon block's gutter clear (full band height) ate the first two
+ *     glyphs of line 1, which never came back
+ *
+ * Rather than hand-patching each pair as it is discovered, any clear now
+ * invalidates every shadow it touches, so the next pass repaints them. Add a
+ * new owner to this band and it is covered automatically.
+ *
+ * ⚠️ DO NOT "FIX" THE ICON/OVERLAP BY DRAWING THE ICON AFTER THE TEXT. That
+ * breaks the other direction: entering the overlay, the icon's clear erases the
+ * overlay's first glyph at x=4. Icon-first is required. */
 static void band_clear(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
-    if (x < TEXT_ICON_W) icon_clobbered = true;
     lcd_clear_rect(x, y, w, h);
+
+    if (last_icon_drawn != DISPLAY_ICON_NONE &&
+        rects_overlap(x, y, w, h, 0, last_icon_y, TEXT_ICON_W, TEXT_ICON_H))
+        icon_clobbered = true;
+
+    for (uint8_t i = 0; i < GQ_RUNS; i++) {
+        if (!shadow[i].valid) continue;
+        uint16_t adv = lcd_font_advance(shadow[i].font);
+        uint16_t hh  = lcd_font_height(shadow[i].font);
+        if (!adv || !hh) continue;
+        if (rects_overlap(x, y, w, h, shadow[i].x, shadow[i].y,
+                          (uint16_t)(strlen(shadow[i].s) * adv), hh))
+            shadow[i].valid = false;   /* forces a full repaint of that line */
+    }
 }
 
 static void gq_reset(void) { gq_n = gq_i = 0; }
@@ -1371,10 +1400,15 @@ static void draw_text_slot(bool force) {
         else                                      icon_y = TEXT_Y + TEXT_FONT_DY - 1;
     }
     if (want_icon != last_icon_drawn || icon_y != last_icon_y) {
-        lcd_clear_rect(0, TEXT_Y - TEXT_ICON_LIFT, TEXT_X, TEXT_H + TEXT_ICON_LIFT);
+        /* Clear only where the OLD icon actually was. This used to wipe the
+         * full gutter for the whole band height, which reached down into
+         * line 1 and took its first two glyphs with it. */
+        if (last_icon_drawn != DISPLAY_ICON_NONE)
+            band_clear(0, last_icon_y, TEXT_ICON_W, TEXT_ICON_H);
         if (want_icon != DISPLAY_ICON_NONE) draw_text_icon(0, icon_y, want_icon);
         last_icon_drawn = want_icon;
         last_icon_y     = icon_y;
+        icon_clobbered  = false;   /* just painted it; only LATER clears matter */
     }
 
     /* --- text ------------------------------------------------------------- */
