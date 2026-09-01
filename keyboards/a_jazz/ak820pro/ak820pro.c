@@ -1195,11 +1195,14 @@ static const char *rgb_mode_short(uint8_t mode) {
 #ifdef ENABLE_RGB_MATRIX_SOLID_COLOR
         case RGB_MATRIX_SOLID_COLOR:             return "Solid";
 #endif
+#ifdef ENABLE_RGB_MATRIX_ALPHAS_MODS
+        case RGB_MATRIX_ALPHAS_MODS:             return "Alphas/Mods";
+#endif
 #ifdef ENABLE_RGB_MATRIX_BREATHING
         case RGB_MATRIX_BREATHING:               return "Breathing";
 #endif
-#ifdef ENABLE_RGB_MATRIX_BAND_SAT
-        case RGB_MATRIX_BAND_SAT:                return "Band Sat";
+#ifdef ENABLE_RGB_MATRIX_PIXEL_RAIN
+        case RGB_MATRIX_PIXEL_RAIN:              return "Pixel Rain";
 #endif
 #ifdef ENABLE_RGB_MATRIX_CYCLE_ALL
         case RGB_MATRIX_CYCLE_ALL:               return "Cycle All";
@@ -1235,6 +1238,21 @@ static const char *rgb_mode_short(uint8_t mode) {
  * Percentages rather than raw 0-255 because the band is 12 characters and "53%"
  * is legible where "136" needs you to know the scale. Hue is the exception --
  * it is circular, so degrees are the meaningful unit. */
+
+/* ALPHAS_MODS has no animation: it reuses rgb_matrix_config.speed as the hue
+ * OFFSET of the second colour (alpha_mods_anim.h does `hsv.h += speed`). So the
+ * speed keys are the second-colour dial, and reporting them as "Speed 50%"
+ * describes the wrong quantity entirely. Report degrees off the base hue. */
+static void fmt_speed(char *buf, size_t n, uint8_t sp) {
+#ifdef ENABLE_RGB_MATRIX_ALPHAS_MODS
+    if (rgb_matrix_get_mode() == RGB_MATRIX_ALPHAS_MODS) {
+        snprintf(buf, n, "2nd  %+4d", (int)((sp * 360) / 256));
+        return;
+    }
+#endif
+    snprintf(buf, n, "Speed  %3u%%", (unsigned)((sp * 100u + 127u) / 255u));
+}
+
 static void param_status_task(void) {
     static uint8_t last_mode = 0, last_h = 0, last_s = 0, last_v = 0, last_sp = 0;
     static bool    last_on = false, last_nkro = false;
@@ -1280,7 +1298,7 @@ static void param_status_task(void) {
     } else if (sa != last_s) {
         snprintf(buf, sizeof(buf), "Sat    %3u%%", (unsigned)((sa * 100u + 127u) / 255u));
     } else if (sp != last_sp) {
-        snprintf(buf, sizeof(buf), "Speed  %3u%%", (unsigned)((sp * 100u + 127u) / 255u));
+        fmt_speed(buf, sizeof(buf), sp);
     } else if (param_force_kc != KC_NO) {
         /* Nothing moved, but an adjust key was pressed -- almost always because
          * the value is already at an end stop. Report the current value so the
@@ -1293,7 +1311,7 @@ static void param_status_task(void) {
             case RM_VALU: case RM_VALD:
                 snprintf(buf, sizeof(buf), "Bright %3u%%", (unsigned)((v * 100u + 127u) / 255u)); break;
             case RM_SPDU: case RM_SPDD:
-                snprintf(buf, sizeof(buf), "Speed  %3u%%", (unsigned)((sp * 100u + 127u) / 255u)); break;
+                fmt_speed(buf, sizeof(buf), sp); break;
             default:
                 param_force_kc = KC_NO;
                 return;
