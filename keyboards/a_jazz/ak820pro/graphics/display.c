@@ -1069,6 +1069,32 @@ void display_set_param_status(const char *s) {
     text_dirty       = true;
 }
 #endif
+/* --- Boot alert -------------------------------------------------------------
+ * A recovery the user should KNOW ABOUT (a watchdog reset) is silent by
+ * design in the daily build -- no console -- so it announces itself here:
+ * top of the band priority (below only an active pair gesture) for
+ * ALERT_HOLD_MS, then the band goes back to normal. Set once at post-init. */
+#define ALERT_HOLD_MS 60000u
+static char     alert_buf[CONN_STATUS_MAX + 1] = {0};
+static uint32_t alert_since = 0;
+static bool     alert_on    = false;
+
+void display_set_alert(const char *msg) {
+    strncpy(alert_buf, msg, CONN_STATUS_MAX);
+    alert_buf[CONN_STATUS_MAX] = '\0';
+    alert_since = timer_read32();
+    alert_on    = true;
+    text_dirty  = true;
+}
+
+static bool alert_active(void) {
+    if (alert_on && timer_elapsed32(alert_since) >= ALERT_HOLD_MS) {
+        alert_on   = false;
+        text_dirty = true;
+    }
+    return alert_on;
+}
+
 static const char *conn_status_str   = NULL;   /* NULL = host text owns the band */
 static uint32_t    conn_status_since = 0;
 
@@ -1101,6 +1127,17 @@ static void conn_status_update(void) {
     }
 
     const char *want = NULL;
+
+    /* The boot alert outranks everything except an active pair gesture: the
+     * user must learn the board crashed and recovered, and a passive link
+     * state or an RGB readout can wait a minute. */
+    if (alert_active() && pair_hint_pct < 0) {
+        if (conn_status_str != alert_buf) {
+            conn_status_str = alert_buf;
+            text_dirty      = true;
+        }
+        return;
+    }
 
 #ifdef PARAM_OVERLAY
     /* Sits below the pair hint but above the link state: adjusting a setting is

@@ -79,6 +79,18 @@ void early_hardware_init_post(void) {
     // decision) -- before the watchdog arms, after the console is plumbed.
     watchdog_boot_check();
 
+    // A watchdog recovery is otherwise SILENT in the daily build (no
+    // console): say so on the panel, loudly enough to notice, briefly
+    // enough not to nag. DEGRADED means "it kept happening and the
+    // watchdog is now off" -- the one state that really needs eyes.
+    if (watchdog_degraded()) {
+        display_set_alert("WDT DEGRADED");
+    } else if (watchdog_fired_last_boot()) {
+        char buf[16];
+        snprintf(buf, sizeof(buf), "WDT reset x%u", (unsigned)watchdog_reset_count());
+        display_set_alert(buf);
+    }
+
     // Chain the user hook: overriding keyboard_post_init_kb() replaces QMK's
     // default, which is what normally calls keyboard_post_init_user().
     keyboard_post_init_user();
