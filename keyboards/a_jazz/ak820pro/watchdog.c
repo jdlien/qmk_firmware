@@ -38,18 +38,25 @@
 #define WDT_PRESC_SEL 4u  /* APBCP1.WDTPRE -- assumed /16, see header comment */
 #define WDT_TC 188u       /* 188 * 128 / (32000/16) = 12.0 s nominal */
 
-/* Boot accounting lives at the top of RAM, just below the DFU magic word the
- * bootloader path already keeps at __ram0_end__-4 (sn32_dfu.c). That region
- * is heap space no code on this board ever reaches (QMK/ChibiOS here do not
- * malloc), it is outside .bss so crt0 does not zero it, and RAM retains
- * through any reset short of power loss -- the same assumptions the existing
- * DFU magic has always made. A power cycle leaves garbage; the magic word
+/* Boot accounting lives in the ram7 region -- the top 16 bytes of SRAM,
+ * carved out of ram0 by the SN32F290.ld change on the ak820pro-patches
+ * chibios branch. ChibiOS places bare `.ram7` sections NOLOAD and crt0
+ * never zeroes them, so the words survive any reset short of power loss,
+ * and unlike the previous top-of-heap trick nothing else can ever be
+ * allocated there (newlib malloc IS linked into this image -- the heap tail
+ * was not actually safe). A power cycle leaves garbage; the magic word
  * detects that and starts the count fresh. */
-extern uint32_t __ram0_end__;
-#define WDT_RAM_TOP ((uint32_t)&__ram0_end__)
-#define wdt_boot_magic (*(volatile uint32_t *)(WDT_RAM_TOP - 12u))
-#define wdt_boot_count (*(volatile uint32_t *)(WDT_RAM_TOP - 8u))
+typedef struct {
+    uint32_t magic;
+    uint32_t count;
+} wdt_boot_t;
+static volatile wdt_boot_t wdt_boot __attribute__((section(".ram7"), aligned(4)));
+#define wdt_boot_magic (wdt_boot.magic)
+#define wdt_boot_count (wdt_boot.count)
 #define WDT_BOOT_MAGIC 0x4A445721u /* "JDW!" */
+
+extern uint32_t __ram0_end__; /* for the DFU magic in bootloader_jump() */
+#define WDT_RAM_TOP ((uint32_t)&__ram0_end__)
 
 #define WDT_DEGRADED_THRESHOLD 3u
 
