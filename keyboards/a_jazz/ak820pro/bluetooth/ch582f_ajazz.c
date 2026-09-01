@@ -282,8 +282,20 @@ static const SerialConfig serial_cfg = {
 
 void ch582_send_keyboard_report(report_keyboard_t *report) {
     /* Boot keyboard report = [mods][reserved][key1..key6]; this matches the
-     * stock A1 frame byte-for-byte. report->keys is the 6KRO slot array, valid
-     * regardless of NKRO (it is the first member of the report union). */
+     * stock A1 frame byte-for-byte.
+     *
+     * ⚠️ report->keys is valid here ONLY because bluetooth_can_send_nkro()
+     * returns false, so QMK always hands this function a genuine
+     * report_keyboard_t. An earlier comment claimed keys[] was safe
+     * "regardless of NKRO (first member of the report union)" -- WRONG in
+     * this tree (caught by Rachel, 2026-09-01): report_keyboard_t and
+     * report_nkro_t are two SEPARATE packed structs in report.h, the NKRO
+     * one has no keys[] slot array at all (it is a mods+bitmap layout), and
+     * their leading bytes differ (report_id is unconditional in NKRO,
+     * KEYBOARD_SHARED_EP-gated -- i.e. absent here -- in the boot report).
+     * If anyone ever flips can_send_nkro to true, this function must grow a
+     * bitmap->slots conversion; reading keys[] off an NKRO report would be
+     * silent garbage. */
     uint8_t buf[8];
     buf[0] = report->mods;
     buf[1] = 0; /* reserved */
