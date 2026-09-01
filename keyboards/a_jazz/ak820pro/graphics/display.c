@@ -12,6 +12,7 @@
 #include "quantum.h"
 #include "gpio.h"
 #include "rtc/rtc.h"
+#include "kb_eeconfig.h"   /* persisted backlight level (phase 4) */
 
 
 
@@ -189,18 +190,22 @@ uint8_t display_get_brightness(void) {
 void display_set_brightness(uint8_t level) {
     if (level > BKL_MAX_LEVEL) level = BKL_MAX_LEVEL;
     bkl_level = level;
-    /* Deliberately not persisted. Every write to the kb eeconfig block is an
-     * internal-flash program/erase, which is exactly what wedges this board
-     * (see rgb_matrix_eeprom_flush_allowed in ak820pro.c). Set
-     * DISPLAY_BRIGHTNESS_DEFAULT in config.h once a level is settled on. */
+    /* The raw setter deliberately does NOT persist -- the bootloader splash
+     * forces max brightness through here, and persisting that would overwrite
+     * the user's level on every flash cycle. The user-gesture paths below are
+     * what persist. (The old "never persist" rule predated the
+     * backing_store_pre_write_hook + coalesced-deferred-write machinery that
+     * now makes a settled write safe -- phase 4.2.) */
 }
 
 void display_brightness_up(void) {
     if (bkl_level < BKL_MAX_LEVEL) display_set_brightness(bkl_level + 1);
+    kb_eeconfig_set_lcd_brightness(bkl_level);
 }
 
 void display_brightness_down(void) {
     if (bkl_level > 0) display_set_brightness(bkl_level - 1);
+    kb_eeconfig_set_lcd_brightness(bkl_level);
 }
 
 void display_set_power(bool on) {
@@ -215,6 +220,10 @@ void display_toggle_power(void) {
 }
 
 static bool display_backlight_init(void) {
+    /* Restore the persisted level (phase 4.2); a fresh/unset block keeps the
+     * compile-time default. kb_eeconfig_init() ran earlier in post-init. */
+    uint8_t lvl;
+    if (kb_eeconfig_get_lcd_brightness(&lvl) && lvl <= BKL_MAX_LEVEL) bkl_level = lvl;
     gpio_set_pin_output(PANEL_BKL);
     gpio_write_pin(PANEL_BKL, display_powered); // initial state (on)
     return true;

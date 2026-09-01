@@ -1,22 +1,53 @@
 // Copyright 2026 JD Lien
 // SPDX-License-Identifier: GPL-2.0-or-later
 /* Owner of the persisted kb datablock. See kb_eeconfig.h for the layout
- * contract (assign-only reserved bytes). */
+ * contract (assign-only reserved bytes).
+ *
+ * ALL writes are COALESCED AND DEFERRED: setters update RAM and mark the
+ * block dirty; kb_eeconfig_task() (10 Hz housekeeping) programs the flash
+ * once the values have been stable for KB_EECONFIG_SETTLE_MS. One policy for
+ * every field -- a brightness sweep, a slot change and an RTC trim all cost
+ * at most one program each settle window, and every write goes through the
+ * wear-levelling layer whose backing_store_pre_write_hook() drains any
+ * in-flight LCD blit first (the historical hang). The cost is that a change
+ * made within ~5 s of power loss is not persisted; every field here is a
+ * remembered convenience, so that trade is correct. */
 #include "quantum.h"
 #include "kb_eeconfig.h"
 #include "bluetooth/ch582f_ajazz.h"
 
-// Persisted keyboard config (EEPROM kb datablock; 4 bytes reserved, room to grow).
+/* Layout (4 bytes, matching the pre-phase-4 block size exactly).
+ * A fresh or pre-phase-4 block holds ZEROS in bytes 1..3, so 0 must mean
+ * "unset" for every added field -- hence the +1 encoding for brightness. */
 typedef struct __attribute__((packed)) {
-    uint8_t bt_profile;   // last BT slot selected (CH582_PROFILE_BT_1..3)
-    uint8_t _pad[3];
+    uint8_t bt_profile;        // last BT slot selected (CH582_PROFILE_BT_1..3)
+    uint8_t rtc_period_lo;     // converged RTC divider period, LE; 0 = unset
+    uint8_t rtc_period_hi;
+    uint8_t lcd_brightness_p1; // backlight level + 1; 0 = unset
 } kb_config_t;
+_Static_assert(sizeof(kb_config_t) == 4, "block layout is assign-only; do not grow casually");
+
 static kb_config_t kb_config;
+static bool        kb_dirty = false;
+static uint32_t    kb_dirty_since;
+
+#ifndef KB_EECONFIG_SETTLE_MS
+#    define KB_EECONFIG_SETTLE_MS 5000u
+#endif
 
 void kb_eeconfig_init(void) {
-    // A fresh/invalid EEPROM zero-fills the block, so a 0 (or out-of-range)
-    // bt_profile falls back to slot 1 in the getter.
     eeconfig_read_kb_datablock(&kb_config, 0, sizeof(kb_config));
+}
+
+void kb_eeconfig_task(void) {
+    if (!kb_dirty || timer_elapsed32(kb_dirty_since) < KB_EECONFIG_SETTLE_MS) return;
+    kb_dirty = false;
+    eeconfig_update_kb_datablock(&kb_config, 0, sizeof(kb_config));
+}
+
+static void kb_mark_dirty(void) {
+    kb_dirty       = true;
+    kb_dirty_since = timer_read32();
 }
 
 uint8_t kb_eeconfig_get_bt_profile(void) {
@@ -27,19 +58,47 @@ uint8_t kb_eeconfig_get_bt_profile(void) {
     return CH582_PROFILE_BT_1;
 }
 
-// Write the remembered slot back only when it actually changed -- wear-leveling
-// on internal flash is cheap but not free, and slot changes are user-initiated.
 void kb_eeconfig_set_bt_profile(uint8_t p) {
     if (kb_config.bt_profile == p) return;
     kb_config.bt_profile = p;
-    eeconfig_update_kb_datablock(&kb_config, 0, sizeof(kb_config));
+    kb_mark_dirty();
+}
+
+uint16_t kb_eeconfig_get_rtc_period(void) {
+    return (uint16_t)(kb_config.rtc_period_lo | (kb_config.rtc_period_hi << 8));
+}
+
+void kb_eeconfig_set_rtc_period(uint16_t period) {
+    if (kb_eeconfig_get_rtc_period() == period) return;
+    kb_config.rtc_period_lo = (uint8_t)(period & 0xFF);
+    kb_config.rtc_period_hi = (uint8_t)(period >> 8);
+    kb_mark_dirty();
+}
+
+bool kb_eeconfig_get_lcd_brightness(uint8_t *level) {
+    if (kb_config.lcd_brightness_p1 == 0 || kb_config.lcd_brightness_p1 > 32) {
+        return false;   /* unset, or garbage (e.g. the test hook's poke) */
+    }
+    *level = (uint8_t)(kb_config.lcd_brightness_p1 - 1);
+    return true;
+}
+
+void kb_eeconfig_set_lcd_brightness(uint8_t level) {
+    uint8_t p1 = (uint8_t)(level + 1);
+    if (kb_config.lcd_brightness_p1 == p1) return;
+    kb_config.lcd_brightness_p1 = p1;
+    kb_mark_dirty();
 }
 
 #ifdef WDT_TEST_HOOKS
 void kb_eeconfig_test_write(void) {
-    /* Toggle a reserved pad byte so wear-levelling cannot skip an identical
-     * write -- the flash really programs. */
-    kb_config._pad[0] ^= 1;
+    /* Force a REAL, IMMEDIATE flash program (the point is to wedge the CPU
+     * right after one). Toggling bit 7 of the brightness byte guarantees the
+     * content changed so wear-levelling cannot skip it, while the poisoned
+     * value reads as "unset" (> 32 guard above) -- so after the WDT-reset
+     * test the board falls back to the default and self-heals on the next
+     * settled write. */
+    kb_config.lcd_brightness_p1 ^= 0x80;
     eeconfig_update_kb_datablock(&kb_config, 0, sizeof(kb_config));
 }
 #endif

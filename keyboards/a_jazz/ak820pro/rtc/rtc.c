@@ -4,6 +4,7 @@
 
 #include "rtc.h"
 #include "quantum.h"
+#include "kb_eeconfig.h"   /* persisted divider period (phase 4) */
 #include "hal.h"
 #include "../graphics/lcd_bus.h"
 #include "../ak820pro.h"
@@ -412,6 +413,22 @@ static void rtc_clock_discipline(void)
 
                 if (np != period) {
                     rtc_lld_set_period(&RTCD1, np);
+                    /* Persist ANY accepted, sane trim once the board has been
+                     * up a while and the value moved meaningfully from what is
+                     * stored. NOT a wait-for-convergence rule: near lock the
+                     * measurement windows grow very long and step sizes are
+                     * not guaranteed monotonic (the recorded 695->46 trace
+                     * happened to shrink), so a "two small steps" trigger
+                     * could wait forever. Persisting incrementally means every
+                     * boot starts from the best value yet seen; the 32-tick
+                     * threshold (~0.1%) keeps temperature wander from causing
+                     * steady rewrites. The write itself is coalesced/deferred
+                     * by kb_eeconfig. (Phase 4.1, Codex plan-review #15.) */
+                    if (timer_read32() >= 600000u && np >= 28000 && np <= 40000) {
+                        uint16_t st = kb_eeconfig_get_rtc_period();
+                        uint32_t d  = (np > st) ? (np - st) : (st - np);
+                        if (st == 0 || d >= 32) kb_eeconfig_set_rtc_period((uint16_t)np);
+                    }
                     printf("[rtc] trim %lu -> %lu (%ld ticks / %ld s)\n",
                            (unsigned long)period, (unsigned long)np,
                            (long)ticks, (long)real);
@@ -453,19 +470,21 @@ void rtc_init(void)
 {
     i2cStart(&I2CD1, &i2ccfg);
 
+    /* Divider seed, best first: the PERSISTED converged period (phase 4 --
+     * survives power cycles, correct on ANY unit, makes the compile-time seed
+     * irrelevant once the trim has run once), else RTC_PERIOD_INITIAL (a
+     * hand-measured, per-unit value -- see the CLAUDE.md warning never to
+     * ship it to another board), else the LLD's nominal 32000 and a ~40 min
+     * climb. The sanity window brackets any plausible ILRC (spec'd loosely
+     * around 32 kHz): a stored value outside it is garbage, not data. */
+    uint16_t stored = kb_eeconfig_get_rtc_period();
+    if (stored >= 28000 && stored <= 40000) {
+        rtc_lld_set_period(&RTCD1, stored);
+    }
 #ifdef RTC_PERIOD_INITIAL
-    /* Start from a measured divider rather than the LLD's nominal 32000.
-     *
-     * The trim below converges to the right value on its own, but only from
-     * whatever it boots with, and the divider is NOT persisted -- so every power
-     * cycle otherwise restarts a ~40 minute climb from 32000 with the clock
-     * visibly jumping the whole way. Seeding it lands within ~0.1% immediately
-     * and leaves the trim to do what it is actually good at: tracking drift.
-     *
-     * The value is per-unit and temperature-dependent (it is an RC oscillator),
-     * so this is a starting point, never a substitute for the trim. Re-measure
-     * by watching [rtc] trim lines converge from the stock 32000. */
-    rtc_lld_set_period(&RTCD1, RTC_PERIOD_INITIAL);
+    else {
+        rtc_lld_set_period(&RTCD1, RTC_PERIOD_INITIAL);
+    }
 #endif
 
     rtcSetCallback(&RTCD1, rtc_second_cb);

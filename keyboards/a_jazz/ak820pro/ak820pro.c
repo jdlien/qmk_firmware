@@ -448,6 +448,7 @@ void housekeeping_task_kb(void) {
         if (!anim_active()) rtc_task();   // RTC I2C (port A) glitches the flash SPI1 pins (A12/A13) mid-DMA
         anim_task();                      // one animation frame per 100 ms
         display_housekeeping_task();
+        kb_eeconfig_task();               // settled, coalesced kb-config flush
         health_task();                    // [health] console line, on change only
     }
 

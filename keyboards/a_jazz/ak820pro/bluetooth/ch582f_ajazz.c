@@ -217,6 +217,7 @@ typedef enum {
 /* Fault-injection ring (instrumented builds; see the parser loop). Main-loop
  * only: filled from raw HID (main loop), drained from ch582_task (main loop). */
 #define CH582_INJECT_MAX 64
+#define CH582_A6_TRACE   16
 static uint8_t inj_buf[CH582_INJECT_MAX];
 static uint8_t inj_head = 0, inj_tail = 0;
 
@@ -234,6 +235,30 @@ bool ch582_inject_pop(uint8_t *out) {
     *out     = inj_buf[inj_head];
     inj_head = (uint8_t)((inj_head + 1) % CH582_INJECT_MAX);
     return true;
+}
+
+/* Outbound A6 trace: the last CH582_A6_TRACE params sent, newest last, plus a
+ * running count. This is what lets a host test OBSERVE the pending-action
+ * machinery (supersession, the bounce's two ordered selects, retry cadence)
+ * instead of only the rx-driven state -- the Codex phase-3 review's gap.
+ * Recorded at enqueue, which equals send order: 0xA6 is never coalesced. */
+static uint8_t  a6_trace[CH582_A6_TRACE];
+static uint8_t  a6_trace_n = 0;    /* valid entries, saturates at the ring size */
+static uint16_t a6_count   = 0;
+
+static void a6_trace_note(uint8_t param) {
+    if (a6_trace_n == CH582_A6_TRACE) {
+        memmove(a6_trace, a6_trace + 1, CH582_A6_TRACE - 1);
+        a6_trace_n--;
+    }
+    a6_trace[a6_trace_n++] = param;
+    a6_count++;
+}
+
+uint8_t ch582_a6_trace(uint8_t *out, uint16_t *count) {
+    memcpy(out, a6_trace, a6_trace_n);
+    *count = a6_count;
+    return a6_trace_n;
 }
 #endif
 
@@ -498,6 +523,9 @@ void ch582_send_command(uint8_t cmd, const uint8_t *params, uint8_t param_len) {
     f->data[param_len + 1] = (uint8_t)(sum & 0xFF);
     f->len                 = param_len + 2;
     tx_tail                = nxt;
+#ifdef WDT_TEST_HOOKS
+    if (cmd == 0xA6 && param_len == 1) a6_trace_note(params[0]);
+#endif
 }
 
 #if CH582_ACK_FRAMES

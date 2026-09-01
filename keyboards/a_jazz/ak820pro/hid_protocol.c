@@ -300,6 +300,14 @@ enum {
     /* Fault injection: [.., .., HC_INJECT, len, bytes...] -- feed up to 27
      * bytes to the CH582F parser as if received from the module. */
     HC_INJECT      = 0x7D,
+    /* Outbound A6 trace: -> [.., .., HC_TXTRACE, count_lo, count_hi, n,
+     * params...(n, newest last)]. The observable for pending-action tests. */
+    HC_TXTRACE     = 0x7C,
+    /* Drive the user-command entry points so pending actions can be ARMED
+     * from a host test: [.., .., HC_DRIVE, op, arg]. op 1 = set_profile(arg),
+     * 2 = enter_pairing, 3 = cancel_connect. Test builds only -- these
+     * really do move the module. */
+    HC_DRIVE       = 0x7B,
 #endif
 #ifdef WDT_TEST_HOOKS
     /* Test-only, instrumented builds: deliberately wedge the main loop to
@@ -340,6 +348,26 @@ static void health_command(uint8_t *data, uint8_t length) {
         case HC_INJECT:
             if (length >= 4 && data[3] <= length - 4) {
                 ch582_inject(&data[4], data[3]);
+            } else {
+                data[0] = RTC_UNHANDLED;
+            }
+            break;
+        case HC_TXTRACE: {
+            uint16_t cnt;
+            uint8_t  n = ch582_a6_trace(&data[6], &cnt);
+            data[3] = (uint8_t)(cnt & 0xFF);
+            data[4] = (uint8_t)(cnt >> 8);
+            data[5] = n;
+            break;
+        }
+        case HC_DRIVE:
+            if (length >= 5) {
+                switch (data[3]) {
+                    case 1: ch582_set_profile((ch582_profile_t)data[4]); break;
+                    case 2: ch582_enter_pairing();                       break;
+                    case 3: ch582_cancel_connect();                      break;
+                    default: data[0] = RTC_UNHANDLED;                    break;
+                }
             } else {
                 data[0] = RTC_UNHANDLED;
             }

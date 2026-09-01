@@ -3,26 +3,40 @@
 #pragma once
 
 #include <stdint.h>
+#include <stdbool.h>
 
 /* Persisted keyboard config (the EEPROM kb datablock). One module owns the
  * struct so its layout has exactly one home; everything else goes through
- * accessors. The block is 4 bytes with 3 reserved -- phase 4 of the
- * hardening plan assigns them (rtc_period u16, lcd_brightness u8), so this
- * layout is APPEND/ASSIGN-ONLY: existing on-device bytes must keep meaning. */
+ * accessors. The 4-byte block is fully assigned as of phase 4 (bt_profile,
+ * rtc_period u16, lcd_brightness+1) and its layout is ASSIGN-ONLY: existing
+ * on-device bytes must keep their meaning, and 0 means "unset" for every
+ * field added after first ship (a fresh block is zeros).
+ *
+ * Writes are coalesced and deferred -- see kb_eeconfig.c. */
 
-/* Read the block from EEPROM. Call once from post-init. */
+/* Read the block from EEPROM. Call once from post-init, before any consumer
+ * (rtc_init reads the period, display_init the brightness). */
 void kb_eeconfig_init(void);
+
+/* 10 Hz housekeeping: programs the flash once dirty values settle. */
+void kb_eeconfig_task(void);
 
 /* Last BT slot selected (CH582_PROFILE_BT_1..3), validated; falls back to
  * slot 1 on a fresh/garbage block. */
 uint8_t kb_eeconfig_get_bt_profile(void);
+void    kb_eeconfig_set_bt_profile(uint8_t p);
 
-/* Persist a new BT slot. Writes only on change -- wear-levelled internal
- * flash is cheap but not free, and slot changes are user-initiated. */
-void kb_eeconfig_set_bt_profile(uint8_t p);
+/* Converged RTC divider period; 0 = never persisted. Sanity-range checking
+ * is the consumer's job (rtc_init clamps to the plausible ILRC window). */
+uint16_t kb_eeconfig_get_rtc_period(void);
+void     kb_eeconfig_set_rtc_period(uint16_t period);
+
+/* Stored LCD backlight level. Returns false when unset (fresh block, or a
+ * poisoned test value) -- the caller keeps its compile-time default. */
+bool kb_eeconfig_get_lcd_brightness(uint8_t *level);
+void kb_eeconfig_set_lcd_brightness(uint8_t level);
 
 #ifdef WDT_TEST_HOOKS
-/* Force a REAL kb-eeconfig flash program (toggles a reserved pad byte so
- * wear-levelling cannot skip an identical write). Test hook only. */
+/* Force a real, immediate flash program (for the reset-during-write test). */
 void kb_eeconfig_test_write(void);
 #endif

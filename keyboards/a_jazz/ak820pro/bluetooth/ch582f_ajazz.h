@@ -59,4 +59,9 @@ void ch582_tx_stats(uint32_t *sent, uint32_t *timeouts, uint32_t *drops);
 /* Fault injection (instrumented builds): queue bytes the parser consumes as
  * if received from the module. See findings-ch582-states.md. */
 void ch582_inject(const uint8_t *bytes, uint8_t len);
+/* Outbound A6 trace: copies the last (<=16) A6 params into out, newest last;
+ * returns the entry count and writes the running total to *count. Lets host
+ * tests observe the pending-action machinery (supersession, bounce order,
+ * retry cadence), not just the rx-driven state. */
+uint8_t ch582_a6_trace(uint8_t *out, uint16_t *count);
 #endif
