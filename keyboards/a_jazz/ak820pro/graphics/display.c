@@ -49,26 +49,28 @@
 
 /* Align the text with the TRANSPORT ICON, not with the band.
  *
- * The icon is 12px tall drawn at TEXT_Y + (TEXT_H - 12)/2 = 31, so it spans rows
- * 31..42 with its centre at 36.5. The 7x17 cell carries cap-to-baseline in rows
- * 3..12 (descenders go below), so that visual mass must land centred on 36.5:
+ * Centre the icon on the text's CAP BAND, not on its cell: the cell carries
+ * descender space that is empty for most strings, so centring the cell pulls
+ * the apparent centre down and the icon up.
  *
- *   cap..baseline is 10 rows -> top = 36.5 - 5 = 31.5
- *   cell top      = 31.5 - 3 = 28.5  ->  TEXT_Y + 4  (25 + 4 = 29)
+ * MEASURED from the shipped atlas, not assumed -- the numbers below moved when
+ * the face was swapped from Iosevka to Cozette and the old ones survived in
+ * this comment, which is what left the icon 1px high until 2026-09-02. To
+ * re-measure after any font change, walk the atlas PNG and record the first
+ * and last row carrying ink (255,255,255), skipping the magenta grid marker at
+ * each cell's top-left:
  *
- * Centring the CELL instead of the ink is what put it 2px high: the cell
- * includes descender space that is empty for most strings, so it pulls the
- * apparent centre downward and the text upward. */
+ *   13px face (Cozette, 6x14 cell): caps row 2, baseline row 9  -> centre 5.5
+ *                                   descenders to row 12; Q's tail to row 10
+ *   20px face (Iosevka, 10x23 cell): caps row 4, baseline row 18 -> centre 11
+ *
+ * draw_text_icon paints rows y..y+11 for all three icons, so the icon's centre
+ * is y + 5.5. For the 13px face that makes the icon's y exactly the text's CELL
+ * TOP (5.5 == 5.5); no offset of any kind is needed. */
 /* Line pitch for the two-line case: the 13px cell is 14 rows and a glyph blit
  * paints its whole cell, so lines sit exactly one cell apart with no overlap.
  * The cell's 14th row is blank, which is the inter-line gap. */
 #define TEXT_LINE_H     14
-/* The transport icon on line 1 sits one row above TEXT_Y so it centres on the
- * cap band. The band's clear rect is widened by the same amount -- a drawn row
- * outside the clear rect is never cleaned, which is what stranded the padlock's
- * bottom rows. Row 26 is gap, so borrowing it costs nothing. */
-#define TEXT_ICON_LIFT  1
-
 /* The transport icon sits beside LINE 0 only (it is 12px tall in a 14px row),
  * so line 1 starts at the panel edge and gains the gutter back -- 21 glyphs
  * (2 + 21*6 = 128) against line 0's 19. See DISPLAY_TEXT_MAX_L1.
@@ -80,10 +82,8 @@
  * need every one of them. */
 #define TEXT_X2         2
 
-/* Single-line offsets. The transport icon spans TEXT_Y+8 .. TEXT_Y+19 (centre
- * 38.5 absolute); each face is centred on that by its cap-to-baseline mass, not
- * its cell, because the cell carries descender space that is empty for most
- * strings. 20px: cap..baseline is cell rows 4..18. 13px (7x14): rows 0..9. */
+/* Single-line offsets: where the text CELL starts. The icon is then centred on
+ * whichever face is in use -- see the cap-band figures above. */
 #define TEXT_FONT_DY    8    /* 13px face */
 #define TEXT_BIG_DY     2    /* 20px face */
 /* (128 - TEXT_X - 2) / 10px advance = 11 glyphs in the big face. */
@@ -1535,7 +1535,7 @@ static void draw_text_slot(bool force) {
     if (force) {
         /* A forced repaint follows a full-screen clear, so nothing on the
          * panel can be trusted. */
-        lcd_clear_rect(0, TEXT_Y - TEXT_ICON_LIFT, PANEL_WIDTH, TEXT_H + TEXT_ICON_LIFT);
+        lcd_clear_rect(0, TEXT_Y, PANEL_WIDTH, TEXT_H);
         shadow_invalidate();
     }
 
@@ -1544,13 +1544,18 @@ static void draw_text_slot(bool force) {
     uint16_t icon_y    = 0;
     if (!conn_status_str && text_present && text_icon != DISPLAY_ICON_NONE) {
         want_icon = text_icon;
-        /* Centre on the CAP band, not the cell: the 13px face puts caps in
-         * rows 0..9 and descenders in 3..12, and descenders appear on only
-         * some letters so they do not define where the eye puts the line. */
-        if (text_buf[1][0])                       icon_y = TEXT_Y - TEXT_ICON_LIFT;
+        /* Centre on the CAP band, not the cell -- see the measured figures at
+         * the top of this file. The icon centre is y+5.5; the 13px cap band
+         * centre is cell_top+5.5, so the icon's y IS the text's cell top.
+         *
+         * The 20px case cannot land exactly: its cap centre is cell_top+11
+         * against the icon's +5.5, so the ideal y is fractional (x.5). It is
+         * rounded up, leaving the icon 0.5px high -- the direction optical
+         * centring prefers, and the only alternative is 0.5px low. */
+        if (text_buf[1][0])                       icon_y = TEXT_Y;
         else if (strlen(text_buf[0]) <= TEXT_BIG_MAX)
                                                   icon_y = TEXT_Y + TEXT_BIG_DY + 5;
-        else                                      icon_y = TEXT_Y + TEXT_FONT_DY - 1;
+        else                                      icon_y = TEXT_Y + TEXT_FONT_DY;
     }
     if (want_icon != last_icon_drawn || icon_y != last_icon_y) {
         /* Clear only where the OLD icon actually was. This used to wipe the
