@@ -288,7 +288,7 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
 #ifdef CONSOLE_ENABLE
     if (record->event.pressed) key_press_count++;
 #endif
-    rgb_repeat_process_record(keycode, record);   // arm/disarm hold-to-repeat
+    param_repeat_process_record(keycode, record);   // arm/disarm hold-to-repeat
 
     if (!process_modified_consumer(keycode, record)) return false;
 
@@ -321,21 +321,9 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
             if (record->event.pressed) {
                 if (keycode == SCR_UP) display_brightness_up();
                 else                   display_brightness_down();
-#ifdef PARAM_OVERLAY
-                /* Percentage of the LEVEL INDEX, not of the duty cycle. The 10
-                 * levels are perceptually spaced, so duty runs 2/4/6/10/17/25/
-                 * 38/56/100% and reads as erratic; the index divides evenly and
-                 * answers the question actually being asked -- how far up the
-                 * range am I. Buffer is oversized because the compiler cannot
-                 * prove %u is short (-Werror=format-truncation); the slot
-                 * truncates to the band width anyway. */
-                char buf[24];
-                uint8_t lvl = display_get_brightness();
-                uint8_t mx  = display_get_brightness_max();
-                snprintf(buf, sizeof(buf), "LCD    %3u%%",
-                         (unsigned)(mx ? (lvl * 100u + mx / 2u) / mx : 0u));
-                display_set_param_status(buf);
-#endif
+                /* Shared with the hold-repeat step so a tap and a sweep produce
+                 * the same readout from one place; see param_overlay.c. */
+                param_show_lcd_brightness();
             }
             return false;
         case CLK_MODE:
@@ -482,7 +470,7 @@ void housekeeping_task_kb(void) {
 #endif
     /* Per-pass work is deliberately NOT sited: see the LOOP_SITE note in
      * ak820pro.h -- the timer reads cost ~2 ms a pass on this MCU. */
-    rgb_repeat_task();
+    param_repeat_task();
     rtc_fast_task();             // <= one queued PCF I2C transaction, only when no blit is in flight (R4)
     display_second_edge_task();  // clock digits repaint on the tick, not at the 10 Hz cadence (3.9)
     display_blit_pump();   // one glyph per iteration; never waits on the DMA

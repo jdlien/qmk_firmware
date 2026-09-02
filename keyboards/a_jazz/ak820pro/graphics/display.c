@@ -146,9 +146,26 @@ bool display_get_power(void) {
                             * inversion (an effective 15385 Hz -> 320 Hz). The
                             * tick is now a steady 20000, so there is headroom to
                             * lengthen this for a dimmer floor if wanted. */
-static const uint8_t bkl_duty[] = { 0, 1, 2, 3, 5, 8, 12, 18, 27, 48 };
+/* 24 levels (was 10). Every entry is a distinct integer tick count -- the duty
+ * resolution is only 0..48, so a longer table has to be checked for collapsed
+ * steps, and this one has none.
+ *
+ * Ratios between adjacent steps run 1.09-1.17 above duty 6, against 1.5-1.78
+ * for the old 10-level table: the jumps JD could see are gone. The bottom three
+ * (1->2 = +100%, 2->3 = +50%, 3->4 = +33%) are NOT fixable at 48 ticks -- there
+ * is no integer between them. Closing those needs a longer BKL_PWM_TICKS, which
+ * lowers the switching rate; 96 ticks would give a 1% floor at 208 Hz, and that
+ * is close enough to visible flicker that it was ruled out deliberately.
+ * Flicker is a worse defect than a coarse first step.
+ *
+ * The last entry must equal BKL_PWM_TICKS so the top level is full duty;
+ * C cannot _Static_assert on an array element, so it is stated here. */
+static const uint8_t bkl_duty[] = {
+     0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11,
+    12, 14, 16, 18, 20, 23, 26, 29, 33, 37, 42, 48,
+};
 #define BKL_MAX_LEVEL ((uint8_t)(sizeof(bkl_duty) / sizeof(bkl_duty[0])) - 1)
-_Static_assert(sizeof(bkl_duty) == 10, "brightness UI documents 10 levels (0..9); resize deliberately");
+_Static_assert(sizeof(bkl_duty) == 24, "brightness UI documents 24 levels (0..23); resize deliberately");
 
 #ifndef DISPLAY_BRIGHTNESS_DEFAULT
 #    define DISPLAY_BRIGHTNESS_DEFAULT BKL_MAX_LEVEL

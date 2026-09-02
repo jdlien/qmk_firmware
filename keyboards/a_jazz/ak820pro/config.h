@@ -297,14 +297,14 @@
 // #define LOOPGAP_INSTRUMENT   /* diagnostics off for daily use */
 #define LOOPGAP_SETTLE_MS 10000  /* skip boot; measure steady state only */
 
-#define RGB_REPEAT_DELAY_MS    400   /* hold this long before repeating starts */
-#define RGB_REPEAT_INTERVAL_MS  60   /* first cadence: ~16 steps/s, fine for nudging */
+#define PARAM_REPEAT_DELAY_MS    400   /* hold this long before repeating starts */
+#define PARAM_REPEAT_INTERVAL_MS  60   /* first cadence: ~16 steps/s, fine for nudging */
 /* Then ACCELERATE. Fine steps and a fixed repeat rate are in direct conflict:
  * 128 brightness values at 16/s is an 8-second sweep. Ramping after a moment
  * of holding keeps small corrections precise (you release before it speeds up)
  * while making a full traverse quick. */
-#define RGB_REPEAT_FAST_AFTER_MS 800  /* holding this long past the initial delay... */
-#define RGB_REPEAT_FAST_MS        12  /* ...switches to ~83 steps/s (256 hue values in ~4 s) */
+#define PARAM_REPEAT_FAST_AFTER_MS 800  /* holding this long past the initial delay... */
+#define PARAM_REPEAT_FAST_MS        12  /* ...switches to ~83 steps/s (256 hue values in ~4 s) */
 
 /* Measured ILRC divider for THIS unit, seeding the RTC so it does not have to
  * climb from the LLD's nominal 32000 on every boot (the trimmed value is not

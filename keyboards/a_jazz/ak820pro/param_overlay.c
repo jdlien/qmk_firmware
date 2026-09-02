@@ -5,7 +5,7 @@
 #include "ak820pro.h"
 #include "graphics/display.h"
 
-/* ---- Hold-to-repeat for the RGB adjust keys -------------------------------
+/* ---- Hold-to-repeat for the adjust keys ----------------------------------
  *
  * QMK fires process_record once on press and once on release; there is no
  * firmware-side auto-repeat. This tracks the held key and re-invokes the same
@@ -16,7 +16,7 @@
  * a release event. A release can resolve to a different keycode if the layer
  * changes mid-hold (Fn released first), which would otherwise strand the
  * repeat running forever. matrix_is_on() cannot lie about a physical key. */
-static uint16_t rgb_rep_kc = KC_NO;
+static uint16_t rep_kc = KC_NO;
 /* Set on every press of an adjust key, whether or not the value can still
  * move. At a range extreme nothing changes, so the polled param_status_task()
  * had nothing to report and the key looked dead -- the one case where feedback
@@ -24,22 +24,24 @@ static uint16_t rgb_rep_kc = KC_NO;
  * indistinguishable without it. */
 static uint16_t param_force_kc = KC_NO;
 
-static keypos_t rgb_rep_pos;
-static uint32_t rgb_rep_since, rgb_rep_last;
+static keypos_t rep_pos;
+static uint32_t rep_since, rep_last;
 
-static bool rgb_is_repeatable(uint16_t kc) {
+static bool param_is_repeatable(uint16_t kc) {
     switch (kc) {
         case RM_HUEU: case RM_HUED:
         case RM_SATU: case RM_SATD:
         case RM_VALU: case RM_VALD:
         case RM_SPDU: case RM_SPDD:
+        /* LCD backlight, same treatment: 24 levels is too many to tap through. */
+        case SCR_UP:  case SCR_DN:
             return true;
         default:
             return false;
     }
 }
 
-static void rgb_repeat_step(uint16_t kc) {
+static void param_repeat_step(uint16_t kc) {
     switch (kc) {
         case RM_HUEU: rgb_matrix_increase_hue();   break;
         case RM_HUED: rgb_matrix_decrease_hue();   break;
@@ -49,44 +51,66 @@ static void rgb_repeat_step(uint16_t kc) {
         case RM_VALD: rgb_matrix_decrease_val();   break;
         case RM_SPDU: rgb_matrix_increase_speed(); break;
         case RM_SPDD: rgb_matrix_decrease_speed(); break;
+        /* Unlike the rgb_matrix_* calls, which param_status_task() notices by
+         * polling, the backlight has no polled state -- push the readout here
+         * or the band would freeze on the first value of a sweep. */
+        case SCR_UP:  display_brightness_up();   param_show_lcd_brightness(); break;
+        case SCR_DN:  display_brightness_down(); param_show_lcd_brightness(); break;
         default: break;
     }
 }
 
+void param_show_lcd_brightness(void) {
+#ifdef PARAM_OVERLAY
+    /* Percentage of the LEVEL INDEX, not of the duty cycle. The levels are
+     * perceptually spaced, so duty runs 2/4/6/8/10/12/15/17/19/21/23/25/29/33/
+     * 38/42/48/54/60/69/77/88/100% and reads as erratic; the index divides
+     * evenly and answers the question actually being asked -- how far up the
+     * range am I. Buffer is oversized because the compiler cannot prove %u is
+     * short (-Werror=format-truncation); the slot truncates to the band width. */
+    char    buf[24];
+    uint8_t lvl = display_get_brightness();
+    uint8_t mx  = display_get_brightness_max();
+    snprintf(buf, sizeof(buf), "LCD    %3u%%",
+             (unsigned)(mx ? (lvl * 100u + mx / 2u) / mx : 0u));
+    display_set_param_status(buf);
+#endif
+}
+
 /* Arm/disarm the repeat. The caller returns through to QMK, which performs
  * the FIRST step itself -- this only handles the ones after the threshold. */
-void rgb_repeat_process_record(uint16_t keycode, keyrecord_t *record) {
-    if (rgb_is_repeatable(keycode)) {
+void param_repeat_process_record(uint16_t keycode, keyrecord_t *record) {
+    if (param_is_repeatable(keycode)) {
         if (record->event.pressed) {
-            rgb_rep_kc     = keycode;
+            rep_kc     = keycode;
             param_force_kc = keycode;    // show the readout even if pinned at an end
-            rgb_rep_pos    = record->event.key;
-            rgb_rep_since = timer_read32();
-            rgb_rep_last  = timer_read32();
-        } else if (keycode == rgb_rep_kc) {
-            rgb_rep_kc = KC_NO;
+            rep_pos    = record->event.key;
+            rep_since = timer_read32();
+            rep_last  = timer_read32();
+        } else if (keycode == rep_kc) {
+            rep_kc = KC_NO;
         }
     } else if (record->event.pressed) {
-        rgb_rep_kc = KC_NO;      // any other key cancels a hold in progress
+        rep_kc = KC_NO;      // any other key cancels a hold in progress
     }
 }
 
-void rgb_repeat_task(void) {
-    if (rgb_rep_kc == KC_NO) return;
-    if (!matrix_is_on(rgb_rep_pos.row, rgb_rep_pos.col)) {   // physically released
-        rgb_rep_kc = KC_NO;
+void param_repeat_task(void) {
+    if (rep_kc == KC_NO) return;
+    if (!matrix_is_on(rep_pos.row, rep_pos.col)) {   // physically released
+        rep_kc = KC_NO;
         return;
     }
-    uint32_t held = timer_elapsed32(rgb_rep_since);
-    if (held < RGB_REPEAT_DELAY_MS) return;
+    uint32_t held = timer_elapsed32(rep_since);
+    if (held < PARAM_REPEAT_DELAY_MS) return;
     /* Slow at first so a short hold nudges precisely, then fast so a full
      * traverse of 128 values does not take eight seconds. */
-    uint16_t interval = (held > (RGB_REPEAT_DELAY_MS + RGB_REPEAT_FAST_AFTER_MS))
-                            ? RGB_REPEAT_FAST_MS
-                            : RGB_REPEAT_INTERVAL_MS;
-    if (timer_elapsed32(rgb_rep_last) < interval) return;
-    rgb_rep_last = timer_read32();
-    rgb_repeat_step(rgb_rep_kc);
+    uint16_t interval = (held > (PARAM_REPEAT_DELAY_MS + PARAM_REPEAT_FAST_AFTER_MS))
+                            ? PARAM_REPEAT_FAST_MS
+                            : PARAM_REPEAT_INTERVAL_MS;
+    if (timer_elapsed32(rep_last) < interval) return;
+    rep_last = timer_read32();
+    param_repeat_step(rep_kc);
 }
 
 #ifdef PARAM_OVERLAY
