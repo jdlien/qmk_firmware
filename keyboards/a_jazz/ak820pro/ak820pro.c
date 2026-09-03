@@ -158,6 +158,13 @@ static void usb_wakeup_try(void) {
  * Fires only when a NEW maximum is set, so it costs nothing while quiet.
  *
  * Remove with LOOPGAP_INSTRUMENT once the console work is validated. */
+
+/* UNCONDITIONAL (LOOP-BUDGET-PLAN phase 1): a stall the daily build cannot
+ * attribute is a stall nobody can act on, and this is one byte store on paths
+ * that are already milliseconds long. health_loop_tick() is its sole consumer;
+ * it reads and clears once per pass and republishes via health_last_mark(). */
+volatile uint8_t loop_stall_mark = 0;   /* see LOOP_MARK_* in ak820pro.h */
+
 #ifdef LOOPGAP_INSTRUMENT
 
 /* WHICH long operation was running when the loop stalled.
@@ -166,7 +173,6 @@ static void usb_wakeup_try(void) {
  * keystroke, since a character arrives roughly every 125 ms at typing speed.
  * Magnitude alone does not say what to fix, and the three suspects need
  * completely different remedies, so each marks itself on the way in. */
-volatile uint8_t loop_stall_mark = 0;   /* see LOOP_MARK_* in ak820pro.h */
 
 static const char *loop_site_name(uint8_t s) {
     static const char *const names[LOOP_SITE_COUNT] = {
@@ -217,11 +223,11 @@ static void loop_gap_task(void) {
         uint32_t gap = timer_elapsed32(last);
         if (gap >= 4) {                          /* main loop is ~2.5 ms */
             n_gaps++;
-            if (gap > worst) { worst = gap; worst_mark = loop_stall_mark; }
+            if (gap > worst) { worst = gap; worst_mark = health_last_mark(); }
         }
     }
     last = timer_read32();
-    loop_stall_mark = LOOP_MARK_NONE;
+    /* health_loop_tick() owns loop_stall_mark and already cleared it. */
 
     /* Report at most once a second, and only when something happened.
      *
@@ -285,6 +291,10 @@ static void key_stat_task(void) {
 }
 #endif
 bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
+    /* Counted on EVERY build: this is what splits "the matrix never saw it"
+     * from "the report was lost downstream", and it is useless if it only
+     * exists in a flavour nobody types on. */
+    if (record->event.pressed) health_note_key_press();
 #ifdef CONSOLE_ENABLE
     if (record->event.pressed) key_press_count++;
 #endif
@@ -558,9 +568,8 @@ void housekeeping_task_kb(void) {
  * intermittent hang for a guaranteed one if a completion interrupt is ever
  * genuinely lost. */
 void backing_store_pre_write_hook(void) {
-#ifdef LOOPGAP_INSTRUMENT
     loop_stall_mark = LOOP_MARK_FLASH;   /* every internal-flash writer passes here */
-#endif
+    health_note_flash_write();
     /* lcd_blit_wait() rather than a bare spin: a blit whose completion IRQ was
      * missed never clears, so the old loop burned its full second here on every
      * single flash write and left the bus asserted. See lcd_blit_wait(). */

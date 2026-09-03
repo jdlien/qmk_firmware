@@ -211,9 +211,8 @@ static void i2c_note(msg_t r, uint32_t sc0, uint32_t c0) {
 }
 
 static void rtc_bus_guard(void) {
-#ifdef LOOPGAP_INSTRUMENT
-    loop_stall_mark = LOOP_MARK_I2C;
-#endif
+    /* Outermost mark wins -- see lcd_bus.c; this calls lcd_blit_wait() too. */
+    if (loop_stall_mark == LOOP_MARK_NONE) loop_stall_mark = LOOP_MARK_I2C;
     if (lcd_blit_busy() && i2c_blit_overlap < 0xFFFFu) {
         i2c_blit_overlap++;
     }

@@ -354,6 +354,16 @@ enum {
      * module_flags bit0 = connected, bit1 = pairing, bit2 = usb mode.
      * Exists so host scripts (and the CH582F fault-injection tests) can
      * assert link state without eyeballing the panel. */
+    /* Stall-measurement page 2 (LOOP-BUDGET-PLAN phase 1): [.., .., HC_GET2]
+     * -> [.., .., HC_GET2, version, 28 bytes]. A SECOND page exists because
+     * HC_GET's payload was already exactly full at 28 bytes -- there was no
+     * room to extend it. */
+    HC_GET2        = 0x04,
+    /* Clear the resettable counters: [.., .., HC_RESET] -> echo. Watchdog
+     * counters are boot facts and survive. Without this every reading carries
+     * boot's deliberate blocking (lcd_init alone spends 240 ms in wait_ms)
+     * and no measurement can be repeated. */
+    HC_RESET       = 0x05,
     HC_CONN        = 0x02,
     /* Clock-sync status (PLAN.md 3.7): [.., .., HC_RTC, page] ->
      *   [.., .., HC_RTC, page, block...]
@@ -394,7 +404,7 @@ enum {
     HC_STALL       = 0x7E,
 #endif
 };
-#define HEALTH_PROTO_VERSION 1
+#define HEALTH_PROTO_VERSION 2
 
 static inline bool is_health_cmd(const uint8_t *data, uint8_t length) {
     return length >= 3 && data[0] == RTC_SET_VALUE && data[1] == HEALTH_CHANNEL;
@@ -409,6 +419,17 @@ static void health_command(uint8_t *data, uint8_t length) {
             } else {
                 data[0] = RTC_UNHANDLED;
             }
+            break;
+        case HC_GET2:
+            if (length >= 32) {
+                data[3] = HEALTH_PROTO_VERSION;
+                health_fill2(&data[4]);   /* 28 bytes: exactly fills the report */
+            } else {
+                data[0] = RTC_UNHANDLED;
+            }
+            break;
+        case HC_RESET:
+            health_reset();
             break;
         case HC_CONN:
             data[3] = (uint8_t)ch582_get_conn_state();

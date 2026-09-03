@@ -3,6 +3,7 @@
 /* Unified health counters -- see health.h for the design rules. */
 #include "quantum.h"
 #include "health.h"
+#include "ak820pro.h"   /* LOOP_MARK_*, loop_stall_mark */
 #include "watchdog.h"
 #include "graphics/lcd_bus.h"
 #include "bluetooth/ch582f_ajazz.h"
@@ -16,16 +17,74 @@
 static uint32_t loop_gap_max = 0;
 static uint32_t rx_malformed = 0;
 
+/* Phase-1 stall measurement. Counters, not a histogram: the question is "how
+ * often does a keystroke-eating stall happen, and what was it", which buckets
+ * answer worse than thresholds do. All of this is a compare and an increment
+ * on a timer read that already happens -- no new timer read per pass. */
+static uint32_t count_ge_10ms = 0, count_ge_25ms = 0, passes = 0;
+static uint32_t flash_writes = 0, flash_gap_max = 0, blit_gap_max = 0;
+static uint16_t key_presses = 0;
+static uint8_t  loop_gap_max_mark = LOOP_MARK_NONE;
+static uint8_t  last_mark = LOOP_MARK_NONE;
+
 void health_loop_tick(void) {
     static uint32_t last = 0;
     uint32_t now = timer_read32();
+
+    /* Sole owner of loop_stall_mark: read once, clear once, publish via
+     * health_last_mark(). This runs BEFORE loop_gap_task() in the same pass,
+     * so a second reader of loop_stall_mark would always see NONE. */
+    last_mark = loop_stall_mark;
+    loop_stall_mark = LOOP_MARK_NONE;
+
     if (now < HEALTH_SETTLE_MS) {
         last = now;
         return;
     }
     uint32_t gap = now - last;
     last = now;
-    if (gap > loop_gap_max) loop_gap_max = gap;
+    passes++;
+    if (gap >= 10) count_ge_10ms++;
+    if (gap >= 25) count_ge_25ms++;
+    if (gap > loop_gap_max) { loop_gap_max = gap; loop_gap_max_mark = last_mark; }
+    if (last_mark == LOOP_MARK_FLASH && gap > flash_gap_max) flash_gap_max = gap;
+    if (last_mark == LOOP_MARK_BLIT  && gap > blit_gap_max)  blit_gap_max  = gap;
+}
+
+uint8_t health_last_mark(void) { return last_mark; }
+
+void health_note_flash_write(void) { flash_writes++; }
+void health_note_key_press(void)   { key_presses++; }
+
+void health_reset(void) {
+    /* Watchdog counters are boot facts and are NOT cleared -- see health.h. */
+    chSysLock();
+    loop_gap_max = 0; loop_gap_max_mark = LOOP_MARK_NONE;
+    count_ge_10ms = 0; count_ge_25ms = 0; passes = 0;
+    flash_writes = 0; flash_gap_max = 0; blit_gap_max = 0;
+    key_presses = 0; rx_malformed = 0;
+    chSysUnlock();
+}
+
+void health_fill2(uint8_t *out28) {
+    uint32_t c10, c25, ps, fw, fg, bg;
+    uint16_t kp;
+    uint8_t  mk;
+    chSysLock();
+    c10 = count_ge_10ms; c25 = count_ge_25ms; ps = passes;
+    fw  = flash_writes;  fg  = flash_gap_max; bg = blit_gap_max;
+    kp  = key_presses;   mk  = loop_gap_max_mark;
+    chSysUnlock();
+
+    uint32_t v;
+    uint8_t *p = out28;
+#define PUT32(x) do { v = (x); *p++ = v & 0xFF; *p++ = (v >> 8) & 0xFF; *p++ = (v >> 16) & 0xFF; *p++ = (v >> 24) & 0xFF; } while (0)
+    PUT32(c10); PUT32(c25); PUT32(ps); PUT32(fw); PUT32(fg); PUT32(bg);
+#undef PUT32
+    *p++ = kp & 0xFF;
+    *p++ = (kp >> 8) & 0xFF;
+    *p++ = mk;
+    *p++ = 0;   /* reserved */
 }
 
 void health_note_rx_malformed(void) {

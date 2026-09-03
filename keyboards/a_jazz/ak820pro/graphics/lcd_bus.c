@@ -670,9 +670,12 @@ bool lcd_blit_busy(void) { return !blit_done; }
 static uint16_t blit_timeouts = 0;
 
 bool lcd_blit_wait(void) {
-#ifdef LOOPGAP_INSTRUMENT
-    loop_stall_mark = LOOP_MARK_BLIT;
-#endif
+    /* OUTERMOST MARK WINS. This wait is NESTED inside other marked
+     * operations -- backing_store_pre_write_hook() marks FLASH and then calls
+     * this to drain the DMA, and rtc_bus_guard() marks I2C and does the same.
+     * An unconditional store here made every flash stall report as "blit",
+     * which sent the first phase-1 measurement chasing the wrong subsystem. */
+    if (loop_stall_mark == LOOP_MARK_NONE) loop_stall_mark = LOOP_MARK_BLIT;
     /* PHASE 1 -- did the DMA actually start? Watch DMACNT move (or a transfer
      * flag appear) rather than waiting out a whole transfer. A blit that never
      * starts is detected in ~10 ms instead of 250 ms, so the retry lands before
