@@ -793,10 +793,14 @@ static void dbg_compose(void) {
      * level alone cannot show: it holds its last value forever. */
     uint8_t batt = ch582_get_battery();
     uint8_t bmin = ch582_battery_min();
-    p = (batt <= 100) ? dbg_u32(v, batt) : dbg_append(v, "--");
+    /* Widest case is "battery" + "100% min 100" = 7 + 12 = 19 of 21 columns, so
+     * the label cannot collide with the value. The % goes on the live level
+     * only; once that names the unit, "min 100" is unambiguous and the second
+     * one would cost a column for nothing. */
+    p = (batt <= 100) ? dbg_append(dbg_u32(v, batt), "%") : dbg_append(v, "--");
     p = dbg_append(p, " min ");
     if (bmin <= 100) dbg_u32(p, bmin); else dbg_append(p, "-");
-    dbg_row(8, "batt", v);
+    dbg_row(8, "battery", v);
 }
 
 bool display_debug_active(void) {
