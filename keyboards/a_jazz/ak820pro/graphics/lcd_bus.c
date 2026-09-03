@@ -204,14 +204,6 @@ void lcd_clear_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
     lcd_blit_wait();
 }
 
-/* Non-blocking clear -- see the header for why a blocking full-screen one is a
- * keystroke hazard. Same guards as lcd_clear_rect(), minus the wait. */
-void lcd_clear_rect_async(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
-    if (!w || !h) return;
-    if ((uint32_t)w * h * 2u > 0x8000u) return;      // larger than the black frame
-    lcd_blit_flash(FLASH_BLACK_FRAME, x, y, w, h);
-}
-
 void lcd_blit_ram(const uint16_t *px, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
     if (!px || !w || !h) return;
     lcd_window(x, y, x + w - 1, y + h - 1);

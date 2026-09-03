@@ -815,11 +815,7 @@ void display_debug_toggle(void) {
     if (!debug_active && display_paused) return;
     debug_active = !debug_active;
     if (debug_active) {
-        /* Async: debug_pump_glyph() paints through lcd_draw_flash_glyph_try(),
-         * which already declines while the bus is busy and retries next pass.
-         * A blocking clear here would cost 44 ms on the main loop for a DMA
-         * that needs no CPU at all. */
-        lcd_clear_rect_async(0, 0, PANEL_WIDTH, PANEL_HEIGHT);
+        lcd_clear_rect(0, 0, PANEL_WIDTH, PANEL_HEIGHT);
         memset(dbg_shown, 0, sizeof(dbg_shown));   /* panel is blank: repaint all */
     } else {
         /* Hand the panel back in STAGES, not with one display_redraw_dashboard()
@@ -998,17 +994,11 @@ void draw_clock(void) {
  * and splitting a shared path used by the flash player was not worth the risk
  * for that caller. If it ever shows up in blit_gap_max_ms, route it here too. */
 static bool debug_restore_step(void) {
-    /* Never advance onto a busy bus. Stage 1 arms a 32 KB full-frame DMA and
-     * returns immediately; without this, stage 2's blit would block inside
-     * lcd_blit_wait() and simply inherit the stall that staging was meant to
-     * remove. One compare per pass instead. */
-    if (lcd_blit_busy()) return true;
-
     switch (debug_exit_step) {
         case 1:
             /* Anything queued belongs to the pre-clear frame. */
             display_queue_discard();
-            lcd_clear_rect_async(0, 0, PANEL_WIDTH, PANEL_HEIGHT);
+            lcd_clear_rect(0, 0, PANEL_WIDTH, PANEL_HEIGHT);
             break;
         case 2:
             splash_cleared = true;
