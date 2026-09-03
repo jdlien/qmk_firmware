@@ -315,6 +315,14 @@ static bool display_backlight_init(void) {
 static bool clock_force_repaint = true;
 
 static void draw_status(bool force); // CH582F status: battery + channel digit
+/* draw_status() is FOUR forced repaints in a trench coat. Stepping it as one
+ * unit left a 44 ms stall on the debug-page exit even after the clear was
+ * banded -- the clear was never the whole cost. Declared individually so the
+ * restore can spend one main-loop pass on each. */
+static void draw_conn_number(bool force);
+static void draw_battery(bool force);
+static void draw_locks(bool force);
+static void draw_text_slot(bool force);
 static void draw_debug_page(void);   // Fn+D full-panel diagnostics
 static bool debug_pump_glyph(void);  // one changed debug cell, non-blocking
 static bool debug_restore_step(void); // one stage of the post-debug dashboard repaint
@@ -881,7 +889,12 @@ void display_debug_toggle(void) {
          * the panel itself -- a full-screen clear here is the same 43 ms stall
          * the exit path was split up to avoid. */
         debug_clear_band = 1;
-        memset(dbg_shown, 0, sizeof(dbg_shown));   /* panel will be blank: repaint all */
+        /* A cleared panel is BLANK, which is exactly what a space paints. Seed
+         * the shadow with spaces rather than NULs so the diff skips every blank
+         * cell on the first paint -- about a third of the 189, and the page
+         * fills in that much sooner. */
+        memset(dbg_shown, ' ', sizeof(dbg_shown));
+        for (uint8_t r = 0; r < DBG_ROWS; r++) dbg_shown[r][DBG_COLS] = '\0';
     } else {
         /* Hand the panel back in STAGES, not with one display_redraw_dashboard()
          * call. That function clears the whole panel and then blits the icons
@@ -1079,13 +1092,14 @@ static bool debug_restore_step(void) {
                 clock_force_repaint = true;   /* draw_clock queues; cheap here */
                 draw_clock();
                 break;
-            default:
-                draw_status(true);            /* battery + channel digit */
-                break;
+            case 3: draw_conn_number(true); break;
+            case 4: draw_battery(true);     break;
+            case 5: draw_locks(true);       break;
+            default: draw_text_slot(true);  break;
         }
     }
 
-    if (++debug_exit_step > DBG_CLEAR_BANDS + 3) { debug_exit_step = 0; return false; }
+    if (++debug_exit_step > DBG_CLEAR_BANDS + 6) { debug_exit_step = 0; return false; }
     return true;
 }
 

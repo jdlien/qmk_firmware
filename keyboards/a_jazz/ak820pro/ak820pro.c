@@ -238,10 +238,18 @@ static void loop_gap_task(void) {
      * and the count is what the symptom actually is. */
     /* Report on the CONSOLE, never the panel.
      *
-     * The previous version called display_set_param_status(), which draws ~12
-     * glyphs, each a blocking DMA blit -- i.e. it reported by doing the exact
-     * thing it was measuring. That fed back and ran away to a 154 ms stall and
-     * an unusable board. An instrument must not touch the subsystem under test.
+     * The previous version called display_set_param_status(), which AT THE TIME
+     * drew ~12 glyphs, each a blocking DMA blit -- i.e. it reported by doing
+     * the exact thing it was measuring. That fed back and ran away to a 154 ms
+     * stall and an unusable board. An instrument must not touch the subsystem
+     * under test.
+     *
+     * ⚠️ THE COST IS HISTORICAL, THE LESSON IS NOT. display_set_param_status()
+     * now only sets text_dirty; the band draws through the glyph queue, one
+     * glyph per main-loop pass. Verified 2026-09-03, after this stale warning
+     * was quoted as current fact in a later comment. Report on the console here
+     * anyway -- the reasoning below about counts vs. visibility stands on its
+     * own, and an instrument still should not touch what it measures.
      *
      * Console writes are one line per second and the endpoint's sticky
      * timed_out flag bounds the worst case; that path was measured earlier and
@@ -377,12 +385,19 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
              * on release means holding the key appears to do nothing until you
              * let go, and you cannot tell a taken hold from an ignored one.
              *
-             * Feedback is the numbers going to zero on the page. Deliberately
-             * NOT display_set_param_status(): that draws ~12 blocking DMA
-             * blits, and using it to report on a stall counter would be the
-             * instrument touching the subsystem under test -- the mistake that
-             * ran away to a 154 ms stall once already (see the stall reporter
-             * above). */
+             * Feedback is the numbers going to zero on the page, not an
+             * overlay. NOT because display_set_param_status() is expensive --
+             * VERIFIED 2026-09-03 that it is not: it copies a string and sets
+             * text_dirty, and the drawing goes through the glyph queue like
+             * everything else in that band. The "~12 blocking DMA blits"
+             * warning above the stall reporter in this file describes an OLDER
+             * version of it and is now STALE; this comment previously repeated
+             * that claim as current fact.
+             *
+             * The real reason is simpler: the page is already showing the
+             * counters, so zeroing them in place is the clearest possible
+             * confirmation, and an overlay would cover the thing you are
+             * looking at. */
             if (record->event.pressed) {
                 dbg_hold_timer = timer_read();
                 dbg_hold_armed = true;
