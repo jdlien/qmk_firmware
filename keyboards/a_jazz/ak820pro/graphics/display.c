@@ -19,6 +19,7 @@
  * the Fn+D debug page sits above that point and reads the battery and TX
  * counters through it. */
 #include "bluetooth/ch582f_ajazz.h"
+#include "health.h"        /* debug-page counters */
 
 
 
@@ -646,44 +647,81 @@ static void draw_debug_page(void) {
     p = dbg_append(dbg_u32(p, up % 60u), "s");
     dbg_row(0, "up", v);
 
-    /* Battery. `now` is what the panel shows; `min` is the whole point -- if it
-     * is still 100 after weeks, the module's estimate is not tracking anything.
-     * `age` catches a module that has stopped answering, which `now` cannot:
-     * battery_level holds its last value forever. */
-    uint8_t batt = ch582_get_battery();
-    uint8_t bmin = ch582_battery_min();
-    dbg_row(1, "batt", batt <= 100 ? dbg_append(dbg_u32(v, batt), "%") : (dbg_append(v, "--"), v));
-    dbg_row(2, "min",  bmin <= 100 ? dbg_append(dbg_u32(v, bmin), "%") : (dbg_append(v, "never"), v));
-    uint32_t age = ch582_battery_age_ms();
-    if (age == UINT32_MAX) dbg_append(v, "never");
-    else                   dbg_append(dbg_u32(v, age / 1000u), "s");
-    dbg_row(3, "age", v);
+    /* Row ISR occupancy. THE headline number: the row ISR is ~73% of this M0 at
+     * idle, so it -- not the timer configuration -- sets the LED field rate,
+     * the matrix scan rate and what is left for the main loop. Shown as a live
+     * one-second window rather than a since-reset average precisely so it can
+     * be watched while changing RGB modes. */
+    static uint32_t prev_entries = 0, prev_ticks = 0, prev_ms = 0;
+    uint32_t entries, ticks;
+    uint16_t tmin, tmax;
+    health_isr_stats(&entries, &ticks, &tmin, &tmax);
+    uint32_t now_ms = timer_read32();
+    uint32_t d_ms   = now_ms - prev_ms;
+    uint32_t d_ent  = entries - prev_entries;
+    uint32_t d_tick = ticks - prev_ticks;
+    uint32_t hz     = health_isr_tick_hz();
 
-    /* CH582F link. sent/tmout/drop are SINCE BOOT and health_reset() cannot
-     * clear them -- they live here, not in health.c. drop is the one that
-     * matters: a frame is only abandoned after CH582_TX_MAX_RETRIES consecutive
-     * timeouts, so a non-zero drop over BT is a KEYSTROKE THAT NEVER ARRIVED.
-     * A high tmout with drop 0 is just the 10 ms ACK deadline sitting at the
-     * module's own turnaround; nothing is lost. See docs/wireless.md. */
+    if (prev_ms && d_ms && hz >= 1000u) {
+        /* Scale by ticks-per-ms BEFORE multiplying by 100: at 73% of 187,500
+         * ticks/s a full-precision d_tick * 100000 overflows u32. */
+        dbg_append(dbg_u32(v, (d_tick / (hz / 1000u)) * 100u / d_ms), "%");
+        dbg_row(1, "ISR cpu", v);
+        dbg_row(2, "ISR/s", dbg_u32(v, d_ent * 1000u / d_ms));
+    } else {
+        dbg_row(1, "ISR cpu", "--");
+        dbg_row(2, "ISR/s", "--");
+    }
+    prev_entries = entries; prev_ticks = ticks; prev_ms = now_ms;
+
+    /* The two counters that can actually LOSE a keystroke.
+     *   rowgap  -- worst interval between samples of one key row. A press lasts
+     *              25-80 ms, so single digits is healthy and 25+ means a press
+     *              can begin and end unseen. This read 156-169 ms before the
+     *              2026-09-03 publish fix.
+     *   stall   -- main-loop gaps >= 25 ms with flash EXCLUDED. Flash windows
+     *              are understood and bounded; anything else at that length is
+     *              not, and must stay at zero. */
+    uint8_t  grow = 0;
+    uint16_t gap  = health_row_gap_max_ms(&grow);
+    p = dbg_append(dbg_u32(v, gap), "ms r");
+    dbg_u32(p, grow);
+    dbg_row(3, "rowgap", v);
+    dbg_row(4, "stall>25", dbg_u32(v, health_count_ge_25ms_nonflash()));
+
+    /* NOT a per-key sampling rate: it counts matrix_scan() calls and the ISR
+     * samples ~4 rows per call. rowgap above is the one that bounds loss. */
+#ifdef DEBUG_MATRIX_SCAN_RATE
+    dbg_row(5, "scan/s", dbg_u32(v, (uint32_t)get_matrix_scan_rate()));
+#else
+    dbg_row(5, "scan/s", "n/a");
+#endif
+
+    /* CH582F link, SINCE BOOT -- these live here, not in health.c, so
+     * health_reset() cannot clear them. drop is the one that matters: a frame
+     * is abandoned only after CH582_TX_MAX_RETRIES consecutive timeouts, so a
+     * non-zero drop over BT is a keystroke that never arrived. A high tmout
+     * with drop 0 is just the 10 ms ACK deadline sitting at the module's own
+     * turnaround -- nothing lost. See docs/wireless.md. */
     uint32_t sent, to, drop;
     ch582_tx_stats(&sent, &to, &drop);
-    dbg_row(4, "BT sent", dbg_u32(v, sent));
+    dbg_row(6, "BT drop", dbg_u32(v, drop));
     p = dbg_u32(v, to);
     if (sent) { p = dbg_append(p, " "); p = dbg_u32(p, (to * 100u) / sent); dbg_append(p, "%"); }
-    dbg_row(5, "  tmout", v);
-    dbg_row(6, "  drop", dbg_u32(v, drop));
+    dbg_row(7, "BT t/o", v);
 
-    /* Scan rate. NOT a per-key sampling rate: it counts matrix_scan() calls,
-     * and the ISR samples ~4 rows per call. The per-row figure that actually
-     * bounds keystroke loss lives in health.c and belongs on this page too --
-     * see the note in docs/hardware.md. */
-#ifdef DEBUG_MATRIX_SCAN_RATE
-    dbg_row(7, "scan/s", dbg_u32(v, (uint32_t)get_matrix_scan_rate()));
-#else
-    dbg_row(7, "scan/s", "n/a");
-#endif
-    dbg_row(8, "mode", connection_mode == CONN_MODE_WIRED     ? "wired"
-                     : connection_mode == CONN_MODE_BLUETOOTH ? "BT" : "2.4G");
+    /* batt / min. The module is the only thing that can read the cell and we
+     * print its number verbatim -- almost certainly a voltage estimate, and
+     * lithium voltage is flat through the middle of the curve. A min still
+     * reading 100 after weeks of use is the cheapest evidence that the number
+     * tracks nothing. "-" means the module has not answered at all, which the
+     * level alone cannot show: it holds its last value forever. */
+    uint8_t batt = ch582_get_battery();
+    uint8_t bmin = ch582_battery_min();
+    p = (batt <= 100) ? dbg_u32(v, batt) : dbg_append(v, "--");
+    p = dbg_append(p, " min ");
+    if (bmin <= 100) dbg_u32(p, bmin); else dbg_append(p, "-");
+    dbg_row(8, "batt", v);
 }
 
 bool display_debug_active(void) {
