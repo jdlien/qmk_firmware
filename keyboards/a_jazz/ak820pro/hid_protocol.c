@@ -404,7 +404,7 @@ enum {
     HC_STALL       = 0x7E,
 #endif
 };
-#define HEALTH_PROTO_VERSION 2
+#define HEALTH_PROTO_VERSION 3
 
 static inline bool is_health_cmd(const uint8_t *data, uint8_t length) {
     return length >= 3 && data[0] == RTC_SET_VALUE && data[1] == HEALTH_CHANNEL;

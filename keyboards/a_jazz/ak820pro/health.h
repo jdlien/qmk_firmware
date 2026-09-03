@@ -69,8 +69,14 @@ void health_fill(uint8_t *out28);
  *                          the key still down and only delays it.
  *   u32 passes          -- denominator, to turn the counts into rates
  *   u32 flash_writes
- *   u32 flash_gap_max_ms -- worst gap attributed to internal flash
- *   u32 blit_gap_max_ms  -- worst gap attributed to the flash->LCD DMA wait
+ *   u16 flash_gap_max_ms -- worst gap attributed to internal flash
+ *   u16 blit_gap_max_ms  -- worst gap attributed to the flash->LCD DMA wait
+ *   u16 i2c_gap_max_ms   -- worst gap attributed to the bit-banged PCF8563
+ *   u16 count_ge_25ms_nonflash -- THE GATE'S DISCRIMINATOR. A >=25 ms stall
+ *                          marked FLASH is a wear-levelling consolidation:
+ *                          understood, bounded, and expected whenever a test
+ *                          writes enough entries. Anything else that long is
+ *                          unexplained, and is what must never regress.
  *   u16 key_presses
  *   u8  loop_gap_max_mark -- what the overall worst gap was (LOOP_MARK_*)
  *   u8  reserved */

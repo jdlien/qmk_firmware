@@ -22,7 +22,15 @@ static uint32_t rx_malformed = 0;
  * answer worse than thresholds do. All of this is a compare and an increment
  * on a timer read that already happens -- no new timer read per pass. */
 static uint32_t count_ge_10ms = 0, count_ge_25ms = 0, passes = 0;
-static uint32_t flash_writes = 0, flash_gap_max = 0, blit_gap_max = 0;
+static uint32_t flash_writes = 0;
+/* Per-mark maxima are u16: a gap needing 65 s would be a hang, not a stall,
+ * and the narrower fields buy room on a page that was exactly full. */
+static uint16_t flash_gap_max = 0, blit_gap_max = 0, i2c_gap_max = 0;
+/* The gate's discriminator. A >=25 ms stall attributed to FLASH is a
+ * wear-levelling consolidation: understood, bounded, and expected whenever a
+ * test writes enough entries. Anything else at that length is a stall we
+ * cannot explain, and that is what must never regress. */
+static uint16_t count_ge_25ms_nonflash = 0;
 static uint16_t key_presses = 0;
 static uint8_t  loop_gap_max_mark = LOOP_MARK_NONE;
 static uint8_t  last_mark = LOOP_MARK_NONE;
@@ -47,8 +55,14 @@ void health_loop_tick(void) {
     if (gap >= 10) count_ge_10ms++;
     if (gap >= 25) count_ge_25ms++;
     if (gap > loop_gap_max) { loop_gap_max = gap; loop_gap_max_mark = last_mark; }
-    if (last_mark == LOOP_MARK_FLASH && gap > flash_gap_max) flash_gap_max = gap;
-    if (last_mark == LOOP_MARK_BLIT  && gap > blit_gap_max)  blit_gap_max  = gap;
+    uint16_t g16 = (gap > 0xFFFFu) ? 0xFFFFu : (uint16_t)gap;
+    switch (last_mark) {
+        case LOOP_MARK_FLASH: if (g16 > flash_gap_max) flash_gap_max = g16; break;
+        case LOOP_MARK_BLIT:  if (g16 > blit_gap_max)  blit_gap_max  = g16; break;
+        case LOOP_MARK_I2C:   if (g16 > i2c_gap_max)   i2c_gap_max   = g16; break;
+        default: break;
+    }
+    if (gap >= 25 && last_mark != LOOP_MARK_FLASH) count_ge_25ms_nonflash++;
 }
 
 uint8_t health_last_mark(void) { return last_mark; }
@@ -61,28 +75,30 @@ void health_reset(void) {
     chSysLock();
     loop_gap_max = 0; loop_gap_max_mark = LOOP_MARK_NONE;
     count_ge_10ms = 0; count_ge_25ms = 0; passes = 0;
-    flash_writes = 0; flash_gap_max = 0; blit_gap_max = 0;
-    key_presses = 0; rx_malformed = 0;
+    flash_writes = 0; flash_gap_max = 0; blit_gap_max = 0; i2c_gap_max = 0;
+    count_ge_25ms_nonflash = 0; key_presses = 0; rx_malformed = 0;
     chSysUnlock();
 }
 
 void health_fill2(uint8_t *out28) {
-    uint32_t c10, c25, ps, fw, fg, bg;
-    uint16_t kp;
+    uint32_t c10, c25, ps, fw;
+    uint16_t fg, bg, ig, nf, kp;
     uint8_t  mk;
     chSysLock();
-    c10 = count_ge_10ms; c25 = count_ge_25ms; ps = passes;
-    fw  = flash_writes;  fg  = flash_gap_max; bg = blit_gap_max;
-    kp  = key_presses;   mk  = loop_gap_max_mark;
+    c10 = count_ge_10ms; c25 = count_ge_25ms; ps = passes; fw = flash_writes;
+    fg  = flash_gap_max; bg  = blit_gap_max;  ig = i2c_gap_max;
+    nf  = count_ge_25ms_nonflash; kp = key_presses; mk = loop_gap_max_mark;
     chSysUnlock();
 
     uint32_t v;
     uint8_t *p = out28;
 #define PUT32(x) do { v = (x); *p++ = v & 0xFF; *p++ = (v >> 8) & 0xFF; *p++ = (v >> 16) & 0xFF; *p++ = (v >> 24) & 0xFF; } while (0)
-    PUT32(c10); PUT32(c25); PUT32(ps); PUT32(fw); PUT32(fg); PUT32(bg);
+#define PUT16(x) do { v = (x); *p++ = v & 0xFF; *p++ = (v >> 8) & 0xFF; } while (0)
+    PUT32(c10); PUT32(c25); PUT32(ps); PUT32(fw);          /* 16 */
+    PUT16(fg);  PUT16(bg);  PUT16(ig);                      /* 22 */
+    PUT16(nf);  PUT16(kp);                                  /* 26 */
+#undef PUT16
 #undef PUT32
-    *p++ = kp & 0xFF;
-    *p++ = (kp >> 8) & 0xFF;
     *p++ = mk;
     *p++ = 0;   /* reserved */
 }
