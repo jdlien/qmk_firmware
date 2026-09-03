@@ -106,7 +106,8 @@
 static volatile bool display_powered = true;
 static bool display_paused  = false;   // true while the flash-animation player owns the bus
 static bool debug_active    = false;   // true while the Fn+D debug page owns the panel
-static uint8_t debug_exit_step = 0;    // 1..4 while the dashboard is being restored
+static uint8_t debug_exit_step  = 0;   // >0 while the dashboard is being restored
+static uint8_t debug_clear_band = 0;   // >0 while the entry clear is banding down the panel
 static bool splash_cleared = false;
 static bool mac_mode = false;
 
@@ -591,6 +592,24 @@ static void draw_playback(void) {
  * instead of drawing the dashboard, and the toggle repaints the dashboard on
  * the way out. 21 columns x 9 rows in the 6x14 face -- cramming is fine, you
  * are already leaning in when you press Fn+D. */
+/* A full-screen clear is 128*128*2 = 32 KB streamed flash->panel, and
+ * lcd_clear_rect() ends in lcd_blit_wait(): measured 43-44 ms with the main
+ * loop parked, which count_ge_25ms_nonflash correctly calls a keystroke hazard.
+ *
+ * Clearing in BANDS fixes it without going asynchronous. 128x16 is 4 KB, about
+ * 5.5 ms -- under the 10 ms leading indicator, let alone the 25 ms alarm -- and
+ * one band per main-loop pass costs the same total wire time while never
+ * blocking for longer than a band.
+ *
+ * The earlier async attempt (lcd_clear_rect_async, reverted) HUNG THE BOARD:
+ * arming the DMA and returning meant routing around the pump's stuck-blit
+ * recovery and letting the dashboard draw over a restore still in progress.
+ * Banding needs neither. Every call here is the same synchronous
+ * lcd_clear_rect() that has always worked; there are just more, smaller ones. */
+#define DBG_CLEAR_BAND_H 16
+#define DBG_CLEAR_BANDS  (PANEL_HEIGHT / DBG_CLEAR_BAND_H)
+_Static_assert(PANEL_HEIGHT % DBG_CLEAR_BAND_H == 0, "clear bands must tile the panel exactly");
+
 #define DBG_ROWS      9
 #define DBG_ROW_H     14
 #define DBG_COLS      (PANEL_WIDTH / FONT_SMALL_ADV)   /* 21 */
@@ -700,6 +719,14 @@ static void draw_debug_page(void) {
  * 10 Hz and is the wrong clock for this, the same lesson the glyph queue's own
  * comment records. */
 static bool debug_pump_glyph(void) {
+    /* Clear first, one band per pass. No glyph may land before the panel is
+     * blank or a later band would wipe it. */
+    if (debug_clear_band) {
+        lcd_clear_rect(0, (uint16_t)((debug_clear_band - 1) * DBG_CLEAR_BAND_H),
+                       PANEL_WIDTH, DBG_CLEAR_BAND_H);
+        if (++debug_clear_band > DBG_CLEAR_BANDS) debug_clear_band = 0;
+        return true;
+    }
     if (!dbg_dirty) return false;
     for (uint8_t r = 0; r < DBG_ROWS; r++) {
         if (!(dbg_dirty & (1u << r))) continue;
@@ -849,8 +876,12 @@ void display_debug_toggle(void) {
     if (!debug_active && display_paused) return;
     debug_active = !debug_active;
     if (debug_active) {
-        lcd_clear_rect(0, 0, PANEL_WIDTH, PANEL_HEIGHT);
-        memset(dbg_shown, 0, sizeof(dbg_shown));   /* panel is blank: repaint all */
+        /* Hand the clear to the pump, one band per pass. This is a single call
+         * from process_record_kb and cannot span passes, so it must not clear
+         * the panel itself -- a full-screen clear here is the same 43 ms stall
+         * the exit path was split up to avoid. */
+        debug_clear_band = 1;
+        memset(dbg_shown, 0, sizeof(dbg_shown));   /* panel will be blank: repaint all */
     } else {
         /* Hand the panel back in STAGES, not with one display_redraw_dashboard()
          * call. That function clears the whole panel and then blits the icons
@@ -1028,26 +1059,33 @@ void draw_clock(void) {
  * and splitting a shared path used by the flash player was not worth the risk
  * for that caller. If it ever shows up in blit_gap_max_ms, route it here too. */
 static bool debug_restore_step(void) {
-    switch (debug_exit_step) {
-        case 1:
-            /* Anything queued belongs to the pre-clear frame. */
-            display_queue_discard();
-            lcd_clear_rect(0, 0, PANEL_WIDTH, PANEL_HEIGHT);
-            break;
-        case 2:
-            splash_cleared = true;
-            lcd_draw_flash_image(mac_mode ? ASSET_APPLE_ICON_24X24 : ASSET_WINDOWS_ICON_24X24, 0, 0);
-            break;
-        case 3:
-            draw_conn_row();
-            clock_force_repaint = true;   /* draw_clock queues; cheap here */
-            draw_clock();
-            break;
-        default:
-            draw_status(true);            /* battery + channel digit */
-            break;
+    uint8_t step = debug_exit_step;
+
+    /* Anything queued belongs to the pre-clear frame; painting it afterwards
+     * would scatter stale glyphs over the fresh dashboard. */
+    if (step == 1) display_queue_discard();
+
+    if (step <= DBG_CLEAR_BANDS) {
+        lcd_clear_rect(0, (uint16_t)((step - 1) * DBG_CLEAR_BAND_H),
+                       PANEL_WIDTH, DBG_CLEAR_BAND_H);
+    } else {
+        switch (step - DBG_CLEAR_BANDS) {
+            case 1:
+                splash_cleared = true;
+                lcd_draw_flash_image(mac_mode ? ASSET_APPLE_ICON_24X24 : ASSET_WINDOWS_ICON_24X24, 0, 0);
+                break;
+            case 2:
+                draw_conn_row();
+                clock_force_repaint = true;   /* draw_clock queues; cheap here */
+                draw_clock();
+                break;
+            default:
+                draw_status(true);            /* battery + channel digit */
+                break;
+        }
     }
-    if (++debug_exit_step > 4) { debug_exit_step = 0; return false; }
+
+    if (++debug_exit_step > DBG_CLEAR_BANDS + 3) { debug_exit_step = 0; return false; }
     return true;
 }
 
