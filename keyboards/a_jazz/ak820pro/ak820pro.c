@@ -290,6 +290,24 @@ static void key_stat_task(void) {
     last = key_press_count;
 }
 #endif
+/* Hold-to-reset on DBG_PAGE. 800 ms, and the hold task runs at ~10 Hz so the
+ * effective threshold is ~200 ms longer -- the same caveat bt_ui.c records for
+ * BT_PAIR_HOLD_MS. Long enough that no tap reaches it, short enough not to feel
+ * like a hang. */
+#define DBG_RESET_HOLD_MS 800
+static uint16_t dbg_hold_timer = 0;
+static bool     dbg_hold_armed = false;
+static bool     dbg_hold_fired = false;
+
+/* Fires the instant the threshold passes while the key is STILL DOWN. */
+void dbg_hold_task(void) {
+    if (!dbg_hold_armed || dbg_hold_fired) return;
+    if (timer_elapsed(dbg_hold_timer) < DBG_RESET_HOLD_MS) return;
+    dbg_hold_fired = true;          /* release must not also toggle the page */
+    health_reset();
+    display_debug_refresh();        /* show the zeros now, not on the next second */
+}
+
 bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
     /* Counted on EVERY build: this is what splits "the matrix never saw it"
      * from "the report was lost downstream", and it is useless if it only
@@ -352,7 +370,27 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
             }
             return false;
         case DBG_PAGE:
-            if (record->event.pressed) display_debug_toggle();
+            /* Tap toggles the page; HOLD resets the counters.
+             *
+             * Hold fires from dbg_hold_task() at the threshold, under the
+             * finger -- not here on key-up. bt_ui.c records why: firing a hold
+             * on release means holding the key appears to do nothing until you
+             * let go, and you cannot tell a taken hold from an ignored one.
+             *
+             * Feedback is the numbers going to zero on the page. Deliberately
+             * NOT display_set_param_status(): that draws ~12 blocking DMA
+             * blits, and using it to report on a stall counter would be the
+             * instrument touching the subsystem under test -- the mistake that
+             * ran away to a 154 ms stall once already (see the stall reporter
+             * above). */
+            if (record->event.pressed) {
+                dbg_hold_timer = timer_read();
+                dbg_hold_armed = true;
+                dbg_hold_fired = false;
+            } else {
+                dbg_hold_armed = false;
+                if (!dbg_hold_fired) display_debug_toggle();   /* a tap */
+            }
             return false;
         case QK_BOOT:
             /* Draw the bootloader notice BEFORE handing off to QMK, which then
@@ -501,6 +539,7 @@ void housekeeping_task_kb(void) {
 
         LOOP_SITE(LOOP_SITE_LEDS,     update_leds());
         LOOP_SITE(LOOP_SITE_PAIR,     bt_pair_hold_task());   // hold-to-pair fires under the finger, not on release
+        LOOP_SITE(LOOP_SITE_PAIR,     dbg_hold_task());       // hold-Fn+D resets the health counters
         LOOP_SITE(LOOP_SITE_CONSUMER, modified_consumer_task());  // drop held mods once a knob spin stops
 #ifdef PARAM_OVERLAY
         LOOP_SITE(LOOP_SITE_PARAM,    param_status_task());   // surface setting changes in the info band

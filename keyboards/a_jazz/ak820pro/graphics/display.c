@@ -673,11 +673,21 @@ static uint16_t dbg_dirty = 0;
  * non-blocking lcd_draw_flash_glyph_try(). At ~340 Hz a full 189-cell repaint
  * settles in ~0.6 s and steady state is a handful of cells a second, because
  * only the digits that actually changed are repainted. No pass ever blocks. */
+static bool dbg_force_recompose = false;
+
+/* Recompose on the next tick regardless of the second edge, so hold-Fn+D shows
+ * its zeros immediately instead of up to a second later. Composition is
+ * RAM-only and painting stays incremental, so this costs nothing. */
+void display_debug_refresh(void) {
+    dbg_force_recompose = true;
+}
+
 static void draw_debug_page(void) {
     static uint32_t last_sec = UINT32_MAX;
     uint32_t sec = rtc_get_seconds();
-    if (sec == last_sec) return;
+    if (sec == last_sec && !dbg_force_recompose) return;
     last_sec = sec;
+    dbg_force_recompose = false;
 
     dbg_compose();
     for (uint8_t r = 0; r < DBG_ROWS; r++)
@@ -735,15 +745,18 @@ static void dbg_compose(void) {
     uint32_t hz     = health_isr_tick_hz();
 
     if (prev_ms && d_ms && hz >= 1000u) {
-        /* Scale by ticks-per-ms BEFORE multiplying by 100: at 73% of 187,500
+        /* One row for both: "73% 3900". Occupancy and rate are read together --
+         * the rate only means something against the share it costs -- and
+         * merging them buys the row that stall>10 now occupies. Field rate is
+         * the second number / 18.
+         *
+         * Scale by ticks-per-ms BEFORE multiplying by 100: at 73% of 187,500
          * ticks/s a full-precision d_tick * 100000 overflows u32. */
-        dbg_append(dbg_u32(v, (d_tick / (hz / 1000u)) * 100u / d_ms), "%");
-        dbg_row(1, "ISR cpu", v);
-        dbg_u32(v, d_ent * 1000u / d_ms);
-        dbg_row(2, "ISR/s", v);
+        p = dbg_append(dbg_u32(v, (d_tick / (hz / 1000u)) * 100u / d_ms), "% ");
+        dbg_u32(p, d_ent * 1000u / d_ms);
+        dbg_row(1, "ISR", v);
     } else {
-        dbg_row(1, "ISR cpu", "--");
-        dbg_row(2, "ISR/s", "--");
+        dbg_row(1, "ISR", "--");
     }
     prev_entries = entries; prev_ticks = ticks; prev_ms = now_ms;
 
@@ -760,9 +773,16 @@ static void dbg_compose(void) {
     uint16_t gap  = health_row_gap_max_ms(&grow);
     p = dbg_append(dbg_u32(v, gap), "ms r");
     dbg_u32(p, grow);
-    dbg_row(3, "rowgap", v);
+    dbg_row(2, "rowgap", v);
+    /* Two thresholds, and the difference matters. >=25 ms is the LOSS alarm:
+     * 25 ms is the shortest keypress, so a stall that long can swallow one
+     * whole. >=10 ms cannot lose anything by itself -- the key is still down
+     * when the loop catches up -- so it is the LEADING indicator, and a rising
+     * count there is the warning that arrives before a keystroke goes missing. */
     dbg_u32(v, health_count_ge_25ms_nonflash());
-    dbg_row(4, "stall>25", v);
+    dbg_row(3, "stall>25", v);
+    dbg_u32(v, health_count_ge_10ms());
+    dbg_row(4, "stall>10", v);
 
     /* NOT a per-key sampling rate: it counts matrix_scan() calls and the ISR
      * samples ~4 rows per call. rowgap above is the one that bounds loss. */

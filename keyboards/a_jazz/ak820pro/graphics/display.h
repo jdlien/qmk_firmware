@@ -104,6 +104,9 @@ void display_bootloader_splash(void);
  * player owns the bus. */
 void display_debug_toggle(void);
 bool display_debug_active(void);
+/* Recompose the page on the next tick without waiting for the second edge, so a
+ * counter reset shows its zeros immediately. No-op when the page is closed. */
+void display_debug_refresh(void);
 
 /* Playback position, drawn in place of the clock while media is PLAYING.
  * pos/dur are whole seconds; state 0 hands the band back to the clock.

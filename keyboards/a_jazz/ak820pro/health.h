@@ -121,3 +121,8 @@ uint32_t health_isr_tick_hz(void);            /* CH_CFG_ST_FREQUENCY */
 uint16_t health_row_gap_max_ms(uint8_t *row); /* row may be NULL */
 uint32_t health_loop_gap_max_ms(void);
 uint16_t health_count_ge_25ms_nonflash(void);
+/* The >=10 ms count. A stall shorter than the SHORTEST keypress (25 ms) cannot
+ * lose a press -- the key is still down when the loop catches up -- so this is
+ * a LEADING indicator, not a loss indicator. It moves before anything is
+ * actually dropped, which is what makes it worth a row on the debug page. */
+uint32_t health_count_ge_10ms(void);
