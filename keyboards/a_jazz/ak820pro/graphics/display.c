@@ -106,6 +106,7 @@
 static volatile bool display_powered = true;
 static bool display_paused  = false;   // true while the flash-animation player owns the bus
 static bool debug_active    = false;   // true while the Fn+D debug page owns the panel
+static uint8_t debug_exit_step = 0;    // 1..4 while the dashboard is being restored
 static bool splash_cleared = false;
 static bool mac_mode = false;
 
@@ -315,6 +316,7 @@ static bool clock_force_repaint = true;
 static void draw_status(bool force); // CH582F status: battery + channel digit
 static void draw_debug_page(void);   // Fn+D full-panel diagnostics
 static bool debug_pump_glyph(void);  // one changed debug cell, non-blocking
+static bool debug_restore_step(void); // one stage of the post-debug dashboard repaint
 static void draw_conn_row(void);      // three-transport strip, top row
 
 /* ---- Playback position ----------------------------------------------------
@@ -816,7 +818,17 @@ void display_debug_toggle(void) {
         lcd_clear_rect(0, 0, PANEL_WIDTH, PANEL_HEIGHT);
         memset(dbg_shown, 0, sizeof(dbg_shown));   /* panel is blank: repaint all */
     } else {
-        display_redraw_dashboard(0, NULL);   /* hand the panel back, full repaint */
+        /* Hand the panel back in STAGES, not with one display_redraw_dashboard()
+         * call. That function clears the whole panel and then blits the icons
+         * and status synchronously: measured 66 ms on the main loop, which
+         * count_ge_25ms_nonflash duly flagged as a stall long enough to lose a
+         * keypress. Pressing Fn+D to dismiss a DIAGNOSTICS page must not put the
+         * next keystroke at risk.
+         *
+         * Driven one step per main-loop pass from display_blit_pump(), so each
+         * step stays well under the 25 ms threshold and the whole restore still
+         * completes in a few milliseconds of wall time -- visually instant. */
+        debug_exit_step = 1;
     }
 }
 
@@ -971,6 +983,38 @@ void draw_clock(void) {
         draw_ampm(ax, CLOCK_Y, pm);    /* the tile paints its own background */
         ampm.pm = pm;
     }
+}
+
+/* One stage of display_redraw_dashboard(), for the Fn+D exit path. Returns true
+ * while more stages remain.
+ *
+ * Same work, same order, split so no single main-loop pass carries all of it.
+ * The animation-resume path still calls display_redraw_dashboard() whole: it
+ * exits on a timer rather than a keypress, so nobody is mid-word when it fires,
+ * and splitting a shared path used by the flash player was not worth the risk
+ * for that caller. If it ever shows up in blit_gap_max_ms, route it here too. */
+static bool debug_restore_step(void) {
+    switch (debug_exit_step) {
+        case 1:
+            /* Anything queued belongs to the pre-clear frame. */
+            display_queue_discard();
+            lcd_clear_rect(0, 0, PANEL_WIDTH, PANEL_HEIGHT);
+            break;
+        case 2:
+            splash_cleared = true;
+            lcd_draw_flash_image(mac_mode ? ASSET_APPLE_ICON_24X24 : ASSET_WINDOWS_ICON_24X24, 0, 0);
+            break;
+        case 3:
+            draw_conn_row();
+            clock_force_repaint = true;   /* draw_clock queues; cheap here */
+            draw_clock();
+            break;
+        default:
+            draw_status(true);            /* battery + channel digit */
+            break;
+    }
+    if (++debug_exit_step > 4) { debug_exit_step = 0; return false; }
+    return true;
 }
 
 uint32_t display_redraw_dashboard(uint32_t trigger_time, void *cb_arg) {
@@ -1894,6 +1938,9 @@ void display_blit_pump(void) {
      * idle and there is no contention. One cell per pass, same budget as a
      * queued glyph. */
     if (debug_active) { blocked = false; debug_pump_glyph(); return; }
+    /* Restoring the dashboard after Fn+D: one stage per pass. Ahead of the
+     * queue because stage 1 clears the panel and discards whatever is in it. */
+    if (debug_exit_step) { blocked = false; debug_restore_step(); return; }
 
     if (gq_i >= gq_n || display_paused) {
         blocked = false;   /* stale grace must not carry into later work */
