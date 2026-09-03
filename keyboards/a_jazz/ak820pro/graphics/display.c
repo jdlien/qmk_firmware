@@ -314,6 +314,7 @@ static bool clock_force_repaint = true;
 
 static void draw_status(bool force); // CH582F status: battery + channel digit
 static void draw_debug_page(void);   // Fn+D full-panel diagnostics
+static bool debug_pump_glyph(void);  // one changed debug cell, non-blocking
 static void draw_conn_row(void);      // three-transport strip, top row
 
 /* ---- Playback position ----------------------------------------------------
@@ -593,11 +594,20 @@ static void draw_playback(void) {
 #define DBG_COLS      (PANEL_WIDTH / FONT_SMALL_ADV)   /* 21 */
 _Static_assert(DBG_ROWS * DBG_ROW_H <= PANEL_HEIGHT, "debug page must fit the panel");
 
-/* Right-align a value under a fixed-width label: "sent" + 711 -> "sent    711".
- * Fixed columns beat a running printf here because the numbers change every
- * second and a jumping column is much harder to read at 6px than a still one. */
+/* Composed row text, and what is currently ON the panel. Split because the page
+ * must NOT paint everything it computes: see draw_debug_page(). */
+static char dbg_text[DBG_ROWS][DBG_COLS + 1];
+static char dbg_shown[DBG_ROWS][DBG_COLS + 1];
+
+/* COMPOSE ONLY -- no LCD I/O. Right-aligns a value under a fixed-width label:
+ * "sent" + 711 -> "sent            711". Fixed columns beat a running printf
+ * because the numbers change every second and a jumping column is much harder
+ * to read at 6px than a still one. Always fills the full width, so a staged
+ * blit overwrites the previous row completely and short values cannot leave
+ * stale characters behind. */
 static void dbg_row(uint8_t row, const char *label, const char *value) {
-    char line[DBG_COLS + 1];
+    if (row >= DBG_ROWS) return;
+    char *line = dbg_text[row];
     uint8_t i = 0;
     while (label[i] && i < DBG_COLS) { line[i] = label[i]; i++; }
     uint8_t vn = 0;
@@ -606,8 +616,8 @@ static void dbg_row(uint8_t row, const char *label, const char *value) {
     uint8_t start = (vn >= DBG_COLS) ? 0 : (uint8_t)(DBG_COLS - vn);
     while (i < start) line[i++] = ' ';
     for (uint8_t k = 0; k < vn && i < DBG_COLS; k++) line[i++] = value[k];
-    line[i] = '\0';
-    lcd_draw_flash_text(FONT_SMALL, 0, (uint16_t)(row * DBG_ROW_H), line);
+    while (i < DBG_COLS) line[i++] = ' ';
+    line[DBG_COLS] = '\0';
 }
 
 /* u32 -> decimal, no printf. Returns buf. */
@@ -628,14 +638,67 @@ static char *dbg_append(char *p, const char *s) {
     return p;
 }
 
+static void dbg_compose(void);
+
+/* Bit per row: this row's composed text differs from what is on the panel.
+ * The pump drains it one GLYPH at a time; see debug_pump_glyph(). */
+static uint16_t dbg_dirty = 0;
+
+/* ⚠️ THIS PAGE ONCE MADE THE KEYBOARD UNTYPEABLE. Read before changing it.
+ *
+ * The first version drew all nine rows with lcd_draw_flash_text() on every
+ * refresh. That call is SYNCHRONOUS and issues one LCD operation per glyph -- a
+ * window command, a flash read and a DMA arm per 6x14 cell, almost all
+ * overhead. Nine rows of 21 columns is ~189 of them: measured blit_gap_max_ms
+ * 304 and seven unexplained >=25 ms main-loop stalls, and the owner's typing
+ * visibly collapsed the moment the page appeared. A page built to prove
+ * keystrokes were not being lost was losing them.
+ *
+ * Note also that lcd_draw_flash_text_staged() -- which the comments around the
+ * host-text band recommend for exactly this, and which the header declares --
+ * DOES NOT EXIST. It has no definition anywhere in the tree; using it is a link
+ * error. Do not reach for it on the strength of those comments.
+ *
+ * So this page does what the band actually does: compose in RAM here, and let
+ * display_blit_pump() paint ONE CHANGED GLYPH PER MAIN-LOOP PASS with the
+ * non-blocking lcd_draw_flash_glyph_try(). At ~340 Hz a full 189-cell repaint
+ * settles in ~0.6 s and steady state is a handful of cells a second, because
+ * only the digits that actually changed are repainted. No pass ever blocks. */
 static void draw_debug_page(void) {
-    /* Repaint on the RTC second, like the clock: these are counters, not an
-     * animation, and the glyph queue is shared with everything else. */
     static uint32_t last_sec = UINT32_MAX;
     uint32_t sec = rtc_get_seconds();
     if (sec == last_sec) return;
     last_sec = sec;
 
+    dbg_compose();
+    for (uint8_t r = 0; r < DBG_ROWS; r++)
+        if (memcmp(dbg_text[r], dbg_shown[r], DBG_COLS) != 0)
+            dbg_dirty |= (uint16_t)(1u << r);
+}
+
+/* One changed cell per call, non-blocking. Returns true if it owned this pass.
+ * Called from display_blit_pump() at MAIN-LOOP rate -- the housekeeping tick is
+ * 10 Hz and is the wrong clock for this, the same lesson the glyph queue's own
+ * comment records. */
+static bool debug_pump_glyph(void) {
+    if (!dbg_dirty) return false;
+    for (uint8_t r = 0; r < DBG_ROWS; r++) {
+        if (!(dbg_dirty & (1u << r))) continue;
+        for (uint8_t c = 0; c < DBG_COLS; c++) {
+            if (dbg_text[r][c] == dbg_shown[r][c]) continue;
+            if (!lcd_draw_flash_glyph_try(FONT_SMALL, dbg_text[r][c],
+                                          (uint16_t)(c * FONT_SMALL_ADV),
+                                          (uint16_t)(r * DBG_ROW_H)))
+                return true;   /* bus busy: keep the cell dirty, retry next pass */
+            dbg_shown[r][c] = dbg_text[r][c];
+            return true;
+        }
+        dbg_dirty &= (uint16_t)~(1u << r);   /* row fully painted */
+    }
+    return false;
+}
+
+static void dbg_compose(void) {
     char v[24], *p;
 
     /* Uptime -- the timebase for every since-boot counter below, and the thing
@@ -649,8 +712,8 @@ static void draw_debug_page(void) {
 
     /* Row ISR occupancy. THE headline number: the row ISR is ~73% of this M0 at
      * idle, so it -- not the timer configuration -- sets the LED field rate,
-     * the matrix scan rate and what is left for the main loop. Shown as a live
-     * one-second window rather than a since-reset average precisely so it can
+     * the matrix scan rate and what is left for the main loop. A live
+     * one-second window rather than a since-reset average, precisely so it can
      * be watched while changing RGB modes. */
     static uint32_t prev_entries = 0, prev_ticks = 0, prev_ms = 0;
     uint32_t entries, ticks;
@@ -677,11 +740,12 @@ static void draw_debug_page(void) {
     /* The two counters that can actually LOSE a keystroke.
      *   rowgap  -- worst interval between samples of one key row. A press lasts
      *              25-80 ms, so single digits is healthy and 25+ means a press
-     *              can begin and end unseen. This read 156-169 ms before the
+     *              can begin and end unseen. Read 156-169 ms before the
      *              2026-09-03 publish fix.
      *   stall   -- main-loop gaps >= 25 ms with flash EXCLUDED. Flash windows
      *              are understood and bounded; anything else at that length is
-     *              not, and must stay at zero. */
+     *              not, and must stay at zero. This page itself put SEVEN on
+     *              the counter in its first version. */
     uint8_t  grow = 0;
     uint16_t gap  = health_row_gap_max_ms(&grow);
     p = dbg_append(dbg_u32(v, gap), "ms r");
@@ -697,12 +761,12 @@ static void draw_debug_page(void) {
     dbg_row(5, "scan/s", "n/a");
 #endif
 
-    /* CH582F link, SINCE BOOT -- these live here, not in health.c, so
-     * health_reset() cannot clear them. drop is the one that matters: a frame
-     * is abandoned only after CH582_TX_MAX_RETRIES consecutive timeouts, so a
-     * non-zero drop over BT is a keystroke that never arrived. A high tmout
-     * with drop 0 is just the 10 ms ACK deadline sitting at the module's own
-     * turnaround -- nothing lost. See docs/wireless.md. */
+    /* CH582F link, SINCE BOOT -- these live in the CH582 driver, not health.c,
+     * so health_reset() cannot clear them. drop is the one that matters: a
+     * frame is abandoned only after CH582_TX_MAX_RETRIES consecutive timeouts,
+     * so a non-zero drop over BT is a keystroke that never arrived. A high
+     * tmout with drop 0 is just the 10 ms ACK deadline sitting at the module's
+     * own turnaround -- nothing lost. See docs/wireless.md. */
     uint32_t sent, to, drop;
     ch582_tx_stats(&sent, &to, &drop);
     dbg_row(6, "BT drop", dbg_u32(v, drop));
@@ -735,6 +799,7 @@ void display_debug_toggle(void) {
     debug_active = !debug_active;
     if (debug_active) {
         lcd_clear_rect(0, 0, PANEL_WIDTH, PANEL_HEIGHT);
+        memset(dbg_shown, 0, sizeof(dbg_shown));   /* panel is blank: repaint all */
     } else {
         display_redraw_dashboard(0, NULL);   /* hand the panel back, full repaint */
     }
@@ -1809,6 +1874,11 @@ static void gq_push(uint16_t font, uint16_t x, uint16_t y, char c) {
 void display_blit_pump(void) {
     static uint32_t blocked_since = 0;
     static bool     blocked       = false;
+
+    /* The debug page owns the panel outright while active, so the band queue is
+     * idle and there is no contention. One cell per pass, same budget as a
+     * queued glyph. */
+    if (debug_active) { blocked = false; debug_pump_glyph(); return; }
 
     if (gq_i >= gq_n || display_paused) {
         blocked = false;   /* stale grace must not carry into later work */
