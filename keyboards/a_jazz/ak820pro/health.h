@@ -82,10 +82,11 @@ void health_fill(uint8_t *out28);
  *   u8  reserved */
 void health_fill2(uint8_t *out28);
 
-/* Third page (28 bytes), little-endian. Exists because the SN32 driver
- * publishes ONE row per matrix_scan() call, so scan_rate is not a full-matrix
- * refresh rate and cannot answer "how often is this key actually looked at".
- *   u16 row_samples[6]  -- fairness across rows
+/* Third page (28 bytes), little-endian. Added when the SN32 driver still
+ * published ONE row per matrix_scan() call (fixed 2026-09-03: every row is
+ * scanned every ISR cycle); kept because "how often is this key actually
+ * looked at" is the question the fix answers, and scan_rate never could.
+ *   u16 row_samples[6]  -- fairness across rows (u16: wraps every ~5 min)
  *   u16 row_gap_max_ms  -- worst interval between samples of the SAME row
  *   u32 raw_edges       -- raw transitions BEFORE debounce
  *   u32 consumes        -- matrix_scan_custom calls
@@ -93,3 +94,18 @@ void health_fill2(uint8_t *out28);
  *   u8  row_gap_max_row
  *   u8  matrix_rows */
 void health_fill3(uint8_t *out28);
+
+/* Fourth page (28 bytes), little-endian: the row ISR's own cost. rgb_callback()
+ * re-arms the PWM counter at its END, so its period is (duration + ~53 us):
+ * the ISR's cost, not the timer, sets the row rate and caps the main loop.
+ * Ticks are st_freq per second; the host converts.
+ *   u32 isr_entries       -- rgb_callback() entries since reset
+ *   u32 isr_ticks_sum     -- summed ISR duration, ticks
+ *   u16 isr_ticks_min     -- 0xFFFF until the first entry
+ *   u16 isr_ticks_max
+ *   u32 st_freq           -- CH_CFG_ST_FREQUENCY, so the host need not hardcode it
+ *   u32 uptime_ms         -- timer_read32() at fill time: a firmware timebase
+ *                            for rate arithmetic between two reads
+ *   u32 row_samples_total -- u32 companion to page 3's u16 row_samples
+ *   u32 reserved */
+void health_fill4(uint8_t *out28);

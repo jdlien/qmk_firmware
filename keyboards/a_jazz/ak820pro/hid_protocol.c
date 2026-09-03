@@ -364,10 +364,15 @@ enum {
      * boot's deliberate blocking (lcd_init alone spends 240 ms in wait_ms)
      * and no measurement can be repeated. */
     HC_RESET       = 0x05,
-    /* Per-row input sampling page. Separate page because this driver publishes
-     * ONE row per matrix_scan() call, so scan_rate on page 1 cannot answer how
-     * often a given key is actually looked at. */
+    /* Per-row input sampling page. Added when this driver still published ONE
+     * row per matrix_scan() call (fixed 2026-09-03); scan_rate on page 1 never
+     * could answer how often a given key is actually looked at. */
     HC_GET3        = 0x06,
+    /* Row-ISR cost page: entries, summed/min/max duration in system ticks, a
+     * firmware timebase. Exists because the row rate is set by the ISR's own
+     * duration (the counter is re-armed at its end), not by the timer -- and
+     * the timer-derived figure was 4.8x wrong. */
+    HC_GET4        = 0x07,
     HC_CONN        = 0x02,
     /* Clock-sync status (PLAN.md 3.7): [.., .., HC_RTC, page] ->
      *   [.., .., HC_RTC, page, block...]
@@ -408,7 +413,7 @@ enum {
     HC_STALL       = 0x7E,
 #endif
 };
-#define HEALTH_PROTO_VERSION 4
+#define HEALTH_PROTO_VERSION 5
 
 static inline bool is_health_cmd(const uint8_t *data, uint8_t length) {
     return length >= 3 && data[0] == RTC_SET_VALUE && data[1] == HEALTH_CHANNEL;
@@ -436,6 +441,14 @@ static void health_command(uint8_t *data, uint8_t length) {
             if (length >= 32) {
                 data[3] = HEALTH_PROTO_VERSION;
                 health_fill3(&data[4]);
+            } else {
+                data[0] = RTC_UNHANDLED;
+            }
+            break;
+        case HC_GET4:
+            if (length >= 32) {
+                data[3] = HEALTH_PROTO_VERSION;
+                health_fill4(&data[4]);
             } else {
                 data[0] = RTC_UNHANDLED;
             }

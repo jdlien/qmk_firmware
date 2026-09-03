@@ -387,16 +387,13 @@ static void shared_matrix_rgb_enable(void) {
 #if defined(SHARED_MATRIX)
 /* Per-row input instrumentation (weak; no-op on every other SN32 board).
  *
- * WHY: this driver publishes after scanning ONE row -- matrix_scanned is set
- * inside the per-row branch below -- and the main loop then copies the whole
- * ROLLING matrix. So `scan_rate`, which counts matrix_scan() calls, is NOT a
- * full-matrix refresh rate: with N rows a given key is only freshly sampled
- * scan_rate/N times a second. A short press can therefore be missed before
- * debounce ever sees it, and edges on different rows can be reordered.
- *
- * The ISR hook only records WHICH row was sampled -- one byte store plus an
- * increment. All timing is done by the consume hook, which runs in main-loop
- * context where a timer read is safe and cheap. */
+ * input_note_row_scan() runs in the row ISR on every key-row sample and is
+ * where per-row timing lives (an ISR-safe tick read, no locks); the consume
+ * hook runs in main-loop context and counts raw edges. Until 2026-09-03 this
+ * driver published after scanning ONE row per main-loop consume, so `scan_rate`
+ * -- which counts matrix_scan() calls -- was NOT a full-matrix refresh rate.
+ * Every row is now sampled every cycle (see shared_matrix_scan_keys); the hooks
+ * remain so the fix stays measurable. */
 __attribute__((weak)) void input_note_row_scan(uint8_t row) { (void)row; }
 __attribute__((weak)) void input_note_consume(const matrix_row_t *raw, const matrix_row_t *fresh, uint8_t rows) {
     (void)raw; (void)fresh; (void)rows;
@@ -414,12 +411,16 @@ __attribute__((weak)) void input_note_consume(const matrix_row_t *raw, const mat
  * before debounce ever saw them. See docs/hardware.md and
  * plans/MATRIX-PUBLISH-PLAN.md.
  *
- * NOW: the key row advances every third PWM ISR (4.8 MHz / 256 ticks = 18,750
- * ISR/s -> 6,250 rows/s), so every row is sampled ~1041.7 times a second
- * regardless of the consume rate or its phase -- ~1 ms between looks at any key
- * instead of up to 169 ms. matrix_scanned becomes a DIRTY FLAG rather than a
- * gate; the main loop's compare/copy/clear runs under chSysLock() so the ISR
- * cannot land mid-copy (same pattern as sn32f2xx_flush() below).
+ * NOW: the key row advances every third PWM ISR, so every row is sampled once
+ * per 18-slot cycle regardless of the consume rate or its phase. The timer
+ * arithmetic (4.8 MHz / 256 ticks) says 18,750 ISR/s and ~1042 samples/s per
+ * row; MEASURED is ~3,870 ISR/s and ~215 samples/s per row (4.6 ms between
+ * looks at any key, down from up to 169 ms). The gap is the ISR's own duration:
+ * rgb_callback() re-arms the counter at its END, so its period is ISR time plus
+ * ~53 us, not 53 us -- see the sn32f2xx_isr_*_hook() instrumentation and
+ * docs/hardware.md. matrix_scanned becomes a DIRTY FLAG rather than a gate; the
+ * main loop's compare/copy/clear runs under chSysLock() so the ISR cannot land
+ * mid-copy (same pattern as sn32f2xx_flush() below).
  *
  * The old matrix_locked/first_scanned interlock existed to keep row coverage
  * fair under the one-row scheme. Every row is now sampled every cycle, so it is
@@ -649,7 +650,16 @@ static void update_pwm_channels(PWMDriver *pwmp) {
 }
 #endif         // SN32F2XX_PWM_DIRECTION == ROW2COL
 
+/* Row-ISR cost instrumentation (weak; no-op elsewhere). The counter is re-armed
+ * at the END of rgb_callback(), so the ISR's own duration adds to its period
+ * and sets the real row rate. These hooks let a board measure that instead of
+ * deriving it from the timer configuration -- the two differ by ~4.8x on the
+ * AK820 Pro. Cost when implemented: two tick reads and a few adds per ISR. */
+__attribute__((weak)) void sn32f2xx_isr_enter_hook(void) {}
+__attribute__((weak)) void sn32f2xx_isr_exit_hook(void) {}
+
 static void rgb_callback(PWMDriver *pwmp) {
+    sn32f2xx_isr_enter_hook();
     // Disable the interrupt
     pwmDisablePeriodicNotification(pwmp);
 #if ((SN32F2XX_PWM_CONTROL == SOFTWARE_PWM) && (SN32F2XX_PWM_DIRECTION == COL2ROW))
@@ -721,6 +731,7 @@ static void rgb_callback(PWMDriver *pwmp) {
         }
 #endif
     }
+    sn32f2xx_isr_exit_hook();
     chSysLockFromISR();
     // Advance the timer to just before the wrap-around, that will start a new PWM cycle
     pwm_lld_change_counter(pwmp, UINT16_MAX);
