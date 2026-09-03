@@ -620,16 +620,23 @@ static void dbg_row(uint8_t row, const char *label, const char *value) {
     line[DBG_COLS] = '\0';
 }
 
-/* u32 -> decimal, no printf. Returns buf. */
-static char *dbg_u32(char *buf, uint32_t v) {
+/* u32 -> decimal, no printf.
+ *
+ * RETURNS THE END (the terminating NUL), like dbg_append, so the two compose.
+ * It used to return the START, which silently ATE EVERY NUMBER THAT HAD A
+ * SUFFIX: dbg_append(dbg_u32(p, 73), "%") wrote "73" and then overwrote it in
+ * place with "%". The panel showed "ISR cpu  %", "up  m  s", "rowgap  ms r3" --
+ * labels and units intact, values gone -- while bare numbers with nothing
+ * appended (ISR/s, scan/s, BT drop) were correct, which is what made the
+ * pattern legible. Both helpers must agree on which end they return. */
+static char *dbg_u32(char *p, uint32_t v) {
     char tmp[11];
     uint8_t n = 0;
     if (v == 0) tmp[n++] = '0';
     while (v) { tmp[n++] = (char)('0' + (v % 10)); v /= 10; }
-    uint8_t i = 0;
-    while (n) buf[i++] = tmp[--n];
-    buf[i] = '\0';
-    return buf;
+    while (n) *p++ = tmp[--n];
+    *p = '\0';
+    return p;
 }
 
 static char *dbg_append(char *p, const char *s) {
@@ -730,7 +737,8 @@ static void dbg_compose(void) {
          * ticks/s a full-precision d_tick * 100000 overflows u32. */
         dbg_append(dbg_u32(v, (d_tick / (hz / 1000u)) * 100u / d_ms), "%");
         dbg_row(1, "ISR cpu", v);
-        dbg_row(2, "ISR/s", dbg_u32(v, d_ent * 1000u / d_ms));
+        dbg_u32(v, d_ent * 1000u / d_ms);
+        dbg_row(2, "ISR/s", v);
     } else {
         dbg_row(1, "ISR cpu", "--");
         dbg_row(2, "ISR/s", "--");
@@ -751,12 +759,14 @@ static void dbg_compose(void) {
     p = dbg_append(dbg_u32(v, gap), "ms r");
     dbg_u32(p, grow);
     dbg_row(3, "rowgap", v);
-    dbg_row(4, "stall>25", dbg_u32(v, health_count_ge_25ms_nonflash()));
+    dbg_u32(v, health_count_ge_25ms_nonflash());
+    dbg_row(4, "stall>25", v);
 
     /* NOT a per-key sampling rate: it counts matrix_scan() calls and the ISR
      * samples ~4 rows per call. rowgap above is the one that bounds loss. */
 #ifdef DEBUG_MATRIX_SCAN_RATE
-    dbg_row(5, "scan/s", dbg_u32(v, (uint32_t)get_matrix_scan_rate()));
+    dbg_u32(v, (uint32_t)get_matrix_scan_rate());
+    dbg_row(5, "scan/s", v);
 #else
     dbg_row(5, "scan/s", "n/a");
 #endif
@@ -769,10 +779,11 @@ static void dbg_compose(void) {
      * own turnaround -- nothing lost. See docs/wireless.md. */
     uint32_t sent, to, drop;
     ch582_tx_stats(&sent, &to, &drop);
-    dbg_row(6, "BT drop", dbg_u32(v, drop));
+    dbg_u32(v, drop);
+    dbg_row(6, "BT drop", v);
     p = dbg_u32(v, to);
     if (sent) { p = dbg_append(p, " "); p = dbg_u32(p, (to * 100u) / sent); dbg_append(p, "%"); }
-    dbg_row(7, "BT t/o", v);
+    dbg_row(7, "BT t/o", v);   /* "352 49%" */
 
     /* batt / min. The module is the only thing that can read the cell and we
      * print its number verbatim -- almost certainly a voltage estimate, and
