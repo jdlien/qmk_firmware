@@ -779,10 +779,24 @@ static void dbg_compose(void) {
      * whole. >=10 ms cannot lose anything by itself -- the key is still down
      * when the loop catches up -- so it is the LEADING indicator, and a rising
      * count there is the warning that arrives before a keystroke goes missing. */
-    dbg_u32(v, health_count_ge_25ms_nonflash());
-    dbg_row(3, "stall>25", v);
-    dbg_u32(v, health_count_ge_10ms());
-    dbg_row(4, "stall>10", v);
+    p = dbg_append(dbg_u32(dbg_append(v, "25:"), health_count_ge_25ms_nonflash()), " 10:");
+    dbg_u32(p, health_count_ge_10ms());
+    dbg_row(3, "stall", v);
+
+    /* HOW BIG, AND WHAT IT WAS. The first question after the alarm fires, and
+     * until this row existed the panel could not answer it -- you needed a
+     * cable to read loop_gap_max_mark. "flash" is a wear-levelling
+     * consolidation: understood and bounded. "blit" during normal use is the
+     * LCD, and today that means the Fn+D dismiss (~44 ms, known). Anything
+     * else, or a mark you do not recognise, is worth reporting. */
+    p = dbg_append(dbg_u32(v, health_loop_gap_max_ms()), "ms ");
+    switch (health_loop_gap_max_mark()) {
+        case LOOP_MARK_FLASH: dbg_append(p, "flash"); break;
+        case LOOP_MARK_BLIT:  dbg_append(p, "blit");  break;
+        case LOOP_MARK_I2C:   dbg_append(p, "i2c");   break;
+        default:              dbg_append(p, "-");     break;
+    }
+    dbg_row(4, "worst", v);
 
     /* NOT a per-key sampling rate: it counts matrix_scan() calls and the ISR
      * samples ~4 rows per call. rowgap above is the one that bounds loss. */

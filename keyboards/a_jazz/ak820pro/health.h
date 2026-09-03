@@ -120,6 +120,11 @@ void     health_isr_stats(uint32_t *entries, uint32_t *ticks_sum,
 uint32_t health_isr_tick_hz(void);            /* CH_CFG_ST_FREQUENCY */
 uint16_t health_row_gap_max_ms(uint8_t *row); /* row may be NULL */
 uint32_t health_loop_gap_max_ms(void);
+/* What the worst gap WAS: LOOP_MARK_NONE/FLASH/BLIT/I2C. The first question
+ * after a stall alarm fires -- it separates "flash write, understood and
+ * bounded" from "blit" from something never seen before -- and without it the
+ * LCD debug page has to send you to a host for the answer. */
+uint8_t  health_loop_gap_max_mark(void);
 uint16_t health_count_ge_25ms_nonflash(void);
 /* The >=10 ms count. A stall shorter than the SHORTEST keypress (25 ms) cannot
  * lose a press -- the key is still down when the loop catches up -- so this is

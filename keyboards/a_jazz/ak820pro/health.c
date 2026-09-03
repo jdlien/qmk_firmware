@@ -336,6 +336,7 @@ uint16_t health_row_gap_max_ms(uint8_t *row) {
 }
 
 uint32_t health_loop_gap_max_ms(void)        { return loop_gap_max; }
+uint8_t  health_loop_gap_max_mark(void)      { return loop_gap_max_mark; }
 uint32_t health_count_ge_10ms(void) {
     return count_ge_10ms;
 }
