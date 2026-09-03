@@ -109,3 +109,15 @@ void health_fill3(uint8_t *out28);
  *   u32 row_samples_total -- u32 companion to page 3's u16 row_samples
  *   u32 reserved */
 void health_fill4(uint8_t *out28);
+
+/* Live readouts for the on-board display (graphics/display.c debug page).
+ * Main-loop context only; ISR-written sources are snapshotted under a short
+ * lock. Rates are the caller's job: take two snapshots and divide by the
+ * timer_read32() delta -- e.g. CPU share inside the row ISR is
+ * (d ticks_sum / health_isr_tick_hz()) / d seconds. */
+void     health_isr_stats(uint32_t *entries, uint32_t *ticks_sum,
+                          uint16_t *min_ticks, uint16_t *max_ticks);
+uint32_t health_isr_tick_hz(void);            /* CH_CFG_ST_FREQUENCY */
+uint16_t health_row_gap_max_ms(uint8_t *row); /* row may be NULL */
+uint32_t health_loop_gap_max_ms(void);
+uint16_t health_count_ge_25ms_nonflash(void);

@@ -316,6 +316,28 @@ void health_fill3(uint8_t *out28) {
     *p++ = MATRIX_ROWS;
 }
 
+void health_isr_stats(uint32_t *entries, uint32_t *ticks_sum, uint16_t *min_ticks, uint16_t *max_ticks) {
+    chSysLock();
+    *entries = isr_entries; *ticks_sum = isr_ticks_sum;
+    *min_ticks = isr_ticks_min; *max_ticks = isr_ticks_max;
+    chSysUnlock();
+}
+
+uint32_t health_isr_tick_hz(void) { return (uint32_t)CH_CFG_ST_FREQUENCY; }
+
+uint16_t health_row_gap_max_ms(uint8_t *row) {
+    uint16_t ticks; uint8_t r;
+    chSysLock();
+    ticks = row_gap_max_ticks; r = row_gap_max_row;
+    chSysUnlock();
+    if (row) *row = r;
+    uint32_t ms = TIME_I2MS(ticks);
+    return (uint16_t)(ms > 0xFFFFu ? 0xFFFFu : ms);
+}
+
+uint32_t health_loop_gap_max_ms(void)        { return loop_gap_max; }
+uint16_t health_count_ge_25ms_nonflash(void) { return count_ge_25ms_nonflash; }
+
 void health_fill4(uint8_t *out28) {
     uint32_t ie, its, rst, up;
     uint16_t imin, imax;
