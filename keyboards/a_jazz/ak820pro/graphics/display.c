@@ -715,7 +715,7 @@ static void dbg_compose(void) {
     if (up >= 3600u) { p = dbg_append(dbg_u32(p, up / 3600u), "h "); up %= 3600u; }
     p = dbg_append(dbg_u32(p, up / 60u), "m ");
     p = dbg_append(dbg_u32(p, up % 60u), "s");
-    dbg_row(0, "up", v);
+    dbg_row(0, "uptime", v);
 
     /* Row ISR occupancy. THE headline number: the row ISR is ~73% of this M0 at
      * idle, so it -- not the timer configuration -- sets the LED field rate,
