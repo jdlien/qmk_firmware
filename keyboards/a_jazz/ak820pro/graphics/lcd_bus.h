@@ -106,3 +106,12 @@ void lcd_fill_rect(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t 
 // flash 0x000000. Zero CPU in the data path, vs ~11-13 ms for a full-screen CPU
 // fill. Works for any rect: the source is uniform, so striding is irrelevant.
 void lcd_clear_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h);
+/* Same, but NON-BLOCKING: arms the DMA and returns. Poll lcd_blit_busy() before
+ * touching the panel again.
+ *
+ * lcd_clear_rect() ends in lcd_blit_wait(), so a FULL-SCREEN clear parks the
+ * main loop for the whole 32 KB transfer -- measured 44 ms, which
+ * count_ge_25ms_nonflash flags as long enough to lose a keypress. The DMA needs
+ * no CPU; waiting for it is pure loss. Use this wherever the caller can come
+ * back on a later pass. */
+void lcd_clear_rect_async(uint16_t x, uint16_t y, uint16_t w, uint16_t h);
