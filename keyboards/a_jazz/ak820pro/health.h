@@ -81,3 +81,15 @@ void health_fill(uint8_t *out28);
  *   u8  loop_gap_max_mark -- what the overall worst gap was (LOOP_MARK_*)
  *   u8  reserved */
 void health_fill2(uint8_t *out28);
+
+/* Third page (28 bytes), little-endian. Exists because the SN32 driver
+ * publishes ONE row per matrix_scan() call, so scan_rate is not a full-matrix
+ * refresh rate and cannot answer "how often is this key actually looked at".
+ *   u16 row_samples[6]  -- fairness across rows
+ *   u16 row_gap_max_ms  -- worst interval between samples of the SAME row
+ *   u32 raw_edges       -- raw transitions BEFORE debounce
+ *   u32 consumes        -- matrix_scan_custom calls
+ *   u32 cooked_changes  -- rows differing at consume time
+ *   u8  row_gap_max_row
+ *   u8  matrix_rows */
+void health_fill3(uint8_t *out28);

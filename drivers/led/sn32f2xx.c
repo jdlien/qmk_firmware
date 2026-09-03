@@ -382,6 +382,23 @@ static void shared_matrix_rgb_enable(void) {
 }
 
 #if defined(SHARED_MATRIX)
+/* Per-row input instrumentation (weak; no-op on every other SN32 board).
+ *
+ * WHY: this driver publishes after scanning ONE row -- matrix_scanned is set
+ * inside the per-row branch below -- and the main loop then copies the whole
+ * ROLLING matrix. So `scan_rate`, which counts matrix_scan() calls, is NOT a
+ * full-matrix refresh rate: with N rows a given key is only freshly sampled
+ * scan_rate/N times a second. A short press can therefore be missed before
+ * debounce ever sees it, and edges on different rows can be reordered.
+ *
+ * The ISR hook only records WHICH row was sampled -- one byte store plus an
+ * increment. All timing is done by the consume hook, which runs in main-loop
+ * context where a timer read is safe and cheap. */
+__attribute__((weak)) void input_note_row_scan(uint8_t row) { (void)row; }
+__attribute__((weak)) void input_note_consume(const matrix_row_t *raw, const matrix_row_t *fresh, uint8_t rows) {
+    (void)raw; (void)fresh; (void)rows;
+}
+
 static void shared_matrix_scan_keys(matrix_row_t current_matrix[], uint8_t current_key, uint8_t last_key) {
     // Scan the key matrix row or col, depending on DIODE_DIRECTION
     static uint8_t first_scanned;
@@ -416,6 +433,7 @@ static void shared_matrix_scan_keys(matrix_row_t current_matrix[], uint8_t curre
             }
 #        endif // SN32F2XX_PWM_DIRECTION
 #    endif     // DIODE_DIRECTION
+            input_note_row_scan(current_key);
             matrix_scanned = true;
         }
     }
@@ -856,6 +874,7 @@ void sn32f2xx_set_color_all(uint8_t r, uint8_t g, uint8_t b) {
 bool matrix_scan_custom(matrix_row_t current_matrix[]) {
     if (!matrix_scanned) return false; // Nothing to process until we have the matrix scanned
 
+    input_note_consume(raw_matrix, shared_matrix, MATRIX_ROWS);
     bool changed = memcmp(raw_matrix, shared_matrix, sizeof(shared_matrix)) != 0;
     if (changed) memcpy(raw_matrix, shared_matrix, sizeof(shared_matrix));
 

@@ -32,6 +32,62 @@ static uint16_t flash_gap_max = 0, blit_gap_max = 0, i2c_gap_max = 0;
  * cannot explain, and that is what must never regress. */
 static uint16_t count_ge_25ms_nonflash = 0;
 static uint16_t key_presses = 0;
+
+/* ---- Per-row input sampling (LOOP-BUDGET phase 1b) --------------------------
+ *
+ * The SN32 driver publishes after scanning ONE row, so scan_rate (which counts
+ * matrix_scan() calls) is NOT a full-matrix refresh rate: a given key is only
+ * freshly sampled scan_rate/MATRIX_ROWS times a second. At the measured ~372
+ * calls/s over 6 rows that is ~62/s per row -- ~16 ms between looks at any one
+ * key, not the 2.7 ms the aggregate counter implies. A press shorter than that
+ * gap can be missed BEFORE debounce, and edges on different rows can be
+ * reordered. Codex/gpt-5.6-sol identified this as the largest omission in the
+ * input-path plan; these counters exist to measure it rather than argue it.
+ *
+ * row_samples  -- fairness: are all rows sampled equally often?
+ * row_gap_max  -- worst observed interval between samples of the SAME row
+ * raw_edges    -- raw matrix transitions seen at consume time, i.e. BEFORE
+ *                 debounce. Compare against key_presses (which is AFTER
+ *                 debounce, in process_record_kb): a press and its release are
+ *                 two raw edges, so raw_edges ~= 2 x key_presses when nothing
+ *                 is being eaten in between. */
+static uint16_t row_samples[MATRIX_ROWS];
+static uint16_t row_gap_max = 0;
+static uint8_t  row_gap_max_row = 0;
+static uint32_t raw_edges = 0, consumes = 0, cooked_changes = 0;
+static volatile uint8_t last_row_scanned = 0;
+
+void input_note_row_scan(uint8_t row) {
+    /* ISR context: one store and one increment, no timer read. */
+    if (row < MATRIX_ROWS) { last_row_scanned = row; row_samples[row]++; }
+}
+
+void input_note_consume(const matrix_row_t *raw, const matrix_row_t *fresh, uint8_t rows) {
+    /* Main-loop context: safe to read the timer here. */
+    static uint32_t row_last_seen[MATRIX_ROWS];
+    uint8_t  r   = last_row_scanned;
+    uint32_t now = timer_read32();
+
+    consumes++;
+    if (r < MATRIX_ROWS) {
+        if (row_last_seen[r] && now >= HEALTH_SETTLE_MS) {
+            uint32_t gap = now - row_last_seen[r];
+            if (gap > row_gap_max && gap <= 0xFFFFu) {
+                row_gap_max = (uint16_t)gap;
+                row_gap_max_row = r;
+            }
+        }
+        row_last_seen[r] = now;
+    }
+
+    /* Raw edges: population count of the XOR, per row, before the copy. */
+    for (uint8_t i = 0; i < rows; i++) {
+        matrix_row_t diff = raw[i] ^ fresh[i];
+        if (!diff) continue;
+        cooked_changes++;              /* rows differing at consume time */
+        while (diff) { raw_edges += (diff & 1u); diff >>= 1; }
+    }
+}
 static uint8_t  loop_gap_max_mark = LOOP_MARK_NONE;
 static uint8_t  last_mark = LOOP_MARK_NONE;
 
@@ -77,6 +133,9 @@ void health_reset(void) {
     count_ge_10ms = 0; count_ge_25ms = 0; passes = 0;
     flash_writes = 0; flash_gap_max = 0; blit_gap_max = 0; i2c_gap_max = 0;
     count_ge_25ms_nonflash = 0; key_presses = 0; rx_malformed = 0;
+    for (uint8_t i = 0; i < MATRIX_ROWS; i++) row_samples[i] = 0;
+    row_gap_max = 0; row_gap_max_row = 0;
+    raw_edges = 0; consumes = 0; cooked_changes = 0;
     chSysUnlock();
 }
 
@@ -185,4 +244,27 @@ void health_task(void) {
            watchdog_fired_last_boot() ? " FIRED" : "",
            watchdog_degraded() ? " DEGRADED" : "");
 #endif
+}
+
+void health_fill3(uint8_t *out28) {
+    uint16_t rs[MATRIX_ROWS], gm;
+    uint8_t  gr;
+    uint32_t re, cs, cc;
+    chSysLock();
+    for (uint8_t i = 0; i < MATRIX_ROWS; i++) rs[i] = row_samples[i];
+    gm = row_gap_max; gr = row_gap_max_row;
+    re = raw_edges;   cs = consumes; cc = cooked_changes;
+    chSysUnlock();
+
+    uint32_t v;
+    uint8_t *p = out28;
+#define PUT32(x) do { v = (x); *p++ = v & 0xFF; *p++ = (v >> 8) & 0xFF; *p++ = (v >> 16) & 0xFF; *p++ = (v >> 24) & 0xFF; } while (0)
+#define PUT16(x) do { v = (x); *p++ = v & 0xFF; *p++ = (v >> 8) & 0xFF; } while (0)
+    for (uint8_t i = 0; i < 6; i++) PUT16(i < MATRIX_ROWS ? rs[i] : 0);  /* 12 */
+    PUT16(gm);                                                           /* 14 */
+    PUT32(re); PUT32(cs); PUT32(cc);                                     /* 26 */
+#undef PUT16
+#undef PUT32
+    *p++ = gr;
+    *p++ = MATRIX_ROWS;
 }

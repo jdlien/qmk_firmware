@@ -39,3 +39,34 @@ VPATH += rtc
 
 # Board-local RGB effects (rgb_matrix_kb.inc): RAINFALL
 RGB_MATRIX_CUSTOM_KB = yes
+
+# Debounce: per-key deferred. NOT the QMK default (sym_defer_g), NOT eager.
+#
+# sym_defer_g's real defect is that its timer is GLOBAL: any key changing
+# restarts it, and the commit compares FINAL matrix state, so a key that goes
+# down and back up before the WHOLE matrix is quiet for DEBOUNCE ms leaves
+# raw == cooked and the press is discarded. QMK tests exactly this case
+# (quantum/debounce/tests/sym_defer_g_tests.cpp:63). It is invisible to
+# health.c's key_presses, which lives in process_record_kb, AFTER debounce.
+#
+# ⚠️ BUT the rate of that swallow was OVERSTATED here on 2026-09-03 and the
+# claim is retracted: the global timer restarts on a raw STATE CHANGE, not on
+# every scan. Sustaining it needs ~185 raw transitions/s; real typing at
+# 10-15 keys/s produces 20-30 edges/s, tens of ms apart. It is an edge case,
+# not the demonstrated cause of the dropped characters. See
+# plans/review-codex-sol-2026-09-03.md.
+#
+# sym_defer_pk removes the cross-key coupling -- each key has its own counter,
+# so one key's activity can no longer extend or batch another's -- while still
+# requiring a stable press per key. Per-key also removes the batched commit
+# that discarded key ORDER (matrix_task emits in row/col order, not press
+# order), which is the transposition mechanism.
+#
+# asym_eager_defer_pk was tried and REVERTED. Eager reports the first closure
+# immediately, so on a worn switch an isolated noise closure becomes a phantom
+# tap or a false hold -- a worse failure than a drop on a board whose owner has
+# replaced corroded switches before. It also delays release ~5-10 ms, which can
+# flip tap-hold decisions near TAPPING_TERM.
+#
+# Do NOT shorten DEBOUNCE below 5 without switch traces.
+DEBOUNCE_TYPE = sym_defer_pk
