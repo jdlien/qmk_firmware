@@ -33,6 +33,12 @@
  * state; the stock firmware periodically sends `A6 53` and the module answers with
  * a `5C <pct>` frame. (The LCD clock is NOT on this wire: the set-time utility
  * talks to the MCU directly, so time never crosses the CH582 serial link.) */
+/* Retry cadence for the FIRST reading only, until the module has answered once.
+ * Short because a boot with no battery shown is the visible symptom, and each
+ * attempt is one ~10-byte frame. */
+#ifndef CH582_BATTERY_FIRST_POLL_MS
+#    define CH582_BATTERY_FIRST_POLL_MS 250
+#endif
 #ifndef CH582_BATTERY_POLL_MS
 #    define CH582_BATTERY_POLL_MS 5000
 #endif
@@ -196,6 +202,12 @@ static struct {
 static uint16_t         last_attempt_time = 0;
 /* Last time a battery poll (A6 53) was sent. */
 static uint16_t         last_battery_poll = 0;
+/* Battery observability (debug page). battery_level alone cannot distinguish
+ * "the module says 100%" from "the module has never answered", because the
+ * 0xFF initial value is masked by the d <= 100 guard on the way in. */
+static uint16_t         battery_last_recv = 0;
+static bool             battery_seen      = false;
+static uint8_t          battery_min       = 100;
 
 /* Request a battery-level report from the module. Logic-analyzer-decoded from the
  * stock firmware: the MCU sends `A6 53` and the module replies with a `5C <pct>`
@@ -668,6 +680,20 @@ uint8_t ch582_get_battery(void) {
     return battery_level;
 }
 
+/* Lowest percent ever reported since boot, or 0xFF if the module has never
+ * answered at all. Still 100 after weeks of use means either the cell has never
+ * meaningfully discharged or the number is not tracking anything. */
+uint8_t ch582_battery_min(void) {
+    return battery_seen ? battery_min : 0xFF;
+}
+
+/* Milliseconds since the last 5C frame, saturating at 0xFFFF. UINT32_MAX if the
+ * module has never sent one -- the caller must not render that as an age. */
+uint32_t ch582_battery_age_ms(void) {
+    if (!battery_seen) return UINT32_MAX;
+    return timer_elapsed(battery_last_recv);
+}
+
 uint8_t ch582_get_host_leds(void) {
     return host_leds;
 }
@@ -797,7 +823,21 @@ void ch582_task(void) {
         }
     }
 
-    if (timer_elapsed(last_battery_poll) >= CH582_BATTERY_POLL_MS) {
+    /* First poll fires as soon as the module answers ANYTHING, not a full
+     * CH582_BATTERY_POLL_MS after boot.
+     *
+     * last_battery_poll starts at 0 and timer_elapsed() is measured from boot,
+     * so the old form waited out the whole 5 s interval before asking even
+     * once -- which is exactly the "battery appears a few seconds late on every
+     * boot" the owner noticed. Asking earlier than module_alive is pointless:
+     * at cold boot the module's UART is not up yet and the frame is dropped
+     * (the same reason the connect select needs its own cold-boot retry). */
+    if (module_alive && !battery_seen) {
+        if (timer_elapsed(last_battery_poll) >= CH582_BATTERY_FIRST_POLL_MS) {
+            last_battery_poll = timer_read();
+            ch582_poll_status();
+        }
+    } else if (timer_elapsed(last_battery_poll) >= CH582_BATTERY_POLL_MS) {
         last_battery_poll = timer_read();
         ch582_poll_status();
     }
@@ -948,7 +988,19 @@ void ch582_task(void) {
                     break;
                 case 0x5C: /* battery percent; PERIODIC and link-independent (streams
                             * even while disconnected) -> do NOT touch connection state */
-                    if (d <= 100) battery_level = d;
+                    if (d <= 100) {
+                        battery_level     = d;
+                        battery_last_recv = timer_read();
+                        battery_seen      = true;
+                        /* Lowest ever seen, for the debug page. The module is the
+                         * only thing that can read the cell, and we have no idea
+                         * how good its estimate is -- almost certainly a voltage
+                         * reading, and lithium voltage is flat through the middle
+                         * of the curve. A board that spends its life on the cable
+                         * may report 100 forever, and a min that never moves off
+                         * 100 is the cheapest possible evidence of that. */
+                        if (d < battery_min) battery_min = d;
+                    }
                     break;
             }
 #if CH582_ACK_FRAMES

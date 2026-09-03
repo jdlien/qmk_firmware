@@ -93,6 +93,18 @@ void display_clear_text(void);
  * ROM bootloader; the panel retains the image across that reset. */
 void display_bootloader_splash(void);
 
+/* --- Fn+D debug page ---------------------------------------------------------
+ * Full-panel diagnostics, toggled from process_record_kb.
+ *
+ * For UNTETHERED use: with the cable attached ak820health.py reads all of this
+ * over raw HID in any slider position. This is the readout when no host is
+ * attached -- and BT -> cable is a brownout reset, so plugging in to look
+ * destroys the wireless session's counters. Toggling takes the panel over and
+ * hands it back with a full dashboard repaint; refuses while the animation
+ * player owns the bus. */
+void display_debug_toggle(void);
+bool display_debug_active(void);
+
 /* Playback position, drawn in place of the clock while media is PLAYING.
  * pos/dur are whole seconds; state 0 hands the band back to the clock.
  * The firmware advances pos itself once per second, so the host only has to

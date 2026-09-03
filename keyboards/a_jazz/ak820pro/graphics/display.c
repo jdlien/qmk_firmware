@@ -14,6 +14,11 @@
 #include "rtc/rtc.h"
 #include "kb_eeconfig.h"   /* persisted backlight level (phase 4) */
 #include "ak820pro.h"      /* LOOP_SITE profiler (LOOPGAP_INSTRUMENT) */
+/* Also included further down beside the connection-state code, which is where
+ * it historically lived; #pragma once makes the duplicate free. Hoisted because
+ * the Fn+D debug page sits above that point and reads the battery and TX
+ * counters through it. */
+#include "bluetooth/ch582f_ajazz.h"
 
 
 
@@ -99,6 +104,7 @@
  * refactor that silently caches it. (Audit C-2.) */
 static volatile bool display_powered = true;
 static bool display_paused  = false;   // true while the flash-animation player owns the bus
+static bool debug_active    = false;   // true while the Fn+D debug page owns the panel
 static bool splash_cleared = false;
 static bool mac_mode = false;
 
@@ -306,6 +312,7 @@ static bool display_backlight_init(void) {
 static bool clock_force_repaint = true;
 
 static void draw_status(bool force); // CH582F status: battery + channel digit
+static void draw_debug_page(void);   // Fn+D full-panel diagnostics
 static void draw_conn_row(void);      // three-transport strip, top row
 
 /* ---- Playback position ----------------------------------------------------
@@ -561,6 +568,140 @@ static void draw_playback(void) {
  *       USB Device ID:     13px   y 91
  *         0C45:7140        20px   y 105
  */
+/* --- Fn+D debug page ---------------------------------------------------------
+ *
+ * EXISTS FOR UNTETHERED USE. With the cable attached, ak820health.py reads all
+ * of this and more over raw HID in ANY slider position (commit 4b86d95014 sends
+ * raw-HID replies over USB in wireless mode; ak820health.py's docstring still
+ * claims otherwise and is stale). So this page is NOT the only way to see these
+ * counters -- it is the only way to see them with no host attached, which is
+ * exactly when the CH582F link is carrying your keystrokes and is the thing you
+ * would want to look at.
+ *
+ * The second reason is that BT -> cable is a BROWNOUT RESET (readme.md's
+ * measured transition matrix; cable -> BT is the only flip that survives). So
+ * plugging in to investigate a wireless session destroys the very counters you
+ * went to read. You read this page with your eyes, so the reset never happens.
+ *
+ * Owns the whole panel while active: display_housekeeping_task() returns here
+ * instead of drawing the dashboard, and the toggle repaints the dashboard on
+ * the way out. 21 columns x 9 rows in the 6x14 face -- cramming is fine, you
+ * are already leaning in when you press Fn+D. */
+#define DBG_ROWS      9
+#define DBG_ROW_H     14
+#define DBG_COLS      (PANEL_WIDTH / FONT_SMALL_ADV)   /* 21 */
+_Static_assert(DBG_ROWS * DBG_ROW_H <= PANEL_HEIGHT, "debug page must fit the panel");
+
+/* Right-align a value under a fixed-width label: "sent" + 711 -> "sent    711".
+ * Fixed columns beat a running printf here because the numbers change every
+ * second and a jumping column is much harder to read at 6px than a still one. */
+static void dbg_row(uint8_t row, const char *label, const char *value) {
+    char line[DBG_COLS + 1];
+    uint8_t i = 0;
+    while (label[i] && i < DBG_COLS) { line[i] = label[i]; i++; }
+    uint8_t vn = 0;
+    while (value[vn]) vn++;
+    if (vn > DBG_COLS) vn = DBG_COLS;
+    uint8_t start = (vn >= DBG_COLS) ? 0 : (uint8_t)(DBG_COLS - vn);
+    while (i < start) line[i++] = ' ';
+    for (uint8_t k = 0; k < vn && i < DBG_COLS; k++) line[i++] = value[k];
+    line[i] = '\0';
+    lcd_draw_flash_text(FONT_SMALL, 0, (uint16_t)(row * DBG_ROW_H), line);
+}
+
+/* u32 -> decimal, no printf. Returns buf. */
+static char *dbg_u32(char *buf, uint32_t v) {
+    char tmp[11];
+    uint8_t n = 0;
+    if (v == 0) tmp[n++] = '0';
+    while (v) { tmp[n++] = (char)('0' + (v % 10)); v /= 10; }
+    uint8_t i = 0;
+    while (n) buf[i++] = tmp[--n];
+    buf[i] = '\0';
+    return buf;
+}
+
+static char *dbg_append(char *p, const char *s) {
+    while (*s) *p++ = *s++;
+    *p = '\0';
+    return p;
+}
+
+static void draw_debug_page(void) {
+    /* Repaint on the RTC second, like the clock: these are counters, not an
+     * animation, and the glyph queue is shared with everything else. */
+    static uint32_t last_sec = UINT32_MAX;
+    uint32_t sec = rtc_get_seconds();
+    if (sec == last_sec) return;
+    last_sec = sec;
+
+    char v[24], *p;
+
+    /* Uptime -- the timebase for every since-boot counter below, and the thing
+     * that says whether a reading is meaningful yet. */
+    uint32_t up = timer_read32() / 1000u;
+    p = v;
+    if (up >= 3600u) { p = dbg_append(dbg_u32(p, up / 3600u), "h "); up %= 3600u; }
+    p = dbg_append(dbg_u32(p, up / 60u), "m ");
+    p = dbg_append(dbg_u32(p, up % 60u), "s");
+    dbg_row(0, "up", v);
+
+    /* Battery. `now` is what the panel shows; `min` is the whole point -- if it
+     * is still 100 after weeks, the module's estimate is not tracking anything.
+     * `age` catches a module that has stopped answering, which `now` cannot:
+     * battery_level holds its last value forever. */
+    uint8_t batt = ch582_get_battery();
+    uint8_t bmin = ch582_battery_min();
+    dbg_row(1, "batt", batt <= 100 ? dbg_append(dbg_u32(v, batt), "%") : (dbg_append(v, "--"), v));
+    dbg_row(2, "min",  bmin <= 100 ? dbg_append(dbg_u32(v, bmin), "%") : (dbg_append(v, "never"), v));
+    uint32_t age = ch582_battery_age_ms();
+    if (age == UINT32_MAX) dbg_append(v, "never");
+    else                   dbg_append(dbg_u32(v, age / 1000u), "s");
+    dbg_row(3, "age", v);
+
+    /* CH582F link. sent/tmout/drop are SINCE BOOT and health_reset() cannot
+     * clear them -- they live here, not in health.c. drop is the one that
+     * matters: a frame is only abandoned after CH582_TX_MAX_RETRIES consecutive
+     * timeouts, so a non-zero drop over BT is a KEYSTROKE THAT NEVER ARRIVED.
+     * A high tmout with drop 0 is just the 10 ms ACK deadline sitting at the
+     * module's own turnaround; nothing is lost. See docs/wireless.md. */
+    uint32_t sent, to, drop;
+    ch582_tx_stats(&sent, &to, &drop);
+    dbg_row(4, "BT sent", dbg_u32(v, sent));
+    p = dbg_u32(v, to);
+    if (sent) { p = dbg_append(p, " "); p = dbg_u32(p, (to * 100u) / sent); dbg_append(p, "%"); }
+    dbg_row(5, "  tmout", v);
+    dbg_row(6, "  drop", dbg_u32(v, drop));
+
+    /* Scan rate. NOT a per-key sampling rate: it counts matrix_scan() calls,
+     * and the ISR samples ~4 rows per call. The per-row figure that actually
+     * bounds keystroke loss lives in health.c and belongs on this page too --
+     * see the note in docs/hardware.md. */
+#ifdef DEBUG_MATRIX_SCAN_RATE
+    dbg_row(7, "scan/s", dbg_u32(v, (uint32_t)get_matrix_scan_rate()));
+#else
+    dbg_row(7, "scan/s", "n/a");
+#endif
+    dbg_row(8, "mode", connection_mode == CONN_MODE_WIRED     ? "wired"
+                     : connection_mode == CONN_MODE_BLUETOOTH ? "BT" : "2.4G");
+}
+
+bool display_debug_active(void) {
+    return debug_active;
+}
+
+void display_debug_toggle(void) {
+    /* Refuse while the animation player owns the bus rather than drawing over
+     * it: both would keep blitting and the panel would tear between them. */
+    if (!debug_active && display_paused) return;
+    debug_active = !debug_active;
+    if (debug_active) {
+        lcd_clear_rect(0, 0, PANEL_WIDTH, PANEL_HEIGHT);
+    } else {
+        display_redraw_dashboard(0, NULL);   /* hand the panel back, full repaint */
+    }
+}
+
 void display_bootloader_splash(void) {
     /* Force the panel on and to full brightness -- the user may have been
      * running it at the dimmest step, and this is the one screen that must be
@@ -1879,6 +2020,7 @@ void display_housekeeping_task(void) {
         return;
 
     if (display_paused) return;   // animation owns the bus
+    if (debug_active) { draw_debug_page(); return; }   // Fn+D owns the panel
 
     if (splash_cleared) {
         /* A queued line is mid-paint: let the pump finish before any owner

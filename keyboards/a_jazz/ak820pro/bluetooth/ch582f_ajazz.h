@@ -49,6 +49,11 @@ uint8_t ch582_get_target_slot(void);
 
 /* Battery level reported by the module (0-100, 0xFF = unknown). From 5C frames. */
 uint8_t ch582_get_battery(void);
+/* Lowest percent ever reported since boot; 0xFF if the module has never
+ * answered. Debug-page only -- see the note at the 0x5C parse site. */
+uint8_t  ch582_battery_min(void);
+/* ms since the last 5C frame; UINT32_MAX if there has never been one. */
+uint32_t ch582_battery_age_ms(void);
 /* Host LED bitmap last reported by the module (USB LED bits; bit1 = caps). From 5A frames. */
 uint8_t ch582_get_host_leds(void);
 

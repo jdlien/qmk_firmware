@@ -65,6 +65,11 @@ enum ak820pro_keycodes {
     SCR_UP,                // LCD backlight brighter
     SCR_DN,                // LCD backlight dimmer
     CLK_MODE,              // Fn+C: clock band format, 24h -> 12h (AM/PM) -> off
+    DBG_PAGE,              /* Fn+D: full-panel diagnostics. The panel is the only
+                            * readout that works wirelessly -- raw HID needs the
+                            * cable position, and BT -> cable brownout-resets the
+                            * board, so a wireless session's counters die exactly
+                            * when they become readable. */
     AK820PRO_SAFE_RANGE
 };
 

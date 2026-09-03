@@ -351,6 +351,9 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
 #endif
             }
             return false;
+        case DBG_PAGE:
+            if (record->event.pressed) display_debug_toggle();
+            return false;
         case QK_BOOT:
             /* Draw the bootloader notice BEFORE handing off to QMK, which then
              * resets into the ROM bootloader.
