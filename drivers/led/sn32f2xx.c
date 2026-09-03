@@ -107,7 +107,10 @@ static matrix_row_t row_shifter = MATRIX_ROW_SHIFTER;
 extern matrix_row_t  raw_matrix[MATRIX_ROWS];    // raw values
 extern matrix_row_t  matrix[MATRIX_ROWS];        // debounced values
 static matrix_row_t  shared_matrix[MATRIX_ROWS]; // scan values
-static volatile bool matrix_locked  = false;     // matrix update check
+/* Dirty flag: the ISR sets it when it has scanned something new, the main loop
+ * clears it after consuming. NOT a scan gate -- see shared_matrix_scan_keys().
+ * (The old matrix_locked interlock that paired with it is gone; the scheme it
+ * balanced coverage for no longer exists.) */
 static volatile bool matrix_scanned = false;
 #endif // SHARED MATRIX
 /* +1 so a channel at FULL brightness still has a match to hit.
@@ -399,19 +402,36 @@ __attribute__((weak)) void input_note_consume(const matrix_row_t *raw, const mat
     (void)raw; (void)fresh; (void)rows;
 }
 
+/* Scan on EVERY key-row transition, straight into shared_matrix.
+ *
+ * WHAT THIS REPLACES: the old code gated scanning on `!matrix_scanned`, so at
+ * most one row was sampled per main-loop consume. Which row that was depended
+ * on the phase between the consume rate and the PWM row cycle -- an ALIASING
+ * BEAT of 1/|1041.667 - 3*f_consume|, which near resonance is enormous. Measured
+ * on hardware 2026-09-03: a key went 156-169 ms without being sampled on an idle
+ * board, with the main loop running perfectly and every stall counter at zero.
+ * A keypress lasts 25-80 ms, so presses fell into that window and were lost
+ * before debounce ever saw them. See docs/hardware.md and
+ * plans/MATRIX-PUBLISH-PLAN.md.
+ *
+ * NOW: the key row advances every third PWM ISR (4.8 MHz / 256 ticks = 18,750
+ * ISR/s -> 6,250 rows/s), so every row is sampled ~1041.7 times a second
+ * regardless of the consume rate or its phase -- ~1 ms between looks at any key
+ * instead of up to 169 ms. matrix_scanned becomes a DIRTY FLAG rather than a
+ * gate; the main loop's compare/copy/clear runs under chSysLock() so the ISR
+ * cannot land mid-copy (same pattern as sn32f2xx_flush() below).
+ *
+ * The old matrix_locked/first_scanned interlock existed to keep row coverage
+ * fair under the one-row scheme. Every row is now sampled every cycle, so it is
+ * dead and removed rather than left to disagree with this. */
 static void shared_matrix_scan_keys(matrix_row_t current_matrix[], uint8_t current_key, uint8_t last_key) {
-    // Scan the key matrix row or col, depending on DIODE_DIRECTION
-    static uint8_t first_scanned;
-    if (!matrix_scanned) {
-        if (!matrix_locked) {
-            matrix_locked = true;
-            first_scanned = current_key;
-        } else {
-            if ((last_key != current_key) && (current_key == first_scanned)) {
-                matrix_locked = false;
-            }
-        }
-        if (matrix_locked) {
+    /* Bit per row; suppress readiness until every row has been sampled at least
+     * once, so the main loop never consumes uninitialised rows after boot. */
+    static uint8_t rows_seen = 0;
+#    define SHARED_MATRIX_ALL_ROWS ((uint8_t)((1u << ROWS_PER_HAND) - 1u))
+
+    if (last_key != current_key) {   /* a genuinely new row is energised */
+        {
 #    if (DIODE_DIRECTION == COL2ROW)
 #        if (SN32F2XX_PWM_DIRECTION == DIODE_DIRECTION)
             matrix_read_cols_on_row(current_matrix, current_key);
@@ -434,9 +454,14 @@ static void shared_matrix_scan_keys(matrix_row_t current_matrix[], uint8_t curre
 #        endif // SN32F2XX_PWM_DIRECTION
 #    endif     // DIODE_DIRECTION
             input_note_row_scan(current_key);
-            matrix_scanned = true;
         }
+        if (rows_seen != SHARED_MATRIX_ALL_ROWS) {
+            rows_seen |= (uint8_t)(1u << current_key);
+            if (rows_seen != SHARED_MATRIX_ALL_ROWS) return;   /* not complete yet */
+        }
+        matrix_scanned = true;   /* dirty flag: something new since last consume */
     }
+#    undef SHARED_MATRIX_ALL_ROWS
 }
 #endif // SHARED_MATRIX
 
@@ -874,11 +899,19 @@ void sn32f2xx_set_color_all(uint8_t r, uint8_t g, uint8_t b) {
 bool matrix_scan_custom(matrix_row_t current_matrix[]) {
     if (!matrix_scanned) return false; // Nothing to process until we have the matrix scanned
 
+    /* Instrumentation first and UNLOCKED on purpose: it reads the timer, which
+     * must not be called inside chSysLock(). A torn read here only skews a
+     * counter, never behaviour. */
     input_note_consume(raw_matrix, shared_matrix, MATRIX_ROWS);
+
+    /* The ISR now writes shared_matrix on every row transition (~6250/s), so the
+     * compare/copy must exclude it or the loop can consume a matrix that is part
+     * new and part old -- the same hazard sn32f2xx_flush() locks against. */
+    chSysLock();
     bool changed = memcmp(raw_matrix, shared_matrix, sizeof(shared_matrix)) != 0;
     if (changed) memcpy(raw_matrix, shared_matrix, sizeof(shared_matrix));
-
     matrix_scanned = false;
+    chSysUnlock();
 
     return changed;
 }

@@ -58,27 +58,38 @@ static uint32_t raw_edges = 0, consumes = 0, cooked_changes = 0;
 static volatile uint8_t last_row_scanned = 0;
 
 void input_note_row_scan(uint8_t row) {
-    /* ISR context: one store and one increment, no timer read. */
-    if (row < MATRIX_ROWS) { last_row_scanned = row; row_samples[row]++; }
+    /* ISR context. Timing MUST happen here now.
+     *
+     * It used to live in input_note_consume() because the ISR published one row
+     * per consume, so "time between consumes naming row R" was the same thing as
+     * "time between samples of row R". Since the publish fix the ISR scans every
+     * row transition (~4 rows per consume), so the consume-side version refreshed
+     * only one row's timestamp and reported a meaningless number -- it showed
+     * 159-308 ms while sampling had actually improved 4x. Measure where the event
+     * happens.
+     *
+     * chVTGetSystemTimeX() is the ISR-safe (X-suffixed) ChibiOS time source;
+     * timer_read32() takes a lock and must not be called from here. */
+    if (row >= MATRIX_ROWS) return;
+    static systime_t row_last[MATRIX_ROWS];
+    systime_t now = chVTGetSystemTimeX();
+
+    last_row_scanned = row;
+    row_samples[row]++;
+    if (row_last[row]) {
+        uint32_t ms = (uint32_t)TIME_I2MS(now - row_last[row]);
+        if (ms > row_gap_max && ms <= 0xFFFFu) {
+            row_gap_max     = (uint16_t)ms;
+            row_gap_max_row = row;
+        }
+    }
+    row_last[row] = now;
 }
 
 void input_note_consume(const matrix_row_t *raw, const matrix_row_t *fresh, uint8_t rows) {
     /* Main-loop context: safe to read the timer here. */
-    static uint32_t row_last_seen[MATRIX_ROWS];
-    uint8_t  r   = last_row_scanned;
-    uint32_t now = timer_read32();
-
     consumes++;
-    if (r < MATRIX_ROWS) {
-        if (row_last_seen[r] && now >= HEALTH_SETTLE_MS) {
-            uint32_t gap = now - row_last_seen[r];
-            if (gap > row_gap_max && gap <= 0xFFFFu) {
-                row_gap_max = (uint16_t)gap;
-                row_gap_max_row = r;
-            }
-        }
-        row_last_seen[r] = now;
-    }
+    /* Per-row gap timing moved into the ISR -- see input_note_row_scan(). */
 
     /* Raw edges: population count of the XOR, per row, before the copy. */
     for (uint8_t i = 0; i < rows; i++) {
