@@ -150,7 +150,15 @@ static volatile uint16_t slew_count = 0;      /* slews started, for the console/
  * the ratio into P_target. 64-bit sums (128 x 40000 x 1000 overflows 32). */
 #define LATE_CYCLES     170    /* ~5 ms: T0.2 measured max 7 */
 #define WIN_INITIAL     32
-#define WIN_LOCKED      128
+/* Was 128. The ILRC wanders a few hundred ppm on 5-minute scales (measured
+ * 2026-09-03 against a reference proven clean: the nominal period walked
+ * 33225 -> 33198 -> 33260 -> 33248 within an hour), and a 128-s window with
+ * half-steps lagged it by 100-160 ms per 5 min. A 32-s window costs ~2 ticks
+ * (~60 ppm) of estimate noise per window -- the window's frame count is exact
+ * to +-1 frame at each end -- against the 5-10 ticks the target moves between
+ * windows, so tracking wins. Both windows being 32 leaves the lock streak
+ * with nothing to switch; it is kept as the console's lock indicator. */
+#define WIN_LOCKED      32
 static volatile uint64_t win_ms = 0, win_cycles = 0;
 static volatile uint16_t win_n = 0;
 static volatile bool     win_valid = true;
@@ -620,9 +628,21 @@ static void rtc_ref_task(void)
     else win_locked_streak = 0;
     if (win_locked_streak >= 2) win_target = WIN_LOCKED;
 
+    /* Step size. Half-step damping exists because a single window's target
+     * carries ~2 ticks of frame-quantisation noise and applying all of it
+     * would ring. But when two consecutive windows agree on the DIRECTION the
+     * target is moving in, that is drift, not noise -- the ILRC wandering --
+     * and half-stepping just lags it. So: half on the first window that
+     * disagrees with the last (noise, or the onset of a move), full once two
+     * in a row agree. Noise alternates sign and gets halved; drift persists
+     * and gets followed within one window. */
+    static int8_t last_sign = 0;
     if (delta != 0) {
-        uint32_t np = (uint32_t)((int32_t)P_nom + delta / 2);
+        int8_t   sign = (delta > 0) ? 1 : -1;
+        uint32_t np   = (uint32_t)((int32_t)P_nom + delta / 2);
         if (delta == 1 || delta == -1) np = (uint32_t)P_target;      /* integer half-step would stall */
+        else if (sign == last_sign)    np = (uint32_t)P_target;      /* two windows agree: follow it */
+        last_sign = sign;
 #ifdef CONSOLE_ENABLE
         printf("[rtc] sof window n=%u ms=%lu -> f=%lu target=%ld P %lu -> %lu\n",
                n, (unsigned long)ms, (unsigned long)f_est, (long)P_target,
@@ -630,6 +650,8 @@ static void rtc_ref_task(void)
 #endif
         P_nom = np;
         reload_pending = true;
+    } else {
+        last_sign = 0;
     }
     /* Persist any accepted sane value after 10 min uptime when it moved
      * >= 64 ticks from the stored one (PLAN.md C3; was 32) -- INCLUDING a
