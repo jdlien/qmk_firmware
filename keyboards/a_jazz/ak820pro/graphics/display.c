@@ -108,6 +108,7 @@ static bool display_paused  = false;   // true while the flash-animation player 
 static bool debug_active    = false;   // true while the Fn+D debug page owns the panel
 static uint8_t debug_exit_step  = 0;   // >0 while the dashboard is being restored
 static uint8_t debug_clear_band = 0;   // >0 while the entry clear is banding down the panel
+static bool    locks_stage_first = true; // restore: the next lock-band pass forgets the (cleared) band
 static bool splash_cleared = false;
 static bool mac_mode = false;
 
@@ -322,6 +323,7 @@ static void draw_status(bool force); // CH582F status: battery + channel digit
 static void draw_conn_number(bool force);
 static void draw_battery(bool force);
 static void draw_locks(bool force);
+static bool draw_locks_staged(bool first);   // Fn+D restore: one lock-band component per call
 static void draw_text_slot(bool force);
 static void draw_debug_page(void);   // Fn+D full-panel diagnostics
 static bool debug_pump_glyph(void);  // one changed debug cell, non-blocking
@@ -1076,7 +1078,7 @@ static bool debug_restore_step(void) {
 
     /* Anything queued belongs to the pre-clear frame; painting it afterwards
      * would scatter stale glyphs over the fresh dashboard. */
-    if (step == 1) display_queue_discard();
+    if (step == 1) { display_queue_discard(); locks_stage_first = true; }
 
     if (step <= DBG_CLEAR_BANDS) {
         lcd_clear_rect(0, (uint16_t)((step - 1) * DBG_CLEAR_BAND_H),
@@ -1094,7 +1096,18 @@ static bool debug_restore_step(void) {
                 break;
             case 3: draw_conn_number(true); break;
             case 4: draw_battery(true);     break;
-            case 5: draw_locks(true);       break;
+            case 5:
+                /* Lock band, ONE component per pass. A label is up to four
+                 * synchronous glyphs (~10 ms), and one draw_locks(true) with
+                 * CAPS, WIN and FN all lit was 25-30 ms -- the last stall on
+                 * the board long enough to lose a keypress (measured
+                 * 2026-09-03: `worst 30ms blit` on every Fn+D exit). Stays on
+                 * this stage until the band matches the lock state. */
+                if (draw_locks_staged(locks_stage_first)) {
+                    locks_stage_first = false;
+                    return true;             /* painted one; the rest next pass */
+                }
+                break;                       /* nothing left: advance */
             default: draw_text_slot(true);  break;
         }
     }
@@ -1311,62 +1324,111 @@ static void draw_bolt(uint16_t x, uint16_t y, uint16_t col) {
 }
 
 // Bottom row: battery icon (left) + percentage (right-aligned).
+/* Bolt footprint: draw_bolt() paints x+2..x+8, y+0..y+13. */
+#define BOLT_W    9
+#define BOLT_H    14
+#define BATT_IN_H (BATT_IN_Y1 - BATT_IN_Y0 + 1)
+
 static void draw_battery(bool force) {
-    static uint8_t last_batt = 0xFE;
-    static bool    last_chrg = false;
+    static uint8_t  last_batt  = 0xFE;
+    static bool     last_chrg  = false;
+    static uint16_t last_fw    = 0;            /* fill bar width on the panel, px */
+    static uint16_t last_txt_x = PANEL_WIDTH;  /* where the percent text starts   */
+    static uint16_t last_txt_w = 0;            /* ...and how wide it is            */
 
     uint8_t batt = ch582_get_battery();
     bool    chrg = charge_is_charging();
 
-    // Charging state changes the icon colour, so it has to retrigger a redraw
-    // as well -- the level alone is not enough.
+    // Charging state changes the bolt, so it has to retrigger a redraw as well
+    // -- the level alone is not enough.
     if (!force && batt == last_batt && chrg == last_chrg) return;
+    bool level_changed = force || batt != last_batt;
+    bool chrg_changed  = force || chrg != last_chrg;
     last_batt = batt;
     last_chrg = chrg;
 
-    // Clear the bottom strip.
-    lcd_clear_rect(0, STATUS_Y, PANEL_WIDTH, PANEL_HEIGHT - STATUS_Y);
+    /* Repaint only what moved. This used to clear the whole 128x22 strip -- a
+     * 5.6 KB DMA, ~7.6 ms with the main loop parked -- on every percent tick
+     * and then redraw all of it, which with the four synchronous glyphs on top
+     * came to ~20 ms: three milliseconds under the line where a keypress can
+     * be lost (docs/display.md). None of that clearing was needed. The outline
+     * never changes, a glyph blit overpaints its whole cell, and the bar and
+     * the bolt have known rects -- so the outline is painted once, on `force`,
+     * whose callers (display_redraw_dashboard, the Fn+D restore) have just
+     * cleared the panel, and everything else clears exactly the pixels it
+     * vacates. */
+    if (force) {
+        uint16_t outline = COL_FG;
+        // Body outline: four 1px edges rather than a filled rect, so the
+        // interior stays background and the fill below can be drawn
+        // independently.
+        lcd_fill_rect(BATT_X0, BATT_Y0, BATT_X1, BATT_Y0, outline);   // top
+        lcd_fill_rect(BATT_X0, BATT_Y1, BATT_X1, BATT_Y1, outline);   // bottom
+        lcd_fill_rect(BATT_X0, BATT_Y0, BATT_X0, BATT_Y1, outline);   // left
+        lcd_fill_rect(BATT_X1, BATT_Y0, BATT_X1, BATT_Y1, outline);   // right
+        // Terminal nub on the right.
+        lcd_fill_rect(BATT_X1 + 1, BATT_Y0 + BATT_NUB_INSET,
+                      BATT_X1 + BATT_NUB_W, BATT_Y1 - BATT_NUB_INSET, outline);
+        /* The strip under us is blank: nothing of ours is on it. */
+        last_fw = 0; last_txt_x = PANEL_WIDTH; last_txt_w = 0;
+    }
 
     /* Outline stays white and the fill stays level-coloured even while
      * charging: the bolt carries that signal, so the two are orthogonal. The
      * earlier version recoloured the whole icon cyan, which hid the level
      * exactly when "15% and charging" is the most useful thing to know. */
-    uint16_t outline = COL_FG;
-
-    // Body outline: four 1px edges rather than a filled rect, so the interior
-    // stays background and the fill below can be drawn independently.
-    lcd_fill_rect(BATT_X0, BATT_Y0, BATT_X1, BATT_Y0, outline);   // top
-    lcd_fill_rect(BATT_X0, BATT_Y1, BATT_X1, BATT_Y1, outline);   // bottom
-    lcd_fill_rect(BATT_X0, BATT_Y0, BATT_X0, BATT_Y1, outline);   // left
-    lcd_fill_rect(BATT_X1, BATT_Y0, BATT_X1, BATT_Y1, outline);   // right
-    // Terminal nub on the right.
-    lcd_fill_rect(BATT_X1 + 1, BATT_Y0 + BATT_NUB_INSET,
-                  BATT_X1 + BATT_NUB_W, BATT_Y1 - BATT_NUB_INSET, outline);
-
-    if (chrg) draw_bolt(BOLT_X, BOLT_Y, COL_BOLT);
-
-    if (batt <= 100) {
-        // Proportional fill. Round up so any nonzero charge shows at least one
-        // column -- an empty-looking icon at 3% would read as "dead".
-        uint16_t fw = (uint16_t)(((uint32_t)batt * BATT_IN_W + 99u) / 100u);
-        if (fw > BATT_IN_W) fw = BATT_IN_W;
-
-        if (fw > 0) {
-            uint16_t col = (batt <= 20) ? COL_BATT_LOW
-                         : (batt <= 50) ? COL_BATT_WARN
-                                        : COL_BATT_OK;
-            lcd_fill_rect(BATT_IN_X0, BATT_IN_Y0, BATT_IN_X0 + fw - 1, BATT_IN_Y1, col);
-        }
-
-        char bbuf[8];
-        snprintf(bbuf, sizeof(bbuf), "%u%%", batt);
-        /* 20px again: the clock crop freed the rows the small face was forced
-         * into. Cell 23 at STATUS_Y = 104..126, ink 108..122, row 127 margin. */
-        uint16_t w = lcd_flash_text_width(FONT_STATUS, bbuf);
-        /* PANEL_WIDTH - 4, not - 1: viewed from the right the bezel hides the
-         * last couple of columns, which was clipping the '%'. */
-        lcd_draw_flash_text(FONT_STATUS, PANEL_WIDTH - 4 - w, STATUS_Y, bbuf);
+    if (chrg_changed) {
+        if (chrg)        draw_bolt(BOLT_X, BOLT_Y, COL_BOLT);
+        else if (!force) lcd_clear_rect(BOLT_X, BOLT_Y, BOLT_W, BOLT_H);
     }
+
+    if (batt > 100) {
+        /* Level unknown (the module has not answered yet): show no bar and no
+         * number, taking down whatever was there. */
+        if (last_fw) {
+            lcd_clear_rect(BATT_IN_X0, BATT_IN_Y0, BATT_IN_W, BATT_IN_H);
+            last_fw = 0;
+        }
+        if (last_txt_w) {
+            lcd_clear_rect(last_txt_x, STATUS_Y, last_txt_w, lcd_font_height(FONT_STATUS));
+            last_txt_x = PANEL_WIDTH; last_txt_w = 0;
+        }
+        return;
+    }
+    if (!level_changed) return;
+
+    // Proportional fill. Round up so any nonzero charge shows at least one
+    // column -- an empty-looking icon at 3% would read as "dead".
+    uint16_t fw = (uint16_t)(((uint32_t)batt * BATT_IN_W + 99u) / 100u);
+    if (fw > BATT_IN_W) fw = BATT_IN_W;
+    /* A drop vacates columns on the right; a rise, or a colour change at the
+     * 20/50 thresholds, is covered by repainting the whole bar. */
+    if (fw < last_fw)
+        lcd_clear_rect((uint16_t)(BATT_IN_X0 + fw), BATT_IN_Y0, (uint16_t)(last_fw - fw), BATT_IN_H);
+    if (fw > 0) {
+        uint16_t col = (batt <= 20) ? COL_BATT_LOW
+                     : (batt <= 50) ? COL_BATT_WARN
+                                    : COL_BATT_OK;
+        lcd_fill_rect(BATT_IN_X0, BATT_IN_Y0, BATT_IN_X0 + fw - 1, BATT_IN_Y1, col);
+    }
+    last_fw = fw;
+
+    char bbuf[8];
+    snprintf(bbuf, sizeof(bbuf), "%u%%", batt);
+    /* 20px again: the clock crop freed the rows the small face was forced
+     * into. Cell 23 at STATUS_Y = 104..126, ink 108..122, row 127 margin. */
+    uint16_t w = lcd_flash_text_width(FONT_STATUS, bbuf);
+    /* PANEL_WIDTH - 4, not - 1: viewed from the right the bezel hides the
+     * last couple of columns, which was clipping the '%'. */
+    uint16_t x = (uint16_t)(PANEL_WIDTH - 4 - w);
+    /* Right-aligned, so a shorter string starts further right and would leave
+     * its old leftmost cell behind ("100%" -> "99%"): clear exactly that. A
+     * longer one starts further left and overpaints every old cell. */
+    if (x > last_txt_x)
+        lcd_clear_rect(last_txt_x, STATUS_Y, (uint16_t)(x - last_txt_x), lcd_font_height(FONT_STATUS));
+    lcd_draw_flash_text(FONT_STATUS, x, STATUS_Y, bbuf);
+    last_txt_x = x;
+    last_txt_w = w;
 }
 
 // --- Lock indicator band ---------------------------------------------------
@@ -1439,8 +1501,25 @@ static void draw_padlock(uint16_t x, uint16_t y, uint16_t col) {
 #define LOCK_CAP_W  40                    /* "CAPS" 4 glyphs @10px            */
 #define LOCK_WIN_W  30                    /* "WIN"  3 glyphs                  */
 #define LOCK_SL3_W  30                    /* "SCR" 3; covers "FN" shrinking   */
+/* draw_battery() no longer clears its whole strip, so nothing erases lock-band
+ * pixels that stray below LOCK_Y + LOCK_TXT_H. Today the bands meet exactly at
+ * STATUS_Y (82 + 23 = 105); keep it that way or restore the clear. */
+_Static_assert(LOCK_Y + LOCK_TXT_H <= STATUS_Y, "lock band text cells must not reach into the battery strip");
 
-static void draw_locks(bool force) {
+static bool        shown_pad = false, shown_caps = false, shown_gui = false;
+static const char *shown_sl3 = NULL;
+
+/* The band has just been cleared: nothing of ours is on it. */
+static void locks_forget(void) {
+    shown_pad = shown_caps = shown_gui = false;
+    shown_sl3 = NULL;
+}
+
+/* Paint whatever differs from what is on the panel. With `one` set, stop after
+ * the first component painted, so a caller stepping the Fn+D restore never
+ * spends more than one label -- up to four synchronous glyphs, ~10 ms -- in a
+ * single main-loop pass. Returns true if anything was painted. */
+static bool draw_locks_diff(bool one) {
     bool caps = lock_state_caps();
     bool gui  = lock_state_gui();
     bool fn   = lock_state_fn();
@@ -1458,28 +1537,27 @@ static void draw_locks(bool force) {
      * string literals. */
     const char *slot3 = scr ? "SCR" : (fn ? "FN" : NULL);
 
-    static bool        shown_pad  = false, shown_caps = false, shown_gui = false;
-    static const char *shown_sl3  = NULL;
-
-    if (force) {   /* the caller has just cleared the screen; nothing is drawn */
-        shown_pad = shown_caps = shown_gui = false;
-        shown_sl3 = NULL;
-    }
-
+    bool did = false;
     if (pad != shown_pad) {
         if (pad) draw_padlock(LOCK_PAD_X, LOCK_PAD_Y, COL_PADLOCK);
         else     lcd_clear_rect(LOCK_PAD_X, LOCK_PAD_Y, LOCK_PAD_W, LOCK_PAD_H);
         shown_pad = pad;
+        did = true;
+        if (one) return true;
     }
     if (caps != shown_caps) {
         if (caps) lcd_draw_flash_text(FONT_STATUS, LOCK_CAP_X, LOCK_Y, "CAPS");
         else      lcd_clear_rect(LOCK_CAP_X, LOCK_Y, LOCK_CAP_W, LOCK_TXT_H);
         shown_caps = caps;
+        did = true;
+        if (one) return true;
     }
     if (gui != shown_gui) {
         if (gui) lcd_draw_flash_text(FONT_STATUS, LOCK_WIN_X, LOCK_Y, "WIN");
         else     lcd_clear_rect(LOCK_WIN_X, LOCK_Y, LOCK_WIN_W, LOCK_TXT_H);
         shown_gui = gui;
+        did = true;
+        if (one) return true;
     }
     if (slot3 != shown_sl3) {
         /* Clear first: "SCR" -> "FN" would otherwise strand the third glyph,
@@ -1487,7 +1565,24 @@ static void draw_locks(bool force) {
         lcd_clear_rect(LOCK_SLOT3_X, LOCK_Y, LOCK_SL3_W, LOCK_TXT_H);
         if (slot3) lcd_draw_flash_text(FONT_STATUS, LOCK_SLOT3_X, LOCK_Y, slot3);
         shown_sl3 = slot3;
+        did = true;
     }
+    return did;
+}
+
+/* Normal path (10 Hz housekeeping): everything that changed, in one call, so a
+ * Caps press shows its padlock and its label on the same tick. `force` means
+ * the caller has just cleared the screen and nothing is drawn. */
+static void draw_locks(bool force) {
+    if (force) locks_forget();
+    draw_locks_diff(false);
+}
+
+/* Fn+D restore: ONE component per call; `first` forgets the freshly cleared
+ * band. Returns true while a call painted something -- keep calling. */
+static bool draw_locks_staged(bool first) {
+    if (first) locks_forget();
+    return draw_locks_diff(true);
 }
 
 
@@ -2277,6 +2372,20 @@ void display_housekeeping_task(void) {
 
     if (display_paused) return;   // animation owns the bus
     if (debug_active) { draw_debug_page(); return; }   // Fn+D owns the panel
+    /* The Fn+D restore owns the panel too, one stage per main-loop pass from
+     * display_blit_pump(). A 10 Hz tick landing inside it would paint into a
+     * clear band still sweeping down, or run draw_locks(false) and collapse the
+     * staged lock repaint back into one 25-30 ms call. It is over in ~40 ms;
+     * every owner below self-guards and simply catches up on the next tick.
+     *
+     * ⚠️ THIS GATE IS SAFE ONLY BECAUSE display_blit_pump() IS CALLED FROM ITS
+     * OWN SITE in housekeeping_task_kb() (ak820pro.c), not from here. The pump
+     * is the only thing that advances debug_exit_step. Fold the pump into this
+     * function -- the obvious tidy-up, both are display work -- and this line
+     * blocks the one caller that can clear the flag: the restore never finishes,
+     * the dashboard never comes back, and the main loop stays alive so the
+     * watchdog does not save you. */
+    if (debug_exit_step) return;
 
     if (splash_cleared) {
         /* A queued line is mid-paint: let the pump finish before any owner

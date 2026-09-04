@@ -539,7 +539,14 @@ void housekeeping_task_kb(void) {
     param_repeat_task();
     rtc_fast_task();             // <= one queued PCF I2C transaction, only when no blit is in flight (R4)
     display_second_edge_task();  // clock digits repaint on the tick, not at the 10 Hz cadence (3.9)
-    display_blit_pump();   // one glyph per iteration; never waits on the DMA
+    /* One queued glyph per iteration, arming a DMA and returning -- EXCEPT that
+     * it also drives the Fn+D page's banded clears and the staged restore, and
+     * lcd_clear_rect() ends in lcd_blit_wait(): bounded (a 128x16 band is
+     * ~5.5 ms) but it does wait. "Never waits on the DMA" stopped being true
+     * on 2026-09-03. It is also the ONLY thing that advances debug_exit_step,
+     * which is why display_housekeeping_task() may gate on that flag: keep this
+     * call OUT of that function (see the gate's comment in display.c). */
+    display_blit_pump();
 #ifdef CONSOLE_ENABLE
     blit_stat_task();
 #endif
