@@ -764,7 +764,7 @@ static void dbg_compose(void) {
     if (up >= 3600u) { p = dbg_append(dbg_u32(p, up / 3600u), "h "); up %= 3600u; }
     p = dbg_append(dbg_u32(p, up / 60u), "m ");
     p = dbg_append(dbg_u32(p, up % 60u), "s");
-    dbg_row(0, "uptime", v);
+    dbg_row(0, "Uptime", v);
 
     /* Row ISR occupancy. THE headline number: the row ISR is ~73% of this M0 at
      * idle, so it -- not the timer configuration -- sets the LED field rate,
@@ -810,7 +810,7 @@ static void dbg_compose(void) {
     uint16_t gap  = health_row_gap_max_ms(&grow);
     p = dbg_append(dbg_u32(v, gap), "ms r");
     dbg_u32(p, grow);
-    dbg_row(2, "rowgap", v);
+    dbg_row(2, "Rowgap", v);
     /* Two thresholds, and the difference matters. >=25 ms is the LOSS alarm:
      * 25 ms is the shortest keypress, so a stall that long can swallow one
      * whole. >=10 ms cannot lose anything by itself -- the key is still down
@@ -818,7 +818,7 @@ static void dbg_compose(void) {
      * count there is the warning that arrives before a keystroke goes missing. */
     p = dbg_append(dbg_u32(dbg_append(v, "25:"), health_count_ge_25ms_nonflash()), " 10:");
     dbg_u32(p, health_count_ge_10ms());
-    dbg_row(3, "stall", v);
+    dbg_row(3, "Stall", v);
 
     /* HOW BIG, AND WHAT IT WAS. The first question after the alarm fires, and
      * until this row existed the panel could not answer it -- you needed a
@@ -833,15 +833,15 @@ static void dbg_compose(void) {
         case LOOP_MARK_I2C:   dbg_append(p, "i2c");   break;
         default:              dbg_append(p, "-");     break;
     }
-    dbg_row(4, "worst", v);
+    dbg_row(4, "Worst", v);
 
     /* NOT a per-key sampling rate: it counts matrix_scan() calls and the ISR
      * samples ~4 rows per call. rowgap above is the one that bounds loss. */
 #ifdef DEBUG_MATRIX_SCAN_RATE
     dbg_u32(v, (uint32_t)get_matrix_scan_rate());
-    dbg_row(5, "scan/s", v);
+    dbg_row(5, "Scan/s", v);
 #else
-    dbg_row(5, "scan/s", "n/a");
+    dbg_row(5, "Scan/s", "n/a");
 #endif
 
     /* CH582F link, SINCE BOOT -- these live in the CH582 driver, not health.c,
@@ -853,10 +853,10 @@ static void dbg_compose(void) {
     uint32_t sent, to, drop;
     ch582_tx_stats(&sent, &to, &drop);
     dbg_u32(v, drop);
-    dbg_row(6, "BT drop", v);
+    dbg_row(6, "BT Drop", v);
     p = dbg_u32(v, to);
     if (sent) { p = dbg_append(p, " "); p = dbg_u32(p, (to * 100u) / sent); dbg_append(p, "%"); }
-    dbg_row(7, "BT t/o", v);   /* "352 49%" */
+    dbg_row(7, "BT T/O", v);   /* "352 49%" */
 
     /* batt / min. The module is the only thing that can read the cell and we
      * print its number verbatim -- almost certainly a voltage estimate, and
@@ -873,7 +873,7 @@ static void dbg_compose(void) {
     p = (batt <= 100) ? dbg_append(dbg_u32(v, batt), "%") : dbg_append(v, "--");
     p = dbg_append(p, " min ");
     if (bmin <= 100) dbg_u32(p, bmin); else dbg_append(p, "-");
-    dbg_row(8, "battery", v);
+    dbg_row(8, "Battery", v);
 }
 
 bool display_debug_active(void) {
