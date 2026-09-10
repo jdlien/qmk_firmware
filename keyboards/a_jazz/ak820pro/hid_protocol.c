@@ -14,6 +14,7 @@
 #include "kb_eeconfig.h"
 #include "bluetooth/ch582f_ajazz.h"   /* HC_CONN readout + fault injection */
 #include "watchdog.h"                 /* boot reset cause for HC_CONN */
+#include "indicators.h"               /* battery_is_absent for HC_CONN */
 
 // Apply a 7-byte time payload to the RTC:
 //   [0]=year-2000 [1]=month [2]=day [3]=weekday [4]=hour [5]=min [6]=sec
@@ -462,7 +463,11 @@ static void health_command(uint8_t *data, uint8_t length) {
             data[5] = ch582_get_battery();
             data[6] = (ch582_is_connected() ? 1 : 0) |
                       (ch582_is_pairing()   ? 2 : 0) |
-                      (ch582_is_usb()       ? 4 : 0);
+                      (ch582_is_usb()       ? 4 : 0) |
+                      /* bit3: no pack fitted. The level in data[5] reads 0 in
+                       * that case and cannot be told from a flat cell without
+                       * it -- see indicators.c. */
+                      (battery_is_absent()  ? 8 : 0);
             /* Boot reset cause (raw RSTST bits): names what kind of reset a
              * slider flip produces (POR vs LVD brownout vs external). */
             data[7] = watchdog_boot_rstst();

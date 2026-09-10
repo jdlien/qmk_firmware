@@ -22,6 +22,10 @@ bool lock_state_caps(void);
 bool lock_state_gui(void);
 bool lock_state_scroll(void);
 bool charge_is_charging(void);
+/* True when there is no battery fitted: on USB power, module reporting 0, and
+ * the charger has never held a charge long enough to prove a pack exists. See
+ * the reasoning block in indicators.c -- it latches once a pack is confirmed. */
+bool battery_is_absent(void);
 
 uint8_t indicator_get_brightness(void);
 void    indicator_set_brightness(uint8_t level);

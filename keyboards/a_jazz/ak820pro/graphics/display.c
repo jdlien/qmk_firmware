@@ -14,6 +14,7 @@
 #include "rtc/rtc.h"
 #include "kb_eeconfig.h"   /* persisted backlight level (phase 4) */
 #include "ak820pro.h"      /* LOOP_SITE profiler (LOOPGAP_INSTRUMENT) */
+#include "indicators.h"   /* charge_is_charging + battery_is_absent */
 /* Also included further down beside the connection-state code, which is where
  * it historically lived; #pragma once makes the duplicate free. Hoisted because
  * the Fn+D debug page sits above that point and reads the battery and TX
@@ -870,10 +871,16 @@ static void dbg_compose(void) {
      * the label cannot collide with the value. The % goes on the live level
      * only; once that names the unit, "min 100" is unambiguous and the second
      * one would cost a column for nothing. */
-    p = (batt <= 100) ? dbg_append(dbg_u32(v, batt), "%") : dbg_append(v, "--");
-    p = dbg_append(p, " min ");
-    if (bmin <= 100) dbg_u32(p, bmin); else dbg_append(p, "-");
-    dbg_row(8, "Battery", v);
+    /* "none" is the presence verdict, not a level: no pack fitted (indicators.c).
+     * It reads before the min, because when it fires the min is meaningless. */
+    if (battery_is_absent()) {
+        dbg_row(8, "Battery", "none");
+    } else {
+        p = (batt <= 100) ? dbg_append(dbg_u32(v, batt), "%") : dbg_append(v, "--");
+        p = dbg_append(p, " min ");
+        if (bmin <= 100) dbg_u32(p, bmin); else dbg_append(p, "-");
+        dbg_row(8, "Battery", v);
+    }
 }
 
 bool display_debug_active(void) {
@@ -1327,7 +1334,53 @@ static void draw_bolt(uint16_t x, uint16_t y, uint16_t col) {
 /* Bolt footprint: draw_bolt() paints x+2..x+8, y+0..y+13. */
 #define BOLT_W    9
 #define BOLT_H    14
+
+/* 9x9 "no battery" cross, drawn in the bolt's slot -- the two are mutually
+ * exclusive by construction (a board with no pack can never be charging), so
+ * they can share the rect without either needing to know about the other.
+ * Two-pixel strokes, clamped at the edges: the bolt's diagonals needed the same
+ * weight before they read as anything at arm's length. */
+#define CROSS_WH 12
+/* Geometric centring puts it a pixel high against the battery outline beside it,
+ * because the outline's visual mass sits low of its own bbox (the nub is inset).
+ * Nudged by eye on hardware rather than by arithmetic. */
+#define CROSS_Y_NUDGE 1
+#define CROSS_Y_OFF (((BOLT_H - CROSS_WH) / 2) + CROSS_Y_NUDGE)
+/* The cross is WIDER than the bolt it shares a slot with, so the rect that
+ * clears that slot has to be the wider of the two -- clearing only BOLT_W would
+ * leave the cross's last columns on the panel when it is taken down. */
+#define ICON_SLOT_W ((CROSS_WH > BOLT_W) ? CROSS_WH : BOLT_W)
+
+static void draw_cross(uint16_t x, uint16_t y, uint16_t col) {
+    for (uint8_t i = 0; i < CROSS_WH; i++) {
+        uint16_t yy = y + i;
+        uint16_t a  = (uint16_t)(x + i);                    /* the "\" stroke */
+        uint16_t b  = (uint16_t)(x + (CROSS_WH - 1) - i);   /* the "/" stroke  */
+        lcd_fill_rect(a, yy, (a < x + CROSS_WH - 1) ? (uint16_t)(a + 1) : a, yy, col);
+        lcd_fill_rect((b > x) ? (uint16_t)(b - 1) : b, yy, b, yy, col);
+    }
+}
 #define BATT_IN_H (BATT_IN_Y1 - BATT_IN_Y0 + 1)
+
+/* Right-aligned text in the battery row's number slot. Factored out because the
+ * percentage and the "No Batt" label share the same bookkeeping: the slot is
+ * right-aligned, so a SHORTER string starts further right and would leave its
+ * old leftmost cells behind ("100%" -> "99%", and "No Batt" -> "5%"). Clear
+ * exactly what is vacated; a longer string overpaints every old cell itself.
+ *
+ * 20px face: the clock crop freed the rows the small one was forced into. Cell
+ * 23 at STATUS_Y = 104..126, ink 108..122, row 127 margin. PANEL_WIDTH - 4 and
+ * not - 1, because viewed from the right the bezel hides the last couple of
+ * columns -- which was clipping the '%'. */
+static void draw_batt_slot(const char *str, uint16_t *last_x, uint16_t *last_w) {
+    uint16_t w = lcd_flash_text_width(FONT_STATUS, str);
+    uint16_t x = (uint16_t)(PANEL_WIDTH - 4 - w);
+    if (x > *last_x)
+        lcd_clear_rect(*last_x, STATUS_Y, (uint16_t)(x - *last_x), lcd_font_height(FONT_STATUS));
+    lcd_draw_flash_text(FONT_STATUS, x, STATUS_Y, str);
+    *last_x = x;
+    *last_w = w;
+}
 
 static void draw_battery(bool force) {
     static uint8_t  last_batt  = 0xFE;
@@ -1335,17 +1388,30 @@ static void draw_battery(bool force) {
     static uint16_t last_fw    = 0;            /* fill bar width on the panel, px */
     static uint16_t last_txt_x = PANEL_WIDTH;  /* where the percent text starts   */
     static uint16_t last_txt_w = 0;            /* ...and how wide it is            */
+    static bool     last_absent = false;       /* no pack fitted: cross, no number */
 
-    uint8_t batt = ch582_get_battery();
-    bool    chrg = charge_is_charging();
+    uint8_t batt   = ch582_get_battery();
+    bool    chrg   = charge_is_charging();
+    /* Latches false-to-true at most once per boot (indicators.c), so this costs
+     * one repaint, not a flicker. */
+    bool    absent = battery_is_absent();
+    /* With no pack fitted the charger's state is meaningless, and on a charger
+     * that cycles into an empty output it TOGGLES about once a second. Left
+     * live it would retrigger this whole function -- repainting the cross and
+     * re-blitting the 7-glyph label, ~11 ms of synchronous LCD work -- every
+     * cycle, forever, for no change on the panel. Freeze it. */
+    if (absent) chrg = false;
 
     // Charging state changes the bolt, so it has to retrigger a redraw as well
-    // -- the level alone is not enough.
-    if (!force && batt == last_batt && chrg == last_chrg) return;
-    bool level_changed = force || batt != last_batt;
-    bool chrg_changed  = force || chrg != last_chrg;
-    last_batt = batt;
-    last_chrg = chrg;
+    // -- the level alone is not enough. Same for presence: it owns the same rect
+    // as the bolt and suppresses the number.
+    if (!force && batt == last_batt && chrg == last_chrg && absent == last_absent) return;
+    bool level_changed  = force || batt != last_batt;
+    bool chrg_changed   = force || chrg != last_chrg;
+    bool absent_changed = force || absent != last_absent;
+    last_batt   = batt;
+    last_chrg   = chrg;
+    last_absent = absent;
 
     /* Repaint only what moved. This used to clear the whole 128x22 strip -- a
      * 5.6 KB DMA, ~7.6 ms with the main loop parked -- on every percent tick
@@ -1377,19 +1443,32 @@ static void draw_battery(bool force) {
      * charging: the bolt carries that signal, so the two are orthogonal. The
      * earlier version recoloured the whole icon cyan, which hid the level
      * exactly when "15% and charging" is the most useful thing to know. */
-    if (chrg_changed) {
-        if (chrg)        draw_bolt(BOLT_X, BOLT_Y, COL_BOLT);
-        else if (!force) lcd_clear_rect(BOLT_X, BOLT_Y, BOLT_W, BOLT_H);
+    if (chrg_changed || absent_changed) {
+        /* One rect, three states. Clear first on any transition so the bolt's
+         * footprint cannot leave pixels under the cross or vice versa -- they
+         * overlap without covering each other. */
+        if (!force) lcd_clear_rect(BOLT_X, BOLT_Y, ICON_SLOT_W, BOLT_H);
+        if (absent)    draw_cross(BOLT_X, BOLT_Y + CROSS_Y_OFF, COL_BATT_LOW);
+        else if (chrg) draw_bolt(BOLT_X, BOLT_Y, COL_BOLT);
     }
 
-    if (batt > 100) {
-        /* Level unknown (the module has not answered yet): show no bar and no
-         * number, taking down whatever was there. */
+    if (batt > 100 || absent) {
+        /* Nothing meaningful to show. Either the module has not answered yet
+         * (batt 0xFF), or there is no pack at all -- in which case its reported
+         * 0 is not a reading and drawing "0%" next to the cross would state a
+         * flat battery and a missing one in the same breath. Either way the bar
+         * comes down; the slot then carries the label, or nothing. */
         if (last_fw) {
             lcd_clear_rect(BATT_IN_X0, BATT_IN_Y0, BATT_IN_W, BATT_IN_H);
             last_fw = 0;
         }
-        if (last_txt_w) {
+        if (absent) {
+            /* Name the condition rather than leaving the slot empty. The cross
+             * says something is wrong with the battery; the words say what, and
+             * "No Batt" at 10px/cell is 70px against the 78px between the cross
+             * and the bezel margin -- it fits with 7px to spare. */
+            draw_batt_slot("No Batt", &last_txt_x, &last_txt_w);
+        } else if (last_txt_w) {
             lcd_clear_rect(last_txt_x, STATUS_Y, last_txt_w, lcd_font_height(FONT_STATUS));
             last_txt_x = PANEL_WIDTH; last_txt_w = 0;
         }
@@ -1415,20 +1494,7 @@ static void draw_battery(bool force) {
 
     char bbuf[8];
     snprintf(bbuf, sizeof(bbuf), "%u%%", batt);
-    /* 20px again: the clock crop freed the rows the small face was forced
-     * into. Cell 23 at STATUS_Y = 104..126, ink 108..122, row 127 margin. */
-    uint16_t w = lcd_flash_text_width(FONT_STATUS, bbuf);
-    /* PANEL_WIDTH - 4, not - 1: viewed from the right the bezel hides the
-     * last couple of columns, which was clipping the '%'. */
-    uint16_t x = (uint16_t)(PANEL_WIDTH - 4 - w);
-    /* Right-aligned, so a shorter string starts further right and would leave
-     * its old leftmost cell behind ("100%" -> "99%"): clear exactly that. A
-     * longer one starts further left and overpaints every old cell. */
-    if (x > last_txt_x)
-        lcd_clear_rect(last_txt_x, STATUS_Y, (uint16_t)(x - last_txt_x), lcd_font_height(FONT_STATUS));
-    lcd_draw_flash_text(FONT_STATUS, x, STATUS_Y, bbuf);
-    last_txt_x = x;
-    last_txt_w = w;
+    draw_batt_slot(bbuf, &last_txt_x, &last_txt_w);
 }
 
 // --- Lock indicator band ---------------------------------------------------

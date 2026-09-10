@@ -5,6 +5,7 @@
 #include "indicators.h"
 #include "ak820pro.h"   /* the shared layer enum for FN_LAYER_MASK */
 #include "graphics/display.h"
+#include "bluetooth/ch582f_ajazz.h"   /* usb_mode + the module's battery level */
 #include <hal.h>
 
 /* --- Indicator LEDs -------------------------------------------------------
@@ -171,8 +172,49 @@ bool led_update_kb(led_t led_state) {
     return false;
 }
 
+/* --- Battery presence -----------------------------------------------------
+ *
+ * The module reports a LEVEL even with no pack fitted -- measured 0 on a naked
+ * board (2026-09-09, the white unit) -- so the level alone cannot separate a
+ * missing battery from a flat one, and the panel drew a confident "0%" for a
+ * battery that was not there.
+ *
+ * The charger's two status pins can separate them, but not from their
+ * INSTANTANEOUS state: what differs is duration. A flat cell on USB charges
+ * continuously -- CHRG low, STDBY high, held for hours. With no cell the
+ * charger either never starts, or terminates and restarts forever (these parts
+ * cycle into an empty output). So the test is "has charging held unbroken for
+ * CELL_CONFIRM_MS", which is true for a real pack and false for BOTH no-cell
+ * behaviours -- and needs no knowledge of which of the two this board's charger
+ * does, which is the part that could not be looked up.
+ *
+ * Biased towards false negatives deliberately. `cell_seen` LATCHES: a confirmed
+ * pack is never later called missing. A spurious "no battery" mark on a healthy
+ * board is worse than a missed one, and pulling a cell mid-session is not worth
+ * flickering over -- it resolves on the next boot. */
+#define CELL_CONFIRM_MS 3000u   /* unbroken charging that proves a pack exists */
+#define CELL_GRACE_MS   15000u  /* don't judge before the charger has had a go  */
+#define CELL_CONFIRM_TICKS (CELL_CONFIRM_MS / 100u)   /* update_leds() is 10 Hz */
+
+static volatile bool     cell_seen = false;
+static          uint16_t chrg_run  = 0;   /* consecutive 10 Hz ticks charging */
+
 bool charge_is_charging(void) {
     return ind_charging;
+}
+
+bool battery_is_absent(void) {
+    /* A pack we have already proved exists. */
+    if (cell_seen) return false;
+    /* Not on USB power means the slider is in a wireless position, where the
+     * MCU runs FROM the pack (the slider is a power-source switch, see
+     * docs/hardware.md) -- so a running board proves the pack is there. */
+    if (!ch582_is_usb()) return false;
+    /* The module still reports something above empty: not our case. 0xFF is
+     * "has not answered yet", which is also not a verdict we can make. */
+    if (ch582_get_battery() != 0) return false;
+    /* Boot: give the charger time to assert before calling it missing. */
+    return timer_read32() >= CELL_GRACE_MS;
 }
 
 /* Lock states for the LCD indicator band. Caps and Scroll are host-reported (and
@@ -211,6 +253,15 @@ void update_leds(void) {
     // Charging: on only while actively charging -- CHRG low (active) AND
     // STDBY high (not "done").
     ind_charging = !gpio_read_pin(CHARGE_CHRG_PIN) && gpio_read_pin(CHARGE_STDBY_PIN);
+
+    /* Unbroken-charging run length -- the discriminator described above. Any
+     * gap resets it, which is what makes a cycling charger fail to confirm. */
+    if (ind_charging) {
+        if (chrg_run < CELL_CONFIRM_TICKS) chrg_run++;
+        if (chrg_run >= CELL_CONFIRM_TICKS) cell_seen = true;
+    } else {
+        chrg_run = 0;
+    }
 
     // Windows Lock: mirrors the GUI-lock flag.
     ind_winlock = keymap_config.no_gui;
