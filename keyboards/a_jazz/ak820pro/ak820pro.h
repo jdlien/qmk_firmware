@@ -4,6 +4,7 @@
 #pragma once
 
 #include "quantum.h"
+#include "watchdog_record.h"
 
 /* Layer indices, shared between the keymaps and board code. Historically the
  * keymaps owned this enum and indicators.c hand-wrote the Fn mask as
@@ -108,7 +109,7 @@ enum loop_site {
 #ifdef LOOPGAP_INSTRUMENT
 void loop_site_begin(uint8_t site);
 void loop_site_end(void);
-#    define LOOP_SITE(site, call) do { loop_site_begin(site); call; loop_site_end(); } while (0)
+#    define LOOP_SITE(site, call) do { WDT_SCOPE(WDT_SITE_LOOP_BASE + (site)); loop_site_begin(site); call; loop_site_end(); } while (0)
 #else
-#    define LOOP_SITE(site, call) do { call; } while (0)
+#    define LOOP_SITE(site, call) WDT_CALL(WDT_SITE_LOOP_BASE + (site), call)
 #endif

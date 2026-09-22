@@ -131,6 +131,9 @@ bool backing_store_init(void) {
  * keymap, wear-levelling consolidation -- rather than only the one that happened
  * to be noticed. */
 __attribute__((weak)) void backing_store_pre_write_hook(void) {}
+/* Optional main-loop diagnostics; paired around the actual HAL operations. */
+__attribute__((weak)) void backing_store_operation_begin(bool erase) {}
+__attribute__((weak)) void backing_store_operation_end(void) {}
 
 bool backing_store_unlock(void) {
     bs_dprintf("Unlock\n");
@@ -139,6 +142,7 @@ bool backing_store_unlock(void) {
 }
 
 bool backing_store_erase(void) {
+    backing_store_operation_begin(true);
 #ifdef WEAR_LEVELING_DEBUG_OUTPUT
     uint32_t start = timer_read32();
 #endif
@@ -159,18 +163,22 @@ bool backing_store_erase(void) {
         }
     }
 
+    backing_store_operation_end();
     bs_dprintf("Backing store erase took %ldms to complete\n", ((long)(timer_read32() - start)));
     return ret;
 }
 
 bool backing_store_write(uint32_t address, backing_store_int_t value) {
+    backing_store_operation_begin(false);
     uint32_t offset = (base_offset + address);
     bs_dprintf("Write ");
     wl_dump(offset, &value, sizeof(value));
     if (flash_erased_is_one) {
         value = ~value;
     }
-    return flashProgram(flash, offset, sizeof(value), (const uint8_t *)&value) == FLASH_NO_ERROR;
+    bool ok = flashProgram(flash, offset, sizeof(value), (const uint8_t *)&value) == FLASH_NO_ERROR;
+    backing_store_operation_end();
+    return ok;
 }
 
 bool backing_store_lock(void) {

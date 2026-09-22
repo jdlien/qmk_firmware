@@ -32,29 +32,14 @@
 #include "quantum.h"
 #include <hal.h>
 #include "watchdog.h"
+#include "watchdog_record.h"
 
 #if HAL_USE_WDG
 
 #define WDT_PRESC_SEL 4u  /* APBCP1.WDTPRE -- assumed /16, see header comment */
 #define WDT_TC 188u       /* 188 * 128 / (32000/16) = 12.0 s nominal */
 
-/* Boot accounting lives in the ram7 region -- the top 16 bytes of SRAM,
- * carved out of ram0 by the SN32F290.ld change on the ak820pro-patches
- * chibios branch. ChibiOS places bare `.ram7` sections NOLOAD and crt0
- * never zeroes them, so the words survive any reset short of power loss,
- * and unlike the previous top-of-heap trick nothing else can ever be
- * allocated there (newlib malloc IS linked into this image -- the heap tail
- * was not actually safe). A power cycle leaves garbage; the magic word
- * detects that and starts the count fresh. */
-typedef struct {
-    uint32_t magic;
-    uint32_t count;
-} wdt_boot_t;
-static volatile wdt_boot_t wdt_boot __attribute__((section(".ram7"), aligned(4)));
-#define wdt_boot_magic (wdt_boot.magic)
-#define wdt_boot_count (wdt_boot.count)
-#define WDT_BOOT_MAGIC 0x4A445721u /* "JDW!" */
-
+/* Reset-retained accounting and operation breadcrumbs: watchdog_record.c. */
 extern uint32_t __ram0_end__; /* for the DFU magic in bootloader_jump() */
 #define WDT_RAM_TOP ((uint32_t)&__ram0_end__)
 
@@ -86,16 +71,7 @@ void watchdog_boot_check(void) {
      * BT->cable brownout resets.) */
     SN_SYS0->RSTST = 0;
 
-    if (wdt_boot_magic != WDT_BOOT_MAGIC) { /* cold power-on: RAM is garbage */
-        wdt_boot_magic = WDT_BOOT_MAGIC;
-        wdt_boot_count = 0;
-    }
-    if (fired_last) {
-        wdt_boot_count++;
-    } else {
-        wdt_boot_count = 0;
-    }
-    consec_resets = (wdt_boot_count > 255u) ? 255u : (uint8_t)wdt_boot_count;
+    consec_resets = watchdog_record_boot(boot_rstst);
 
     /* A deterministic boot-time failure plus an armed watchdog is an endless
      * reset loop, possibly on battery. Past the threshold the WDT stays off:

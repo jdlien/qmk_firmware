@@ -5,6 +5,7 @@
 #include "health.h"
 #include "ak820pro.h"   /* LOOP_MARK_*, loop_stall_mark */
 #include "watchdog.h"
+#include "watchdog_record.h"
 #include "graphics/lcd_bus.h"
 #include "bluetooth/ch582f_ajazz.h"
 
@@ -135,6 +136,7 @@ static uint8_t  last_mark = LOOP_MARK_NONE;
 void health_loop_tick(void) {
     static uint32_t last = 0;
     uint32_t now = timer_read32();
+    watchdog_record_uptime(now); /* reuse this timer read; no per-scope timers */
 
     /* Sole owner of loop_stall_mark: read once, clear once, publish via
      * health_last_mark(). This runs BEFORE loop_gap_task() in the same pass,

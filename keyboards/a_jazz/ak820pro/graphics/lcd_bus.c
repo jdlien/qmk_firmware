@@ -1,3 +1,4 @@
+#include "watchdog_record.h"
 // Copyright 2026 Fernando Birra
 // SPDX-License-Identifier: GPL-2.0-or-later
 //
@@ -167,6 +168,7 @@ static void lcd_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
 // it is not a straight copy. See docs/LCD_FLASH_LAYER.md (Stage D).
 // ---------------------------------------------------------------------------
 void lcd_fill_rect(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t color) {
+    WDT_SCOPE(WDT_SITE_LCD_TRANSFER);
     if (x1 < x0 || y1 < y0) return;
     lcd_window(x0, y0, x1, y1);
     uint32_t px = (uint32_t)(x1 - x0 + 1) * (uint32_t)(y1 - y0 + 1);
@@ -205,6 +207,7 @@ void lcd_clear_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
 }
 
 void lcd_blit_ram(const uint16_t *px, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
+    WDT_SCOPE(WDT_SITE_LCD_TRANSFER);
     if (!px || !w || !h) return;
     lcd_window(x, y, x + w - 1, y + h - 1);
     tx_pixels(px, (uint32_t)w * (uint32_t)h);
@@ -376,6 +379,7 @@ uint32_t flash_jedec_id(void) {
 }
 
 void flash_read_bytes(uint32_t addr, uint8_t *dst, uint32_t len) {
+    WDT_SCOPE(WDT_SITE_FLASH_READ);
     lcd_flash_init();
     flash_cmd_addr(FLASH_CMD_READ, addr);
     for (uint32_t i = 0; i < len; i++) dst[i] = spi1_rw(0xFF);
@@ -386,6 +390,7 @@ void flash_read_bytes(uint32_t addr, uint8_t *dst, uint32_t len) {
 // is still busy, or the animation owns the bus. The chip stays busy for
 // 50-300 ms afterwards -- poll flash_busy().
 bool flash_erase_sector(uint32_t addr) {
+    WDT_SCOPE(WDT_SITE_FLASH_ERASE);
     if (anim_active()) return false;                 // SPI1 is shared with the DMA
     addr &= ~(FLASH_SECTOR - 1u);
     if (!flash_writable(addr, FLASH_SECTOR)) return false;
@@ -401,6 +406,7 @@ bool flash_erase_sector(uint32_t addr) {
 // the chip wraps to the start of the page instead of continuing, silently
 // corrupting data, so that case is rejected rather than split here.
 bool flash_page_program(uint32_t addr, const uint8_t *src, uint32_t len) {
+    WDT_SCOPE(WDT_SITE_FLASH_PROGRAM);
     if (anim_active()) return false;
     if (!len || len > FLASH_PAGE) return false;
     if ((addr & (FLASH_PAGE - 1u)) + len > FLASH_PAGE) return false;
@@ -593,6 +599,7 @@ static void blit_done_cb(void) {
 // NOTE: the panel's MADCTL orientation is the caller's business -- flash art authored for
 // the animation orientation (MADCTL_ANIM) will not match the dashboard's (MADCTL_DASH).
 void lcd_blit_flash(uint32_t src, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
+    WDT_SCOPE(WDT_SITE_LCD_TRANSFER);
     if (!w || !h) return;
     // SPI1 must be up or the DMA has a dead source: it never completes, the
     // caller spins out its timeout, and SPI0 is left in DMA mode with FLASH_CS
@@ -670,6 +677,7 @@ bool lcd_blit_busy(void) { return !blit_done; }
 static uint16_t blit_timeouts = 0;
 
 bool lcd_blit_wait(void) {
+    WDT_SCOPE(WDT_SITE_LCD_WAIT);
     /* OUTERMOST MARK WINS. This wait is NESTED inside other marked
      * operations -- backing_store_pre_write_hook() marks FLASH and then calls
      * this to drain the DMA, and rtc_bus_guard() marks I2C and does the same.

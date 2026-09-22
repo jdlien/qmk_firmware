@@ -1,3 +1,4 @@
+#include "watchdog_record.h"
 // rtc.c
 // Copyright 2026 Fernando Birra
 // SPDX-License-Identifier: GPL-2.0-or-later
@@ -229,6 +230,7 @@ static void rtc_bus_guard(void) {
 
 static bool pcf_read(rtc_time_t *out)
 {
+    WDT_SCOPE(WDT_SITE_I2C_READ);
     rtc_bus_guard();
     uint8_t reg = PCF8563_REG_SECONDS;
     uint8_t buf[7];
@@ -286,6 +288,7 @@ static bool pcf_read(rtc_time_t *out)
  * and blits only start from the same main-loop context, after it). */
 static bool pcf_write_raw(const rtc_time_t *t)
 {
+    WDT_SCOPE(WDT_SITE_I2C_WRITE);
     uint8_t buf[8] = {
         PCF8563_REG_SECONDS,
         dec2bcd(t->seconds),
@@ -323,6 +326,7 @@ static bool pcf_write(const rtc_time_t *t)
  * ifdef -- until then the daily build has no caller, and -Werror objects). */
 #ifdef WDT_TEST_HOOKS
 static bool pcf_reg_read(uint8_t reg, uint8_t *v) {
+    WDT_SCOPE(WDT_SITE_I2C_READ);
     rtc_bus_guard();
     uint32_t sc0, c0; cyc_stamp(&sc0, &c0);
     msg_t r = i2cMasterTransmitTimeout(&I2CD1, PCF8563_ADDR, &reg, 1, v, 1, PCF8563_I2C_TIMEOUT);
@@ -330,6 +334,7 @@ static bool pcf_reg_read(uint8_t reg, uint8_t *v) {
     return r == MSG_OK;
 }
 static bool pcf_reg_write(uint8_t reg, uint8_t v) {
+    WDT_SCOPE(WDT_SITE_I2C_WRITE);
     rtc_bus_guard();
     uint8_t buf[2] = { reg, v };
     uint32_t sc0, c0; cyc_stamp(&sc0, &c0);

@@ -317,6 +317,7 @@ void dbg_hold_task(void) {
 }
 
 bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
+    WDT_SCOPE(WDT_SITE_KEY_EVENT);
     /* Counted on EVERY build: this is what splits "the matrix never saw it"
      * from "the report was lost downstream", and it is useless if it only
      * exists in a flavour nobody types on. */
@@ -530,15 +531,16 @@ static void blit_stat_task(void) {
 #endif
 
 void housekeeping_task_kb(void) {
+    WDT_SCOPE(WDT_SITE_HOUSEKEEPING);
     health_loop_tick();    // worst-gap max-hold; one timer read per pass
 #ifdef LOOPGAP_INSTRUMENT
     loop_gap_task();
 #endif
     /* Per-pass work is deliberately NOT sited: see the LOOP_SITE note in
      * ak820pro.h -- the timer reads cost ~2 ms a pass on this MCU. */
-    param_repeat_task();
-    rtc_fast_task();             // <= one queued PCF I2C transaction, only when no blit is in flight (R4)
-    display_second_edge_task();  // clock digits repaint on the tick, not at the 10 Hz cadence (3.9)
+    WDT_CALL(WDT_SITE_PARAM_REPEAT, param_repeat_task());
+    WDT_CALL(WDT_SITE_RTC_FAST, rtc_fast_task());             // <= one queued PCF I2C transaction, only when no blit is in flight (R4)
+    WDT_CALL(WDT_SITE_SECOND_EDGE, display_second_edge_task());  // clock digits repaint on the tick, not at the 10 Hz cadence (3.9)
     /* One queued glyph per iteration, arming a DMA and returning -- EXCEPT that
      * it also drives the Fn+D page's banded clears and the staged restore, and
      * lcd_clear_rect() ends in lcd_blit_wait(): bounded (a 128x16 band is
@@ -546,7 +548,7 @@ void housekeeping_task_kb(void) {
      * on 2026-09-03. It is also the ONLY thing that advances debug_exit_step,
      * which is why display_housekeeping_task() may gate on that flag: keep this
      * call OUT of that function (see the gate's comment in display.c). */
-    display_blit_pump();
+    WDT_CALL(WDT_SITE_DISPLAY_PUMP, display_blit_pump());
 #ifdef CONSOLE_ENABLE
     blit_stat_task();
 #endif
@@ -572,7 +574,7 @@ void housekeeping_task_kb(void) {
 
         if (!anim_active()) LOOP_SITE(LOOP_SITE_RTCTASK, rtc_task());   // RTC I2C (port A) glitches the flash SPI1 pins (A12/A13) mid-DMA
         LOOP_SITE(LOOP_SITE_ANIM, anim_task());                      // one animation frame per 100 ms
-        display_housekeeping_task();      // its sub-draws are sited individually
+        WDT_CALL(WDT_SITE_DISPLAY_HK, display_housekeeping_task());      // its sub-draws are sited individually
         LOOP_SITE(LOOP_SITE_EECFG,  kb_eeconfig_task());               // settled, coalesced kb-config flush
         LOOP_SITE(LOOP_SITE_HEALTH, health_task());                    // [health] console line, on change only
 #ifdef LOOPGAP_INSTRUMENT
@@ -582,7 +584,7 @@ void housekeeping_task_kb(void) {
     }
 
     // Chain the user hook
-    housekeeping_task_user();
+    WDT_CALL(WDT_SITE_USER_HK, housekeeping_task_user());
 
     // Kick the watchdog LAST -- after the 10 Hz block and the user hook, so a
     // kick certifies a COMPLETED pass. A kick at entry would hand a freshly
@@ -632,6 +634,7 @@ void housekeeping_task_kb(void) {
  * intermittent hang for a guaranteed one if a completion interrupt is ever
  * genuinely lost. */
 void backing_store_pre_write_hook(void) {
+    WDT_SCOPE(WDT_SITE_EFL_DRAIN);
     loop_stall_mark = LOOP_MARK_FLASH;   /* every internal-flash writer passes here */
     health_note_flash_write();
     /* lcd_blit_wait() rather than a bare spin: a blit whose completion IRQ was
@@ -690,4 +693,14 @@ bool rgb_matrix_eeprom_flush_allowed(void) {
     }
 
     return timer_elapsed32(settled_since) >= RGB_SETTLE_MS;
+}
+
+/* EFL write/erase hooks bracket the actual HAL operation, not just its
+ * preceding LCD drain. Wear levelling calls these serially on the main loop. */
+static uint32_t efl_saved_path;
+void backing_store_operation_begin(bool erase) {
+    efl_saved_path = watchdog_record_enter(erase ? WDT_SITE_EFL_ERASE : WDT_SITE_EFL_WRITE);
+}
+void backing_store_operation_end(void) {
+    watchdog_record_leave(&efl_saved_path);
 }

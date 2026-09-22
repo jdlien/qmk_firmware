@@ -1,3 +1,4 @@
+#include "watchdog_record.h"
 #include "ch582f_ajazz.h"
 #include "bluetooth.h"
 #include "quantum.h"
@@ -719,6 +720,7 @@ uint8_t ch582_get_target_slot(void) {
 }
 
 void ch582_task(void) {
+    WDT_SCOPE(WDT_SITE_WIRELESS);
     /* Rolling 3-byte window over the RX stream. The module interleaves two frame
      * formats with no length prefix, and the stream can drop bytes on a burst, so
      * a fixed [type,data,cksum] state machine desyncs permanently. Matching on a

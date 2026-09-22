@@ -1,3 +1,4 @@
+#include "watchdog_record.h"
 // Copyright 2026 Fernando Birra, JD Lien
 // SPDX-License-Identifier: GPL-2.0-or-later
 /* The raw-HID protocol: the RTC (0x10), flash-provisioning (0x11), host-text
@@ -374,6 +375,7 @@ enum {
      * duration (the counter is re-armed at its end), not by the timer -- and
      * the timer-derived figure was 4.8x wrong. */
     HC_GET4        = 0x07,
+    HC_GET5        = 0x08, /* retained watchdog operation; watchdog_record.h */
     HC_CONN        = 0x02,
     /* Clock-sync status (PLAN.md 3.7): [.., .., HC_RTC, page] ->
      *   [.., .., HC_RTC, page, block...]
@@ -414,7 +416,7 @@ enum {
     HC_STALL       = 0x7E,
 #endif
 };
-#define HEALTH_PROTO_VERSION 5
+#define HEALTH_PROTO_VERSION 6
 
 static inline bool is_health_cmd(const uint8_t *data, uint8_t length) {
     return length >= 3 && data[0] == RTC_SET_VALUE && data[1] == HEALTH_CHANNEL;
@@ -450,6 +452,14 @@ static void health_command(uint8_t *data, uint8_t length) {
             if (length >= 32) {
                 data[3] = HEALTH_PROTO_VERSION;
                 health_fill4(&data[4]);
+            } else {
+                data[0] = RTC_UNHANDLED;
+            }
+            break;
+        case HC_GET5:
+            if (length >= 32) {
+                data[3] = HEALTH_PROTO_VERSION;
+                watchdog_record_fill(&data[4]);
             } else {
                 data[0] = RTC_UNHANDLED;
             }
@@ -530,7 +540,8 @@ static void health_command(uint8_t *data, uint8_t length) {
                 data[0] = RTC_UNHANDLED;
             }
             break;
-        case HC_STALL:
+        case HC_STALL: {
+            WDT_SCOPE(WDT_SITE_TEST_STALL);
             if (length >= 4) {
                 if (data[3] == 2) {
                     kb_eeconfig_test_write();   /* a REAL flash program first */
@@ -538,6 +549,7 @@ static void health_command(uint8_t *data, uint8_t length) {
                 for (;;) { /* wedge: the watchdog must get us out of here */ }
             }
             break;
+        }
 #endif
         default:
             data[0] = RTC_UNHANDLED;
@@ -585,6 +597,7 @@ static void rtc_read_into(uint8_t *data) {
 // VIA owns raw_hid_receive() and dispatches custom-value commands here. VIA echoes
 // the buffer back itself -- do NOT call raw_hid_send().
 void via_custom_value_command_kb(uint8_t *data, uint8_t length) {
+    WDT_SCOPE(WDT_SITE_RAW_HID);
     if (rtc_is_get_time_cmd(data, length)) {
         rtc_read_into(data);
         return;
@@ -617,6 +630,7 @@ void via_custom_value_command_kb(uint8_t *data, uint8_t length) {
 #else // no VIA: handle the same packet directly and echo it back like VIA would.
 
 void raw_hid_receive(uint8_t *data, uint8_t length) {
+    WDT_SCOPE(WDT_SITE_RAW_HID);
     if (rtc_is_get_time_cmd(data, length)) {
         rtc_read_into(data);
     } else if (rtc_is_set_time_cmd(data, length)) {
