@@ -592,6 +592,20 @@ static uint16_t blit_x = 0, blit_y = 0, blit_w = 0, blit_h = 0;
 static uint16_t blit_retries = 0;
 static uint16_t blit_retry_successes = 0;
 static uint16_t blit_busy_waits = 0;   /* see bus_quiesce() */
+
+#ifdef CONSOLE_ENABLE
+/* Arm-window timing, instrumented builds only (crash hunt, 2026-09-23). Every
+ * blit timeout on record is a transfer that NEVER STARTED, and the hunt showed
+ * those are what the hang and the remaining stalls ride on. Hypothesis under
+ * test: an interrupt landing between the flash READ command and Fire() lets
+ * SPI1's RX-threshold event -- the DMA trigger -- come and go (or be cleared by
+ * the IC write) before DMAEN is set. ST ticks are 5.33 us; an unpreempted
+ * command phase is a tick or two, the row ISR alone ~35. `cmd` = CS low to the
+ * last address byte, `fire` = from there, across the SPI1 IC clear, to DMAEN. */
+#define ARM_SLOW_TICKS 10u
+static uint16_t arm_cmd_ticks, arm_fire_ticks;          /* the most recent arm */
+static uint32_t arms_total, arms_slow_cmd, arms_slow_fire;
+#endif
 static bool     blit_retrying = false;
 /* Since boot, never reset: the exposure a soak reports against (finding 15). */
 static uint32_t blits_issued = 0;
@@ -673,14 +687,39 @@ void lcd_blit_flash(uint32_t src, uint16_t x, uint16_t y, uint16_t w, uint16_t h
     spiSN32FlashDmaPrepare(&SPID0, &SPID1, bytes);
     SN_SPI1->CTRL0_b.FRESET = 0b11;                 // flash side (bare-metal, ours)
     lcd_window(x, y, x + w - 1, y + h - 1);         // via spiSend (SPI0 still 8-bit)
+#ifdef CONSOLE_ENABLE
+    systime_t arm_t0 = chVTGetSystemTimeX();
+#endif
     gpio_write_pin(FLASH_CS, 0);
     // Prepare() disabled SPID1's NVIC vector for the DMA window, so the READ+addr
     // command goes out via the raw poll primitive (not spiSend, which needs the ISR).
     spi1_raw_byte(FLASH_CMD_READ); spi1_raw_byte((src>>16)&0xFF); spi1_raw_byte((src>>8)&0xFF); spi1_raw_byte(src&0xFF);
+#ifdef CONSOLE_ENABLE
+    systime_t arm_t1 = chVTGetSystemTimeX();
+#endif
     SN_SPI1->IC = 0x3F;
     // Flip to 16-bit pixels and arm; blit_done_cb fires at completion.
     spiSN32FlashDmaFire(&SPID0, blit_done_cb);
+#ifdef CONSOLE_ENABLE
+    systime_t arm_t2 = chVTGetSystemTimeX();
+    arm_cmd_ticks  = (uint16_t)(arm_t1 - arm_t0);
+    arm_fire_ticks = (uint16_t)(arm_t2 - arm_t1);
+    arms_total++;
+    if (arm_cmd_ticks  > ARM_SLOW_TICKS) arms_slow_cmd++;
+    if (arm_fire_ticks > ARM_SLOW_TICKS) arms_slow_fire++;
+#endif
 }
+
+#ifdef CONSOLE_ENABLE
+/* Once a minute from blit_stat_task(): the base rate the never-started
+ * timeouts' own cmd/fire ticks are compared against. */
+void lcd_blit_arm_report(void) {
+    dprintf("[lcd] arms=%lu slow_cmd=%lu slow_fire=%lu never=%u busy=%u\n",
+            (unsigned long)arms_total, (unsigned long)arms_slow_cmd,
+            (unsigned long)arms_slow_fire, (unsigned)blit_kinds[BLIT_NEVER_STARTED],
+            (unsigned)blit_busy_waits);
+}
+#endif
 
 // Animation frames are full-screen tiles.
 static inline void blit_arm(uint32_t addr) { lcd_blit_flash(addr, 0, 0, FRAME_W, FRAME_H); }
@@ -796,10 +835,10 @@ bool lcd_blit_wait(void) {
     bool completed = blit_done;
     uint32_t ris = SN_SPI0->RIS & 0x3Fu;
     uint32_t cnt = SN_SPI0->DMACNT_b.CNT;
-    uint32_t s0 = SN_SPI0->STAT, s1 = SN_SPI1->STAT;
+    uint32_t s0 = SN_SPI0->STAT, s1 = SN_SPI1->STAT, ris1 = SN_SPI1->RIS & 0x3Fu;
     if (!completed) spiSN32FlashDmaAbort(&SPID0);
     chSysUnlock();
-    (void)s0; (void)s1;   /* console-only: dprintf is empty on the daily build */
+    (void)s0; (void)s1; (void)ris1;   /* console-only: dprintf is empty on the daily build */
     if (completed) return true;
     bool never_started = !started && cnt == blit_len_words && (ris & 0x30u) == 0u;
 
@@ -830,11 +869,14 @@ bool lcd_blit_wait(void) {
                          : (cnt != 0 && cnt < blit_len_words)     ? BLIT_STALLED
                                                                   : BLIT_UNKNOWN;
     if (blit_kinds[kind] < 0xFFFFu) blit_kinds[kind]++;
-    dprintf("[lcd] blit timeout #%u kind=%u ris=%02lx cnt=%lu/%lu s0=%lx s1=%lx i2c=%u\n",
+#ifdef CONSOLE_ENABLE
+    dprintf("[lcd] blit timeout #%u kind=%u ris=%02lx cnt=%lu/%lu s0=%lx s1=%lx ris1=%02lx cmd=%u fire=%u i2c=%u\n",
             (unsigned)blit_timeouts, (unsigned)kind,
             (unsigned long)ris, (unsigned long)cnt, (unsigned long)blit_len_words,
-            (unsigned long)s0, (unsigned long)s1,
+            (unsigned long)s0, (unsigned long)s1, (unsigned long)ris1,
+            (unsigned)arm_cmd_ticks, (unsigned)arm_fire_ticks,
             (unsigned)rtc_i2c_overlaps());
+#endif
 
     if (never_started && !blit_retrying && blit_w && blit_h) {
         if (blit_retries < 0xFFFFu) blit_retries++;   /* attempts, before the outcome */

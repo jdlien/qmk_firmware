@@ -518,6 +518,9 @@ static void blit_stat_task(void) {
     if (timer_elapsed32(last_at) < 1000) return;
     last_at = timer_read32();
 
+    static uint8_t minute = 0;
+    if (++minute >= 60) { minute = 0; lcd_blit_arm_report(); }
+
     uint32_t rate = lcd_blit_count_take();
     uint16_t to   = lcd_blit_timeouts();
     uint16_t re   = lcd_blit_retries();
