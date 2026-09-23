@@ -34,6 +34,20 @@ bool     lcd_blit_wait(void);
 uint16_t lcd_blit_timeouts(void);
 uint32_t lcd_blit_count_take(void);
 uint16_t lcd_blit_retries(void);
+/* Why each blit timeout happened, from the registers BEFORE the abort, and the
+ * exposure: health page 6. Since boot; HC_RESET does not clear them. */
+enum blit_fault { BLIT_NEVER_STARTED, BLIT_STALLED, BLIT_IRQ_LOST, BLIT_UNKNOWN, BLIT_FAULT_KINDS };
+typedef struct {
+    uint16_t kinds[BLIT_FAULT_KINDS];
+    /* CPU transactions (a blit arm, a CPU draw, a flash transaction) that
+     * found a DMA still in flight and waited it out -- each an overlap that
+     * could have hung before 2026-09-22's fix. Retry ATTEMPTS are not reported
+     * separately: one follows every never-started timeout outside a retry, so
+     * never_started bounds them. */
+    uint16_t busy_waits, retry_successes;
+    uint32_t issued;
+} lcd_blit_stats_t;
+void lcd_blit_stats(lcd_blit_stats_t *out);
 void lcd_blit_flash_probe(uint32_t src, uint16_t w, uint16_t h);
 // Brings up SPI1 (external flash). lcd_blit_flash does not do this itself, so
 // call it before any blit outside the animation path.

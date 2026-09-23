@@ -367,3 +367,46 @@ void health_fill4(uint8_t *out28) {
 #undef PUT16
 #undef PUT32
 }
+
+/* ---- page 6: crash-hunt vitals (plans/CRASH-HUNT-PLAN.md, B2-B4) ---------- */
+
+#ifndef AK820_BUILD_TOKEN
+#define AK820_BUILD_TOKEN 0u   /* build.sh supplies one; 0 = an unarchived build */
+#endif
+
+/* crt0 paints both stacks with CRT0_STACKS_FILL_PATTERN at boot. */
+#define STACK_PAINT 0x55555555u
+extern uint32_t __main_stack_base__, __main_stack_end__;
+extern uint32_t __process_stack_base__, __process_stack_end__;
+
+/* A paint-based watermark: bytes never written since boot, counted up from
+ * the region's base. It OVERSTATES headroom when a frame reserves space
+ * without writing it, or stores the paint value itself; it is a floor on how
+ * deep the stack went, not a measurement of minimum SP. The bottom word is the
+ * canary: changed means the region was exhausted, and reads 0. Bounded,
+ * volatile reads; nothing per main-loop pass. (crash-hunt review, finding 10) */
+static uint16_t stack_free(const uint32_t *base, const uint32_t *end) {
+    const volatile uint32_t *p = (const volatile uint32_t *)base;
+    const volatile uint32_t *e = (const volatile uint32_t *)end;
+    if (p >= e || *p != STACK_PAINT) return 0;
+    while (p < e && *p == STACK_PAINT) p++;
+    return (uint16_t)((uintptr_t)p - (uintptr_t)base);
+}
+
+void health_fill6(uint8_t *out28) {
+    lcd_blit_stats_t b;
+    lcd_blit_stats(&b);
+    uint32_t v;
+    uint8_t *p = out28;
+#define PUT32(x) do { v = (x); *p++ = v & 0xFF; *p++ = (v >> 8) & 0xFF; *p++ = (v >> 16) & 0xFF; *p++ = (v >> 24) & 0xFF; } while (0)
+#define PUT16(x) do { v = (x); *p++ = v & 0xFF; *p++ = (v >> 8) & 0xFF; } while (0)
+    PUT32(timer_read32());                                              /* 4 */
+    PUT32((uint32_t)AK820_BUILD_TOKEN);                                 /* 8 */
+    PUT16(stack_free(&__main_stack_base__, &__main_stack_end__));       /* 10 */
+    PUT16(stack_free(&__process_stack_base__, &__process_stack_end__)); /* 12 */
+    for (unsigned i = 0; i < BLIT_FAULT_KINDS; i++) PUT16(b.kinds[i]);  /* 20 */
+    PUT16(b.busy_waits); PUT16(b.retry_successes);                      /* 24 */
+    PUT32(b.issued);                                                    /* 28 */
+#undef PUT16
+#undef PUT32
+}

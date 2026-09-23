@@ -376,6 +376,7 @@ enum {
      * the timer-derived figure was 4.8x wrong. */
     HC_GET4        = 0x07,
     HC_GET5        = 0x08, /* retained watchdog operation; watchdog_record.h */
+    HC_GET6        = 0x09, /* crash-hunt vitals, protocol >= 7; health.h */
     HC_CONN        = 0x02,
     /* Clock-sync status (PLAN.md 3.7): [.., .., HC_RTC, page] ->
      *   [.., .., HC_RTC, page, block...]
@@ -414,9 +415,39 @@ enum {
      *         so the reset lands as close after a program cycle as this test
      *         can arrange. The reply never arrives, by design. */
     HC_STALL       = 0x7E,
+    /* Test-only, instrumented builds: prove the terminal records end to end.
+     *   [SET_VALUE, HEALTH_CHANNEL, HC_FAULT, mode]
+     * mode 1: UDF in thread context -> hard_fault, exception 0.
+     * mode 2: a fault INSIDE an ISR (Vector50, test builds only) -> hard_fault,
+     *         exception 20 -- the MSP path mode 1 never takes.
+     * mode 3: pend a vector nobody handles (I2S0) -> unhandled_exception, 19.
+     * mode 4: mode 1, then fault again inside HardFault -> LOCKUP. Answers
+     *         whether the watchdog recovers a locked-up core; if it does not,
+     *         the way out is a cold power-off.
+     * mode 5: write 1 KB of stack and return normally -- page 6's PSP
+     *         watermark must move.
+     * Modes 1-4 never reply, by design, and are refused while degraded. The
+     * record's parent is test_fault (this scope), not raw_hid. */
+    HC_FAULT       = 0x7F,
 #endif
 };
-#define HEALTH_PROTO_VERSION 6
+#define HEALTH_PROTO_VERSION 7
+
+#ifdef WDT_TEST_HOOKS
+extern volatile uint8_t wdt_test_fault_in_handler;   /* fault.c */
+
+/* HC_FAULT mode 2's interrupt: I2S1 is unused on this board, so its vector is
+ * free for a test-build-only handler that faults in handler mode. */
+void Vector50(void);
+void Vector50(void) { __asm__ volatile("udf #0"); }
+
+/* HC_FAULT mode 5: WRITE every byte, or a frame that only reserves space leaves
+ * the paint intact and the watermark cannot see it (finding 10). */
+static __attribute__((noinline)) void test_deep_stack(void) {
+    volatile uint8_t deep[1024];
+    for (unsigned i = 0; i < sizeof(deep); i++) deep[i] = (uint8_t)i;
+}
+#endif
 
 static inline bool is_health_cmd(const uint8_t *data, uint8_t length) {
     return length >= 3 && data[0] == RTC_SET_VALUE && data[1] == HEALTH_CHANNEL;
@@ -460,6 +491,14 @@ static void health_command(uint8_t *data, uint8_t length) {
             if (length >= 32) {
                 data[3] = HEALTH_PROTO_VERSION;
                 watchdog_record_fill(&data[4]);
+            } else {
+                data[0] = RTC_UNHANDLED;
+            }
+            break;
+        case HC_GET6:
+            if (length >= 32) {
+                data[3] = HEALTH_PROTO_VERSION;
+                health_fill6(&data[4]);
             } else {
                 data[0] = RTC_UNHANDLED;
             }
@@ -542,6 +581,8 @@ static void health_command(uint8_t *data, uint8_t length) {
             break;
         case HC_STALL: {
             WDT_SCOPE(WDT_SITE_TEST_STALL);
+            /* With the watchdog off (degraded) a wedge is permanent: refuse. */
+            if (watchdog_degraded()) { data[0] = RTC_UNHANDLED; break; }
             if (length >= 4) {
                 if (data[3] == 2) {
                     kb_eeconfig_test_write();   /* a REAL flash program first */
@@ -549,6 +590,38 @@ static void health_command(uint8_t *data, uint8_t length) {
                 for (;;) { /* wedge: the watchdog must get us out of here */ }
             }
             break;
+        }
+        case HC_FAULT: {
+            WDT_SCOPE(WDT_SITE_TEST_FAULT);
+            if (length < 4) break;
+            /* Three test resets inside ten minutes reach degraded mode and the
+             * watchdog stays OFF for the boot: a fault then spins forever, and
+             * the lockup test would "fail" for the wrong reason (implementation
+             * review, finding 2). Mode 5 never resets, so it is allowed. */
+            if (watchdog_degraded() && data[3] != 5) { data[0] = RTC_UNHANDLED; return; }
+            switch (data[3]) {
+                case 4:
+                    wdt_test_fault_in_handler = 1;
+                    __attribute__((fallthrough));
+                case 1:
+                    __asm__ volatile("udf #0");
+                    break;
+                case 2:
+                    NVIC_EnableIRQ(I2S1_IRQn);
+                    NVIC_SetPendingIRQ(I2S1_IRQn);
+                    break;
+                case 3:
+                    NVIC_EnableIRQ(I2S0_IRQn);
+                    NVIC_SetPendingIRQ(I2S0_IRQn);
+                    break;
+                case 5:
+                    test_deep_stack();
+                    return;   /* the one mode that replies */
+                default:
+                    data[0] = RTC_UNHANDLED;
+                    return;
+            }
+            for (;;) { /* not reached if the fault fired; the watchdog if not */ }
         }
 #endif
         default:

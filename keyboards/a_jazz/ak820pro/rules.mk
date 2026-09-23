@@ -27,6 +27,7 @@ SRC += graphics/display.c
 SRC += rtc/rtc.c
 SRC += watchdog.c   # hardware WDT: arm/kick/boot accounting/bootloader stop
 SRC += watchdog_record.c # reset-retained operation breadcrumbs
+SRC += fault.c      # HardFault / unhandled-vector / halt: terminal records
 SRC += health.c     # unified health counters; raw HID channel 0x13
 SRC += kb_eeconfig.c # owner of the persisted kb datablock
 SRC += bt_ui.c      # wireless slider, BT slot keys, hold-to-pair

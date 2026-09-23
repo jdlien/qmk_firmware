@@ -117,6 +117,10 @@ static void spi1_setup(void) {
 static inline void cs(bool hi) { gpio_write_pin(PANEL_CS, hi); }
 static inline void dc(bool data){ gpio_write_pin(PANEL_DC, data); }
 
+/* Wait out a flash->LCD DMA still in flight before any CPU transaction on
+ * either bus. Defined with the blit state below; see its comment. */
+static void bus_quiesce(void);
+
 static void tx8(uint8_t b) { spiSend(&SPID0, 1, &b); }
 
 // RGB565 is streamed hi-byte-first to match the panel. The driver takes a byte
@@ -170,6 +174,7 @@ static void lcd_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
 void lcd_fill_rect(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t color) {
     WDT_SCOPE(WDT_SITE_LCD_TRANSFER);
     if (x1 < x0 || y1 < y0) return;
+    bus_quiesce();
     lcd_window(x0, y0, x1, y1);
     uint32_t px = (uint32_t)(x1 - x0 + 1) * (uint32_t)(y1 - y0 + 1);
     static uint8_t buf[512];
@@ -209,6 +214,7 @@ void lcd_clear_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
 void lcd_blit_ram(const uint16_t *px, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
     WDT_SCOPE(WDT_SITE_LCD_TRANSFER);
     if (!px || !w || !h) return;
+    bus_quiesce();
     lcd_window(x, y, x + w - 1, y + h - 1);
     tx_pixels(px, (uint32_t)w * (uint32_t)h);
     cs(1);
@@ -219,6 +225,7 @@ void lcd_blit_ram(const uint16_t *px, uint16_t x, uint16_t y, uint16_t w, uint16
 // ---------------------------------------------------------------------------
 static void send_cmd(uint8_t c) { dc(0); tx8(c); dc(1); }
 static void send_seq(const uint8_t *seq, uint32_t len) {   // cmd, delay_ms, nparams, params...
+    bus_quiesce();
     cs(0);
     for (uint32_t i = 0; i < len;) {
         uint8_t cmd = seq[i], delay = seq[i+1], num = seq[i+2];
@@ -342,12 +349,14 @@ bool flash_writable(uint32_t addr, uint32_t len) {
 }
 
 static void flash_cmd_addr(uint8_t cmd, uint32_t a) {
+    bus_quiesce();
     gpio_write_pin(FLASH_CS, 0);
     spi1_xfer(cmd);
     spi1_xfer((a >> 16) & 0xFF); spi1_xfer((a >> 8) & 0xFF); spi1_xfer(a & 0xFF);
 }
 
 static uint8_t flash_status(void) {
+    bus_quiesce();
     gpio_write_pin(FLASH_CS, 0);
     spi1_xfer(FLASH_CMD_RDSR);
     uint8_t s = spi1_rw(0xFF);
@@ -362,6 +371,7 @@ bool flash_busy(void) {
 }
 
 static void flash_wren(void) {
+    bus_quiesce();
     gpio_write_pin(FLASH_CS, 0);
     spi1_xfer(FLASH_CMD_WREN);
     gpio_write_pin(FLASH_CS, 1);
@@ -369,6 +379,7 @@ static void flash_wren(void) {
 
 uint32_t flash_jedec_id(void) {
     lcd_flash_init();
+    bus_quiesce();
     gpio_write_pin(FLASH_CS, 0);
     spi1_xfer(FLASH_CMD_JEDEC);
     uint32_t id = ((uint32_t)spi1_rw(0xFF) << 16);
@@ -579,9 +590,37 @@ static uint32_t blit_len_words = 0;   // programmed DMACNT, for the timeout repo
 static uint32_t blit_src = 0;
 static uint16_t blit_x = 0, blit_y = 0, blit_w = 0, blit_h = 0;
 static uint16_t blit_retries = 0;
+static uint16_t blit_retry_successes = 0;
+static uint16_t blit_busy_waits = 0;   /* see bus_quiesce() */
 static bool     blit_retrying = false;
+/* Since boot, never reset: the exposure a soak reports against (finding 15). */
+static uint32_t blits_issued = 0;
+static uint16_t blit_kinds[BLIT_FAULT_KINDS];
 
 uint16_t lcd_blit_retries(void) { return blit_retries; }
+
+/* While a flash->LCD DMA is in flight, SPI0's interrupt enable holds only the
+ * DMA bits and SPI1's NVIC vector is off (Prepare() disabled it): a spiSend()
+ * or spiExchange() on EITHER bus waits for an interrupt that cannot fire, and
+ * ChibiOS gives it no timeout. The watchdog then resets the board -- retained
+ * record of the first provoked hang (crash hunt, 2026-09-22 21:18): "lcd_
+ * transfer within text", a re-arm in lcd_blit_flash(). A second review found
+ * the same hole in the CPU draws (the Caps padlock, battery fill, icons, via
+ * lcd_fill_rect) and in every external-flash transaction.
+ *
+ * So every CPU transaction on either bus starts here, and a transfer still in
+ * flight is waited out through the bounded, recovering lcd_blit_wait() --
+ * normally well under a millisecond. Counted: each is an overlap that could
+ * have hung before this existed (not necessarily one that would have).
+ *
+ * NOT in lcd_window(): lcd_blit_flash() calls it AFTER clearing blit_done for
+ * its own transfer, and would wait on itself. Only main-loop code arms a DMA,
+ * so a transaction that starts quiesced stays quiesced to its end. */
+static void bus_quiesce(void) {
+    if (blit_done) return;
+    if (blit_busy_waits < 0xFFFFu) blit_busy_waits++;
+    lcd_blit_wait();
+}
 
 uint32_t lcd_blit_count_take(void) { uint32_t n = blit_count; blit_count = 0; return n; }
 
@@ -601,6 +640,22 @@ static void blit_done_cb(void) {
 void lcd_blit_flash(uint32_t src, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
     WDT_SCOPE(WDT_SITE_LCD_TRANSFER);
     if (!w || !h) return;
+    /* NEVER RE-ARM UNDER A TRANSFER STILL IN FLIGHT. The glyph pump arms a DMA
+     * and returns (lcd_draw_flash_glyph_try), and on the LAST glyph it resets
+     * the queue -- so gq_pending() reads false while that transfer is still
+     * running. A synchronous draw later in the same main-loop pass (the 10 Hz
+     * block: a band clear, an icon, a lock indicator) came straight here, and
+     * Prepare() rewrote SPI0 under the live DMA. That stopped it before its
+     * completion IRQ could hand SPI0 back to FIFO mode, so IE was left with
+     * only the DMA bits, the window command's spiSend() waited for an RX
+     * interrupt that could no longer fire -- with no timeout -- and the
+     * watchdog reset the board. Retained record of the first provoked hang
+     * (crash hunt, 2026-09-22 21:18): "lcd_transfer within text".
+     *
+     * Wait it out through the bounded, recovering wait (normally well under a
+     * millisecond). The CPU draw and flash paths had the same hole; every
+     * CPU transaction on either bus now goes through bus_quiesce(). */
+    bus_quiesce();
     // SPI1 must be up or the DMA has a dead source: it never completes, the
     // caller spins out its timeout, and SPI0 is left in DMA mode with FLASH_CS
     // asserted -- which then corrupts the next flash read. This used to be the
@@ -608,6 +663,7 @@ void lcd_blit_flash(uint32_t src, uint16_t x, uint16_t y, uint16_t w, uint16_t h
     // worked because flash_assets_init() happened to run first). Cheap: a bool.
     lcd_flash_init();
     blit_count++;
+    if (blits_issued != UINT32_MAX) blits_issued++;
     uint32_t bytes = (uint32_t)w * (uint32_t)h * 2u;
     blit_len_words = bytes - 1;      // what Prepare() loads into DMACNT
     blit_src = src; blit_x = x; blit_y = y; blit_w = w; blit_h = h;
@@ -718,30 +774,43 @@ bool lcd_blit_wait(void) {
      * One retry, not a loop: if a second arm also fails to start, something is
      * wrong beyond a missed trigger and spinning on it would be the original
      * bug again. blit_retrying guards against recursing through the abort. */
-    /* Re-read the registers HERE rather than trusting the phase-1 result alone.
-     * The start loop can only prove it saw no movement WHILE IT RAN; a transfer
-     * that began just after the loop exited would still have started == false,
-     * and retrying it would replay a blit that had already pushed pixels. The
-     * window is tiny but the consequence is a corrupted panel, so confirm the
-     * counter is still untouched at the moment we decide. */
-    bool never_started = !started &&
-                         (SN_SPI0->DMACNT_b.CNT == blit_len_words) &&
-                         ((SN_SPI0->RIS & 0x30u) == 0u);
+    /* ONE observation decides everything below, taken with the completion ISR
+     * held off (crash-hunt implementation review, finding 5):
+     *   - blit_done is re-checked: a completion that landed after the wait
+     *     gave up is a success, not a timeout;
+     *   - the registers are read once, BEFORE the abort -- which clears the
+     *     SPI flags and the NVIC pending state, so a read afterwards (as the
+     *     console line once did) describes the recovery, not the fault;
+     *   - never_started comes from this snapshot, not the start loop. The loop
+     *     can only prove it saw no movement WHILE IT RAN; a transfer that began
+     *     just after would still read started == false, and retrying it would
+     *     replay a blit that had already pushed pixels onto the panel.
+     *
+     * The abort goes through the LLD, which restores BOTH controllers --
+     * crucially it re-enables SPI1's NVIC vector, which Prepare() disabled for
+     * the DMA window. An earlier version of this recovery reset the flash FIFO
+     * by hand and skipped that, leaving SPI1 deaf: the board went totally
+     * silent within two seconds of the "recovery", which was far worse than
+     * the stall. */
+    chSysLock();
+    bool completed = blit_done;
+    uint32_t ris = SN_SPI0->RIS & 0x3Fu;
+    uint32_t cnt = SN_SPI0->DMACNT_b.CNT;
+    uint32_t s0 = SN_SPI0->STAT, s1 = SN_SPI1->STAT;
+    if (!completed) spiSN32FlashDmaAbort(&SPID0);
+    chSysUnlock();
+    (void)s0; (void)s1;   /* console-only: dprintf is empty on the daily build */
+    if (completed) return true;
+    bool never_started = !started && cnt == blit_len_words && (ris & 0x30u) == 0u;
 
-
-    /* Abort through the LLD, which restores BOTH controllers -- crucially it
-     * re-enables SPI1's NVIC vector, which Prepare() disabled for the DMA
-     * window. An earlier version of this recovery reset the flash FIFO by hand
-     * and skipped that, leaving SPI1 deaf: the board went totally silent within
-     * two seconds of the "recovery", which was far worse than the stall. */
-    spiSN32FlashDmaAbort(&SPID0);
     gpio_write_pin(FLASH_CS, 1);          // then the CS lines, as blit_done_cb does
     cs(1);
     blit_done = true;
 
     if (blit_timeouts < 0xFFFFu) blit_timeouts++;
-    /* Capture BEFORE the abort clears anything. DMACNT is the discriminator and
-     * distinguishes three completely different faults with three different fixes:
+    /* DMACNT, from the snapshot above, is the discriminator. It tells apart
+     * three different symptoms -- which is not the same as proving three
+     * root causes:
      *
      *   cnt == the programmed length  -> the transfer never started
      *   cnt somewhere in between      -> the SOURCE starved mid-transfer, which
@@ -750,22 +819,30 @@ bool lcd_blit_wait(void) {
      *   cnt == 0, ris DMATCIF set     -> it finished and the IRQ was LOST, i.e.
      *                                    an interrupt-delivery problem, not a bus one
      *
-     * ris bit5 = DMATCIF (transfer complete), bit4 = DMAHTIF (half). */
-    dprintf("[lcd] blit timeout #%u ris=%02lx cnt=%lu/%lu s0=%lx s1=%lx i2c=%u\n",
-            (unsigned)blit_timeouts,
-            (unsigned long)(SN_SPI0->RIS & 0x3F),
-            (unsigned long)SN_SPI0->DMACNT_b.CNT,
-            (unsigned long)blit_len_words,
-            (unsigned long)SN_SPI0->STAT,
-            (unsigned long)SN_SPI1->STAT,
+     * ris bit5 = DMATCIF (transfer complete), bit4 = DMAHTIF (half).
+     *
+     * Anything else -- a completion that landed between the wait giving up and
+     * the snapshot, a counter at zero with no flag -- is UNKNOWN, kept apart
+     * rather than forced into one of the three. Counted on every build: the
+     * daily one has no console. */
+    enum blit_fault kind = never_started                          ? BLIT_NEVER_STARTED
+                         : (cnt == 0 && (ris & 0x20u))            ? BLIT_IRQ_LOST
+                         : (cnt != 0 && cnt < blit_len_words)     ? BLIT_STALLED
+                                                                  : BLIT_UNKNOWN;
+    if (blit_kinds[kind] < 0xFFFFu) blit_kinds[kind]++;
+    dprintf("[lcd] blit timeout #%u kind=%u ris=%02lx cnt=%lu/%lu s0=%lx s1=%lx i2c=%u\n",
+            (unsigned)blit_timeouts, (unsigned)kind,
+            (unsigned long)ris, (unsigned long)cnt, (unsigned long)blit_len_words,
+            (unsigned long)s0, (unsigned long)s1,
             (unsigned)rtc_i2c_overlaps());
 
     if (never_started && !blit_retrying && blit_w && blit_h) {
-        if (blit_retries < 0xFFFFu) blit_retries++;
+        if (blit_retries < 0xFFFFu) blit_retries++;   /* attempts, before the outcome */
         blit_retrying = true;
         lcd_blit_flash(blit_src, blit_x, blit_y, blit_w, blit_h);
         bool ok = lcd_blit_wait();
         blit_retrying = false;
+        if (ok && blit_retry_successes < 0xFFFFu) blit_retry_successes++;
         return ok;
     }
 
@@ -773,6 +850,13 @@ bool lcd_blit_wait(void) {
 }
 
 uint16_t lcd_blit_timeouts(void) { return blit_timeouts; }
+
+void lcd_blit_stats(lcd_blit_stats_t *out) {
+    for (unsigned i = 0; i < BLIT_FAULT_KINDS; i++) out->kinds[i] = blit_kinds[i];
+    out->busy_waits      = blit_busy_waits;
+    out->retry_successes = blit_retry_successes;
+    out->issued          = blits_issued;
+}
 
 // The RAM/CPU text and image helpers are gone: all art is flash-resident and
 // DMA-drawn now (lcd_draw_flash_*). lcd_blit_ram() stays for anything that
@@ -801,7 +885,7 @@ static bool anim_read_header(void) {
 // suspend RTC polling while this is true.
 bool anim_active(void) { return anim_on; }
 
-static void set_madctl(uint8_t v) { cs(0); dc(0); tx8(0x36); dc(1); tx8(v); cs(1); }
+static void set_madctl(uint8_t v) { bus_quiesce(); cs(0); dc(0); tx8(0x36); dc(1); tx8(v); cs(1); }
 
 // SPI1 (external flash) is brought up lazily -- lcd_blit_flash does NOT do it,
 // so any caller outside the animation path must call this first.

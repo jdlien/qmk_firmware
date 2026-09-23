@@ -110,6 +110,21 @@ void health_fill3(uint8_t *out28);
  *   u32 reserved */
 void health_fill4(uint8_t *out28);
 
+/* Sixth page (28 bytes, protocol >= 7), little-endian, for the crash hunt:
+ *   u32 uptime_ms        -- timer_read32(): rates, and a reboot shows as a drop
+ *   u32 build_token      -- matches ak820pro-builds/out/<artifact>.json, so a
+ *                           fault PC finds its ELF; 0 = an unarchived build
+ *   u16 msp_free         -- interrupt stack, paint watermark (0: canary gone)
+ *   u16 psp_free         -- main thread's stack, same rule
+ *   u16 blit_never_started, blit_stalled, blit_irq_lost, blit_unknown
+ *   u16 blit_busy_waits  -- CPU bus transactions that found a DMA still
+ *                           in flight and waited: overlaps that could hang
+ *                           before the 2026-09-22 fix
+ *   u16 blit_retry_successes
+ *   u32 blits_issued
+ * Counters are since boot and saturate; HC_RESET leaves them. */
+void health_fill6(uint8_t *out28);
+
 /* Live readouts for the on-board display (graphics/display.c debug page).
  * Main-loop context only; ISR-written sources are snapshotted under a short
  * lock. Rates are the caller's job: take two snapshots and divide by the
