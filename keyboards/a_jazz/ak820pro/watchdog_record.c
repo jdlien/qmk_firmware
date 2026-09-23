@@ -33,6 +33,7 @@ static uintptr_t test_frame_lo, test_frame_hi;
 #define RST_POWER ((1u << 2) | (1u << 4))
 static bool ready;
 static uint8_t boot_record[28];
+static volatile uint32_t write_drain; /* commit_terminal: never read */
 
 /* One aligned atomic word: low byte current scope, next byte parent;
  * upper half complements the lower half to reject corrupt/stale contents.
@@ -52,6 +53,10 @@ static void put32(uint8_t *out, uint32_t v) {
 
 uint8_t watchdog_record_boot(uint8_t rstst) {
     ready = false;
+#if defined(WDT_TEST_HOOKS) && !defined(WATCHDOG_RECORD_TEST)
+    WDT_BOOT_RAW[0] = retained.magic; WDT_BOOT_RAW[1] = retained.count;
+    WDT_BOOT_RAW[2] = retained.path;  WDT_BOOT_RAW[3] = retained.pass_uptime_ms;
+#endif
     uint32_t magic = retained.magic;
     bool terminal = magic == FAULT_MAGIC;
     bool warm = (magic == RECORD_MAGIC || terminal) && !(rstst & RST_POWER);
@@ -127,6 +132,16 @@ static void commit_terminal(uint8_t site, uint8_t exception, uint32_t pc) {
     retained.path = encode_path((uint16_t)(((uint16_t)parent << 8) | site));
     retained.pass_uptime_ms = pc;
     retained.magic = FAULT_MAGIC;
+    /* One sacrificial write, and it must stay. On this part the LAST SRAM
+     * write before a loop that never writes again does not survive the
+     * watchdog reset: it waits in a posted-write stage that only a later
+     * WRITE drains. Reads do not drain it, and neither does DSB. Every
+     * caller spins or locks up right after this, so without this line the
+     * magic alone was missing at boot and every terminal record came back
+     * invalid -- measured 2026-09-23 on the board, DSB tried and failed
+     * the same way. Upstream's sn32_dfu.c waits 1 us "for memory to be
+     * set" before its reset; likely the same property. */
+    write_drain = FAULT_MAGIC;
 }
 
 void watchdog_record_fault_frame(uintptr_t frame_addr) {

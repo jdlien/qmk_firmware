@@ -426,9 +426,22 @@ enum {
      *         the way out is a cold power-off.
      * mode 5: write 1 KB of stack and return normally -- page 6's PSP
      *         watermark must move.
-     * Modes 1-4 never reply, by design, and are refused while degraded. The
-     * record's parent is test_fault (this scope), not raw_hid. */
+     * mode 6: commit a halt record from THREAD context, then wedge.
+     * mode 7: the same, then fault: the handler finds the record written and
+     *         must leave it alone. 6 and 7 split the commit from the
+     *         exception; they found the lost final write (watchdog_record.c,
+     *         commit_terminal) and now guard it.
+     * Modes 1-4, 6 and 7 never reply, by design, and are refused while
+     * degraded. The record's parent is test_fault (this scope), not raw_hid. */
     HC_FAULT       = 0x7F,
+    /* Test-only, instrumented builds: jump to the bootloader, so a flash
+     * during a diagnostic session needs no Fn+Esc. VIA's own jump command is
+     * gone from QMK; this is not a replacement for it, and the daily build
+     * does not carry it. */
+    HC_BOOTLOADER  = 0x79,
+    /* Test-only: read one aligned RAM word. [.., .., HC_PEEK, a0..a3 LE] ->
+     * [.., .., HC_PEEK, v0..v3 LE]. SRAM only. */
+    HC_PEEK        = 0x78,
 #endif
 };
 #define HEALTH_PROTO_VERSION 7
@@ -591,6 +604,18 @@ static void health_command(uint8_t *data, uint8_t length) {
             }
             break;
         }
+        case HC_PEEK: {
+            if (length < 7) { data[0] = RTC_UNHANDLED; break; }
+            uint32_t a = (uint32_t)data[3] | ((uint32_t)data[4] << 8) |
+                         ((uint32_t)data[5] << 16) | ((uint32_t)data[6] << 24);
+            if ((a & 3u) || a < 0x20000000u || a > 0x20007FFCu) { data[0] = RTC_UNHANDLED; break; }
+            uint32_t v = *(volatile uint32_t *)a;
+            data[3] = v; data[4] = v >> 8; data[5] = v >> 16; data[6] = v >> 24;
+            break;
+        }
+        case HC_BOOTLOADER:
+            bootloader_jump();   /* does not return; watchdog stopped first */
+            break;
         case HC_FAULT: {
             WDT_SCOPE(WDT_SITE_TEST_FAULT);
             if (length < 4) break;
@@ -617,6 +642,14 @@ static void health_command(uint8_t *data, uint8_t length) {
                 case 5:
                     test_deep_stack();
                     return;   /* the one mode that replies */
+                case 6:   /* commit from THREAD context, then a plain wedge */
+                    watchdog_record_stop(WDT_SITE_HALT, 0, 0xCAFE0006u);
+                    break;
+                case 7:   /* commit from thread context, THEN fault: the
+                           * handler finds ready == false and only spins */
+                    watchdog_record_stop(WDT_SITE_HALT, 0, 0xCAFE0007u);
+                    __asm__ volatile("udf #0");
+                    break;
                 default:
                     data[0] = RTC_UNHANDLED;
                     return;

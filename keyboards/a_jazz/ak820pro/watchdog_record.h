@@ -61,6 +61,18 @@ void watchdog_record_fault_frame(uintptr_t frame_addr);
 /* Anything else terminal: site, the IPSR to report, and a PC if known. */
 void watchdog_record_stop(uint8_t site, uint8_t exception, uint32_t pc);
 
+#ifdef WDT_TEST_HOOKS
+/* Instrumented builds only: boot copies the four raw retained words here
+ * before rewriting them, so a record that decodes as invalid can still be
+ * read (HC_PEEK, 0x20007F80..8F). Unused RAM at the top of the heap --
+ * nothing allocates from the top on this build -- and clear of the DFU magic
+ * at __ram0_end__ - 4. Not cleared by crt0; survives a watchdog reset. This
+ * is how the lost final write in commit_terminal was found (2026-09-23).
+ * Nothing in the fault path writes here: probes in the handler hid that bug
+ * by adding a later write. */
+#define WDT_BOOT_RAW ((volatile uint32_t *)0x20007F80u)
+#endif
+
 /* The consecutive-reset count carried into the NEXT boot clears once a boot
  * has run this long: the degraded-mode guard exists to stop a boot loop, and
  * without this, three crashes weeks apart would switch the watchdog off for
