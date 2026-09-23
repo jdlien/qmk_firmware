@@ -1,0 +1,63 @@
+diff --git a/os/hal/ports/SN32/LLD/SN32F2xx/SPI/hal_spi_v2_lld.c b/os/hal/ports/SN32/LLD/SN32F2xx/SPI/hal_spi_v2_lld.c
+index bfe27a5cae..a32825ad4a 100644
+--- a/os/hal/ports/SN32/LLD/SN32F2xx/SPI/hal_spi_v2_lld.c
++++ b/os/hal/ports/SN32/LLD/SN32F2xx/SPI/hal_spi_v2_lld.c
+@@ -251,11 +251,17 @@ void spiSN32FlashDmaAbort(SPIDriver *lcd) {
+   sn32_dma_cb    = NULL;                     /* the caller does its own teardown */
+ }
+ 
+-/* Dispatched from the SPI0 handler when a DMA flag is pending. Returns true if
+- * it consumed the interrupt (so the FIFO handler is skipped). */
+-static bool sn32_flash_dma_isr(void) {
+-  uint32_t ris = SN_SPI0->RIS;
+-  SN_SPI0->IC = 0x3F;
++/* Dispatched from the SPI0 handler while a flash->LCD DMA is in flight.
++ *
++ * Clear ONLY the DMA flags this read saw (write-1-to-clear). The old
++ * IC = 0x3F wiped every flag, so a DMATCIF raised between the RIS read and the
++ * clear -- likeliest on a short glyph blit, where half-transfer and completion
++ * land close together -- was lost unseen: the DMA finished, nobody tore it
++ * down, and the blit timed out as "finished, IRQ lost". Now a late flag stays
++ * pending and re-enters the handler. */
++static void sn32_flash_dma_isr(void) {
++  uint32_t ris = SN_SPI0->RIS & 0x30U;       /* DMATCIF | DMAHTIF */
++  SN_SPI0->IC = ris;
+   if (ris & (1u << 5)) {                     /* DMATCIF: transfer complete */
+     /* Let the last word finish shifting out before tearing down. */
+     for (uint32_t g = 0; g < 200000u &&
+@@ -283,7 +289,7 @@ static bool sn32_flash_dma_isr(void) {
+     sn32_dma_busy = false;
+     if (sn32_dma_cb) sn32_dma_cb();          /* caller drops flash/panel CS */
+   }
+-  return true;                               /* DMAHTIF: consumed, nothing to do */
++  /* DMAHTIF alone: cleared above, nothing to do. */
+ }
+ 
+ #endif /* SN32_SPI0_FLASH_DMA */
+@@ -297,10 +303,23 @@ OSAL_IRQ_HANDLER(SN32_SPI0_HANDLER) {
+   OSAL_IRQ_PROLOGUE();
+ 
+ #if defined(SN32_SPI0_FLASH_DMA)
+-  /* Service a pending flash->LCD DMA completion; else fall through to FIFO. */
+-  if (!((SPID0.spi->RIS & 0x30U) && sn32_flash_dma_isr()))  /* DMAHTIF|DMATCIF */
+-#endif
++  /* Route on the driver's own state, not the RAW flags. RIS reports DMAHTIF /
++     DMATCIF whether or not they are enabled, so routing on it let a stale DMA
++     flag hijack an ordinary FIFO interrupt: the DMA path cleared RXFIFOTHIF
++     without draining the FIFO (a spiSend waiting on it has no timeout) and
++     re-ran the last blit's callback, dropping chip-select mid-transaction.
++     Inside a DMA window only the DMA bits are enabled, so the FIFO handler
++     has nothing to do there; outside one a DMA flag is stale -- clear it and
++     never act on it. */
++  if (sn32_dma_busy) {
++    sn32_flash_dma_isr();
++  } else {
++    SN_SPI0->IC = SN_SPI0->RIS & 0x30U;
+     spi_lld_irq_handler(&SPID0);
++  }
++#else
++  spi_lld_irq_handler(&SPID0);
++#endif
+ 
+   OSAL_IRQ_EPILOGUE();
+ }
