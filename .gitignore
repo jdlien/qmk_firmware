@@ -124,6 +124,9 @@ compile_commands.json
 .clangd/
 .cache/
 
+# macOS metadata
+.DS_Store
+
 # VIA(L) files that don't belong in QMK repo
 via*.json
 /keyboards/**/keymaps/via/*
