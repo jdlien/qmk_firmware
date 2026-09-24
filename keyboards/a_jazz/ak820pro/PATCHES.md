@@ -10,7 +10,7 @@ tip. The branch carries:
 - `spi0_dispatch` (`2a17a73b48`) and its revert (`bf9310ca84`), see below;
 - three fixes from 2026-09-23 (details in
   `plans/FIRMWARE-FINDINGS-2026-09-23.md`):
-  - `c3ca7a9725`: the serial LLD's `load()` no longer unlocks inside its
+  - `a3fdffe26d`: the serial LLD's `load()` no longer unlocks inside its
     caller's lock (it could swap two bytes of a CH582F frame);
   - `c57623d0d2`: the SPI0 DMA handler no longer erases a completion that
     races its flag clear. That is every "never started" blit timeout on
