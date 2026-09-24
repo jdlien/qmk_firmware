@@ -467,6 +467,13 @@ static uint32_t tx_stat_sent = 0, tx_stat_timeout = 0, tx_stat_drop = 0;
 #define ACK_BUCKETS 16u
 static systime_t tx_first_sent_st;
 static uint32_t  ack_hist[ACK_BUCKETS], ack_orphan, ack_after_retry, ack_max_us;
+/* UART receive errors, from the serial driver's event flags. The driver now
+ * reports a hardware overrun (a byte lost with the FIFO full) as
+ * SD_OVERRUN_ERROR, the flag it already raised for a full input queue.
+ * Counted per task pass that saw each, not per byte: a trend, for the
+ * wireless tests. */
+static event_listener_t uart_err_listener;
+static uint32_t         uart_err_overrun, uart_err_framing, uart_err_parity;
 #endif
 
 /* Health-counter readout (health.c). Main-loop only, like everything here. */
@@ -858,8 +865,10 @@ void ch582_task(void) {
                 ack_report = 0;
                 printf("[ch582] ack ms:");
                 for (uint8_t i = 0; i < ACK_BUCKETS; i++) printf(" %lu", (unsigned long)ack_hist[i]);
-                printf(" | max=%luus retried=%lu orphan=%lu\n", (unsigned long)ack_max_us,
-                       (unsigned long)ack_after_retry, (unsigned long)ack_orphan);
+                printf(" | max=%luus retried=%lu orphan=%lu | uart ovr=%lu fe=%lu pe=%lu\n",
+                       (unsigned long)ack_max_us, (unsigned long)ack_after_retry,
+                       (unsigned long)ack_orphan, (unsigned long)uart_err_overrun,
+                       (unsigned long)uart_err_framing, (unsigned long)uart_err_parity);
             }
 #endif
         }
@@ -883,6 +892,22 @@ void ch582_task(void) {
         last_battery_poll = timer_read();
         ch582_poll_status();
     }
+
+#ifdef CONSOLE_ENABLE
+    {
+        static bool listening = false;
+        if (!listening) {   /* lazily: the listener binds to this (main) thread */
+            chEvtRegisterMaskWithFlags(chnGetEventSource(&CH582_SERIAL_DRIVER),
+                                       &uart_err_listener, EVENT_MASK(0),
+                                       SD_OVERRUN_ERROR | SD_FRAMING_ERROR | SD_PARITY_ERROR);
+            listening = true;
+        }
+        eventflags_t f = chEvtGetAndClearFlags(&uart_err_listener);
+        if (f & SD_OVERRUN_ERROR) uart_err_overrun++;
+        if (f & SD_FRAMING_ERROR) uart_err_framing++;
+        if (f & SD_PARITY_ERROR)  uart_err_parity++;
+    }
+#endif
 
     uint8_t c;
     uint8_t bytes_processed = 0;
