@@ -122,7 +122,16 @@ void display_playback_key(void);
  * feature not working -- which reads as "the hold must be ~3s". */
 void display_set_pair_hint(int16_t pct);
 /* Boot alert: shown at near-top band priority for ~60 s (e.g. "WDT reset x1"). */
-void display_set_alert(const char *msg);   /* 0-100 = progress, <0 = off */
+void display_set_alert(const char *msg);
+
+/* Notification page (notify.c): owns the whole panel until closed. TEXT is
+ * word-wrapped into 5 centred lines of 12; GIF plays `frames` full-screen
+ * frames laid out at base+0x100, 0x8000 apart. Both refuse (GIF returns false)
+ * while Fn+D or the flash animation owns the panel. */
+void display_notify_page_text(const char *s, uint8_t len);
+bool display_notify_page_gif(uint32_t base, uint8_t frames);
+void display_notify_page_close(void);
+bool display_notify_page_active(void);   /* 0-100 = progress, <0 = off */
 
 #ifdef PARAM_OVERLAY
 /* Transient parameter readout for the info band. Pass a string to show it for

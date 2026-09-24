@@ -3,6 +3,7 @@
 /* Moved verbatim from ak820pro.c in the phase-3 module split. */
 #include "quantum.h"
 #include "indicators.h"
+#include "notify.h"
 #include "ak820pro.h"   /* the shared layer enum for FN_LAYER_MASK */
 #include "graphics/display.h"
 #include "bluetooth/ch582f_ajazz.h"   /* usb_mode + the module's battery level */
@@ -161,6 +162,7 @@ bool led_update_kb(led_t led_state) {
     if (!led_update_user(led_state)) return false;
     ind_caps   = led_state.caps_lock;
     ind_scroll = led_state.scroll_lock;
+    notify_leds_changed(led_state.raw);   /* Num/Scroll = notification data lines */
     /* NOTE: led_state comes from whichever host driver is active
      * (host_keyboard_leds -> host_get_active_driver). In cable mode that is the
      * USB LED report and it is reliable. In BT/2.4G it is the CH582F's
@@ -235,7 +237,9 @@ layer_state_t layer_state_set_kb(layer_state_t state) {
 bool lock_state_fn(void)      { return ind_fn; }
 bool lock_state_caps(void)    { return ind_caps; }
 bool lock_state_gui(void)     { return ind_winlock; }
-bool lock_state_scroll(void)  { return ind_scroll; }
+/* Scroll Lock is a data line for notify.c, not a lock: showing it made "SCR"
+ * flicker on every 1 bit of a notification. */
+bool lock_state_scroll(void)  { return false; }
 
 uint8_t indicator_get_brightness(void) {
     return ind_lvl_caps;

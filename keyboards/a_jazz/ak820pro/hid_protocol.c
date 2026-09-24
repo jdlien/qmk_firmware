@@ -16,6 +16,7 @@
 #include "bluetooth/ch582f_ajazz.h"   /* HC_CONN readout + fault injection */
 #include "watchdog.h"                 /* boot reset cause for HC_CONN */
 #include "indicators.h"               /* battery_is_absent for HC_CONN */
+#include "notify.h"
 
 // Apply a 7-byte time payload to the RTC:
 //   [0]=year-2000 [1]=month [2]=day [3]=weekday [4]=hour [5]=min [6]=sec
@@ -663,6 +664,52 @@ static void health_command(uint8_t *data, uint8_t length) {
     }
 }
 
+
+/* --- Notification channel (notify.c) ---------------------------------------
+ *   [SET_VALUE, NOTIFY_CHANNEL, NOTIFY_SHOW, frame...]  the LED-channel frame,
+ *        CRC included; its own len byte bounds it, so text <= 23 bytes here
+ *   [SET_VALUE, NOTIFY_CHANNEL, NOTIFY_STATS] -> [.., .., NOTIFY_STATS, 20 bytes]
+ *   [SET_VALUE, NOTIFY_CHANNEL, NOTIFY_BOOTLOADER]  jump to the ROM bootloader,
+ *        so a reflash needs no Fn+Esc. OFF unless built with
+ *        -DNOTIFY_RAW_BOOTLOADER: any process that can open the raw-HID
+ *        interface could otherwise drop the board into the bootloader, which
+ *        looks exactly like a dead keyboard. Same reasoning as HC_BOOTLOADER
+ *        being instrumented-only. */
+enum {
+    NOTIFY_CHANNEL    = 0x14,
+    NOTIFY_SHOW       = 0x01,
+    NOTIFY_STATS      = 0x02,
+    NOTIFY_BOOTLOADER = 0x03,
+};
+
+static inline bool is_notify_cmd(const uint8_t *data, uint8_t length) {
+    return length >= 3 && data[0] == RTC_SET_VALUE && data[1] == NOTIFY_CHANNEL;
+}
+
+static void notify_command(uint8_t *data, uint8_t length) {
+    switch (data[2]) {
+        case NOTIFY_SHOW: {
+            /* The frame's own length: [3..7] header, then len text, then CRC. */
+            uint8_t n = (length >= 9) ? (uint8_t)(6 + data[7]) : 0;
+            if (n == 0 || 3u + n > length || !notify_frame(&data[3], n)) data[0] = RTC_UNHANDLED;
+            break;
+        }
+        case NOTIFY_STATS:
+            if (length >= 3 + NOTIFY_STATS_LEN) notify_stats_fill(&data[3]);
+            else data[0] = RTC_UNHANDLED;
+            break;
+#ifdef NOTIFY_RAW_BOOTLOADER
+        case NOTIFY_BOOTLOADER:
+            display_bootloader_splash();
+            bootloader_jump();
+            break;
+#endif
+        default:
+            data[0] = RTC_UNHANDLED;
+            break;
+    }
+}
+
 static inline bool rtc_is_set_time_cmd(const uint8_t *data, uint8_t length) {
     return length >= 10 && data[0] == RTC_SET_VALUE &&
            data[1] == RTC_CHANNEL && data[2] == RTC_SET_TIME;
@@ -730,6 +777,10 @@ void via_custom_value_command_kb(uint8_t *data, uint8_t length) {
         health_command(data, length);
         return;
     }
+    if (is_notify_cmd(data, length)) {
+        notify_command(data, length);
+        return;
+    }
     data[0] = RTC_UNHANDLED;
 }
 
@@ -749,6 +800,8 @@ void raw_hid_receive(uint8_t *data, uint8_t length) {
         text_command(data, length);
     } else if (is_health_cmd(data, length)) {
         health_command(data, length);
+    } else if (is_notify_cmd(data, length)) {
+        notify_command(data, length);
     } else {
         data[0] = RTC_UNHANDLED;
     }

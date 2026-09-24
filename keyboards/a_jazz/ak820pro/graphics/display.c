@@ -109,6 +109,11 @@ static bool display_paused  = false;   // true while the flash-animation player 
 static bool debug_active    = false;   // true while the Fn+D debug page owns the panel
 static uint8_t debug_exit_step  = 0;   // >0 while the dashboard is being restored
 static uint8_t debug_clear_band = 0;   // >0 while the entry clear is banding down the panel
+static bool npage_active   = false;   // true while a notification page owns the panel (notify.c)
+
+/* Something other than the dashboard owns the panel: the flash animation, the
+ * Fn+D page or a notification page. Out-of-band dashboard draws must not land. */
+static bool panel_taken(void) { return display_paused || debug_active || npage_active; }
 static bool    locks_stage_first = true; // restore: the next lock-band pass forgets the (cleared) band
 static bool splash_cleared = false;
 static bool mac_mode = false;
@@ -890,7 +895,7 @@ bool display_debug_active(void) {
 void display_debug_toggle(void) {
     /* Refuse while the animation player owns the bus rather than drawing over
      * it: both would keep blitting and the panel would tear between them. */
-    if (!debug_active && display_paused) return;
+    if (!debug_active && (display_paused || npage_active)) return;
     debug_active = !debug_active;
     if (debug_active) {
         /* Hand the clear to the pump, one band per pass. This is a single call
@@ -917,6 +922,133 @@ void display_debug_toggle(void) {
          * completes in a few milliseconds of wall time -- visually instant. */
         debug_exit_step = 1;
     }
+}
+
+/* --- Notification page (notify.c) ------------------------------------------
+ *
+ * Owns the panel until notify.c dismisses it (any key press). Two modes:
+ *   GIF   frames from a flash slot, full screen, one per 100 ms tick;
+ *   TEXT  the fallback when there is no GIF: up to 5 lines of 12 in the 20px
+ *         face, centred.
+ * Built on the Fn+D page's rules, for the same reasons: the entry clear goes
+ * one band per main-loop pass, text is painted one glyph per pass with the
+ * non-blocking try, and the exit reuses the staged dashboard restore
+ * (debug_exit_step) -- nothing here may block the loop for 25 ms. */
+#define NP_COLS  (PANEL_WIDTH / FONT_STATUS_ADV)   /* 12 */
+#define NP_ROW_H 23
+#define NP_ROWS  (PANEL_HEIGHT / NP_ROW_H)         /* 5 */
+#define NP_X0    ((PANEL_WIDTH - NP_COLS * FONT_STATUS_ADV) / 2)
+#define NP_Y0    ((PANEL_HEIGHT - NP_ROWS * NP_ROW_H) / 2)
+
+static char     np_text[NP_ROWS][NP_COLS + 1];
+static char     np_shown[NP_ROWS][NP_COLS + 1];
+static uint8_t  np_clear_band = 0;
+static uint32_t np_gif_base   = 0;    /* 0 = text mode */
+static uint8_t  np_gif_frames = 0;
+static uint8_t  np_gif_idx    = 0;
+
+bool display_notify_page_active(void) { return npage_active; }
+
+static bool np_enter(void) {
+    if (display_paused || debug_active) return false;   /* someone else owns it */
+    if (debug_exit_step) debug_exit_step = 0;           /* a restore in flight: we clear anyway */
+    if (!npage_active) display_queue_discard();
+    npage_active = true;
+    return true;
+}
+
+/* Word-wrap `s` (len bytes, '\n' forces a break) into centred rows. */
+static void np_compose(const char *s, uint8_t len) {
+    char    rows[NP_ROWS][NP_COLS + 1];
+    uint8_t nrows = 0, col = 0;
+    memset(rows, 0, sizeof(rows));
+    uint8_t i = 0;
+    while (i < len && nrows < NP_ROWS) {
+        if (s[i] == '\n') { nrows++; col = 0; i++; continue; }
+        if (s[i] == ' ' && col == 0) { i++; continue; }
+        uint8_t w = 0;                                   /* next word length */
+        while (i + w < len && s[i + w] != ' ' && s[i + w] != '\n') w++;
+        if (w == 0) {                                    /* a space between words */
+            if (col < NP_COLS) rows[nrows][col++] = ' ';
+            i++;
+            continue;
+        }
+        if (col + w > NP_COLS && col > 0) {              /* wrap before the word */
+            while (col && rows[nrows][col - 1] == ' ') rows[nrows][--col] = 0;
+            if (++nrows >= NP_ROWS) break;
+            col = 0;
+        }
+        for (uint8_t k = 0; k < w; k++) {                /* hard-split words > 12 */
+            if (col == NP_COLS) { if (++nrows >= NP_ROWS) break; col = 0; }
+            char c = s[i + k];
+            rows[nrows][col++] = (c >= 0x20 && c < 0x7F) ? c : '?';
+        }
+        i += w;
+    }
+    uint8_t used = 0;
+    for (uint8_t r = 0; r < NP_ROWS; r++) if (rows[r][0]) used = r + 1;
+    uint8_t top = (uint8_t)((NP_ROWS - used) / 2);
+    for (uint8_t r = 0; r < NP_ROWS; r++) {
+        memset(np_text[r], ' ', NP_COLS);
+        np_text[r][NP_COLS] = '\0';
+        if (r < top || r - top >= used) continue;
+        const char *src = rows[r - top];
+        uint8_t n = (uint8_t)strlen(src);
+        memcpy(&np_text[r][(NP_COLS - n) / 2], src, n);
+    }
+}
+
+void display_notify_page_text(const char *s, uint8_t len) {
+    if (!np_enter()) return;
+    np_gif_base = 0;
+    np_compose(s, len);
+    np_clear_band = 1;
+    memset(np_shown, ' ', sizeof(np_shown));
+    for (uint8_t r = 0; r < NP_ROWS; r++) np_shown[r][NP_COLS] = '\0';
+}
+
+bool display_notify_page_gif(uint32_t base, uint8_t frames) {
+    if (!frames || !np_enter()) return false;
+    np_gif_base   = base;
+    np_gif_frames = frames;
+    np_gif_idx    = 0;
+    np_clear_band = 0;   /* every frame covers the whole panel */
+    return true;
+}
+
+void display_notify_page_close(void) {
+    if (!npage_active) return;
+    npage_active = false;
+    np_clear_band = 0;
+    debug_exit_step = 1;   /* the staged dashboard restore, as Fn+D's exit */
+}
+
+/* Main-loop rate, from display_blit_pump(): one band or one glyph per pass. */
+static void np_pump(void) {
+    if (np_gif_base) return;
+    if (np_clear_band) {
+        lcd_clear_rect(0, (uint16_t)((np_clear_band - 1) * DBG_CLEAR_BAND_H),
+                       PANEL_WIDTH, DBG_CLEAR_BAND_H);
+        if (++np_clear_band > DBG_CLEAR_BANDS) np_clear_band = 0;
+        return;
+    }
+    for (uint8_t r = 0; r < NP_ROWS; r++) {
+        for (uint8_t c = 0; c < NP_COLS; c++) {
+            if (np_text[r][c] == np_shown[r][c]) continue;
+            if (lcd_draw_flash_glyph_try(FONT_STATUS, np_text[r][c],
+                                         (uint16_t)(NP_X0 + c * FONT_STATUS_ADV),
+                                         (uint16_t)(NP_Y0 + r * NP_ROW_H)))
+                np_shown[r][c] = np_text[r][c];
+            return;   /* one cell per pass, painted or retried next pass */
+        }
+    }
+}
+
+/* 10 Hz, from display_housekeeping_task(): the next GIF frame. */
+static void np_tick(void) {
+    if (!np_gif_base || lcd_blit_busy()) return;
+    lcd_blit_flash(np_gif_base + 0x100u + (uint32_t)np_gif_idx * 0x8000u, 0, 0, PANEL_WIDTH, PANEL_HEIGHT);
+    np_gif_idx = (uint8_t)((np_gif_idx + 1) % np_gif_frames);
 }
 
 void display_bootloader_splash(void) {
@@ -2185,6 +2317,7 @@ void display_blit_pump(void) {
      * idle and there is no contention. One cell per pass, same budget as a
      * queued glyph. */
     if (debug_active) { blocked = false; debug_pump_glyph(); return; }
+    if (npage_active) { blocked = false; np_pump(); return; }
     /* Restoring the dashboard after Fn+D: one stage per pass. Ahead of the
      * queue because stage 1 clears the panel and discards whatever is in it. */
     if (debug_exit_step) { blocked = false; debug_restore_step(); return; }
@@ -2438,6 +2571,7 @@ void display_housekeeping_task(void) {
 
     if (display_paused) return;   // animation owns the bus
     if (debug_active) { draw_debug_page(); return; }   // Fn+D owns the panel
+    if (npage_active) { np_tick(); return; }             // a notification owns the panel
     /* The Fn+D restore owns the panel too, one stage per main-loop pass from
      * display_blit_pump(). A 10 Hz tick landing inside it would paint into a
      * clear band still sweeping down, or run draw_locks(false) and collapse the
@@ -2499,30 +2633,30 @@ void display_housekeeping_task(void) {
 
 void display_draw_mac_logo(void) {
     mac_mode = true;
-    if (splash_cleared && !display_paused)
+    if (splash_cleared && !panel_taken())
         lcd_draw_flash_image(ASSET_APPLE_ICON_24X24, 0, 0);
 }
 
 void display_draw_windows_logo(void) {
     mac_mode = false;
-    if (splash_cleared && !display_paused)
+    if (splash_cleared && !panel_taken())
         lcd_draw_flash_image(ASSET_WINDOWS_ICON_24X24, 0, 0);
 }
 
 void display_draw_usb_logo(void) {
     connection_mode = CONN_MODE_WIRED;
-    if (splash_cleared && !display_paused)
+    if (splash_cleared && !panel_taken())
         draw_conn_row();
 }
 
 void display_draw_bluetooth_logo(void) {
     connection_mode = CONN_MODE_BLUETOOTH;
-    if (splash_cleared && !display_paused)
+    if (splash_cleared && !panel_taken())
         draw_conn_row();
 }
 
 void display_draw_2_4_g_logo(void) {
     connection_mode = CONN_MODE_2_4G;
-    if (splash_cleared && !display_paused)
+    if (splash_cleared && !panel_taken())
         draw_conn_row();
 }
