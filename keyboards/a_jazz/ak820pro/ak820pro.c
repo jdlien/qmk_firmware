@@ -323,7 +323,7 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
      * from "the report was lost downstream", and it is useless if it only
      * exists in a flavour nobody types on. */
     if (record->event.pressed) health_note_key_press();
-    if (notify_process_record(record)) return false;   // a key press dismisses a notification page
+    if (notify_process_record(keycode, record)) return false;   // a key press dismisses a notification page
 #ifdef CONSOLE_ENABLE
     if (record->event.pressed) key_press_count++;
 #endif

@@ -4,7 +4,8 @@
  *
  * FRAME (identical on both transports)
  *
- *   [0] hdr   seq:2 (bits 7-6) | effect:3 (bits 5-3) | page:1 (bit 2) | 0:2
+ *   [0] hdr   seq:2 (bits 7-6) | effect:3 (bits 5-3) | page:1 (bit 2) |
+ *             kind:2 (bits 1-0): 0 SHOW, 1 CLOSE, 2 ASK
  *   [1] hue   0-255, QMK hue scale
  *   [2] dur   effect duration in 100 ms units; 0 = no lighting,
  *             255 = until the page is dismissed
@@ -23,6 +24,29 @@
  *   +0x000  "AKN1", frame count (1..15)
  *   +0x100  frames, 128x128 RGB565 lo-byte-first, 0x8000 apart
  * Written over the cable with `ak820ctl flash write`.
+ *
+ * CLOSE (kind 1) closes the page and ends an until-dismissed effect: the host
+ * sends it when the notification was dealt with at the computer. Other fields
+ * are ignored; len may be 0.
+ *
+ * ASK (kind 2) is a page with a question, answered from the board. Text is
+ * title\ndetail...\nopt1\nopt2..., one row each; [3] is flags:
+ *   bits1-0  number of detail lines after the title (0-2), shown as is
+ *   bit2     PERM: a permission -- option 1 answers ALLOW, option 2 DENY
+ *   bit3     MULTI: checkboxes -- Space toggles the option under the cursor,
+ *            Enter sends ANSWER_CHOICE[i] for every checked option, one at a
+ *            time, then ANSWER_ALLOW as the end marker
+ * Title, details and options share the 5 rows; a hint fills a spare row.
+ * The arrows move the selection (Left/Up back, Right/Down forward), Space
+ * ticks a box (MULTI), Enter confirms, Esc cancels and gives the keyboard back. Every other key is
+ * IGNORED while the question is up: one stray keystroke must not throw the
+ * question away (the first version cancelled on any key, and while typing
+ * that is the likeliest key to arrive). The answer goes back as one HID
+ * consumer usage -- the only board-to-host path over BT/2.4G besides
+ * keystrokes -- picked from AL usages nothing on the desktop binds:
+ *   ANSWER_ALLOW / ANSWER_DENY for a permission, ANSWER_CHOICE[i] for option
+ *   i of a choice, ANSWER_CANCEL for Esc. The host reads them from the
+ *   receiver's "Consumer Control" input device.
  *
  * LED CHANNEL (BT/2.4G)
  *
@@ -58,6 +82,24 @@
 #define LED_NUM    0x01u
 #define LED_SCROLL 0x04u
 #define LC_MASK    (LED_NUM | LED_SCROLL)
+
+/* Answer usages (HID consumer page, AL range) and the Linux keys they map to. */
+#define ANSWER_ALLOW  0x191   /* AL Finance       -> KEY_FINANCE */
+#define ANSWER_DENY   0x1AB   /* AL Spell Check   -> KEY_SPELLCHECK */
+#define ANSWER_CANCEL 0x1BD   /* AL Info          -> KEY_INFO */
+static const uint16_t ANSWER_CHOICE[4] = {
+    0x1B6,   /* AL Image Browser -> KEY_IMAGES */
+    0x1B7,   /* AL Audio Browser -> KEY_AUDIO */
+    0x1B8,   /* AL Movie Browser -> KEY_VIDEO */
+    0x1BC,   /* AL Instant Messaging -> KEY_MESSENGER */
+};
+
+enum { KIND_SHOW = 0, KIND_CLOSE = 1, KIND_ASK = 2 };
+#define ASK_NDETAIL 0x03
+#define ASK_PERM    0x04
+#define ASK_MULTI   0x08
+#define ASK_MAX_OPTS 4
+#define ASK_ROWS     5
 
 enum notify_effect {
     FX_SOLID   = 0,
@@ -166,6 +208,116 @@ bool rgb_matrix_indicators_advanced_kb(uint8_t led_min, uint8_t led_max) {
 static uint8_t  last_seq    = 0xFF;
 static uint32_t last_seq_at = 0;
 
+/* --- Ask page --------------------------------------------------------------- */
+
+static bool    ask_on    = false;
+static uint8_t ask_flags = 0;
+static uint8_t ask_ndet  = 0;
+static uint8_t ask_nopt  = 0;
+static uint8_t ask_sel   = 0;
+static char    ask_title[13];
+static char    ask_det[2][13];
+static char    ask_opt[ASK_MAX_OPTS][11];     /* 12 columns less the "> " marker */
+static uint8_t ask_checked = 0;               /* MULTI: bit i = option i ticked */
+static bool    answer_release = false;
+/* Usages still to send, one per 10 Hz tick with a release in between: a
+ * MULTI answer is several usages, and pressing them back to back would merge
+ * them in one consumer report. */
+static uint16_t answer_q[ASK_MAX_OPTS + 1];
+static uint8_t  answer_qn = 0, answer_qi = 0;
+
+#define PAGE_COLS 12
+
+static void copy_row(char *dst, const char *s, uint8_t n) {
+    if (n > PAGE_COLS) n = PAGE_COLS;
+    memcpy(dst, s, n);
+    dst[n] = 0;
+}
+
+/* Rebuild the page text from the ask state. Every row is centred HERE and
+ * padded to the full width, so the page's own centring leaves it alone and
+ * nothing shifts as the selection marker moves. */
+static void ask_render(bool fresh) {
+    char    buf[ASK_ROWS * (PAGE_COLS + 1)];
+    uint8_t n = 0, rows = 0;
+    #define ROW(s) do { const char *_s = (s); uint8_t _l = (uint8_t)strlen(_s); \
+        uint8_t _p = (uint8_t)((PAGE_COLS - _l) / 2), _k; \
+        for (_k = 0; _k < _p; _k++) buf[n++] = ' '; \
+        memcpy(buf + n, _s, _l); n += _l; \
+        for (_k = (uint8_t)(_p + _l); _k < PAGE_COLS; _k++) buf[n++] = ' '; \
+        buf[n++] = '\n'; rows++; } while (0)
+    ROW(ask_title);
+    for (uint8_t i = 0; i < ask_ndet; i++) ROW(ask_det[i]);
+    /* "> label" padded to the longest label, so every option row has the
+     * same width and they line up when centred. */
+    bool    multi = ask_flags & ASK_MULTI;
+    uint8_t lead  = multi ? 3 : 2;   /* ">x " / "> " */
+    uint8_t w = 0;
+    for (uint8_t k = 0; k < ask_nopt; k++) if (strlen(ask_opt[k]) > w) w = (uint8_t)strlen(ask_opt[k]);
+    if (w > PAGE_COLS - lead) w = PAGE_COLS - lead;
+    char row[PAGE_COLS + 1];
+    for (uint8_t i = 0; i < ask_nopt; i++) {
+        uint8_t l = (uint8_t)strlen(ask_opt[i]);
+        if (l > w) l = w;
+        row[0] = (i == ask_sel) ? '>' : ' ';
+        if (multi) row[1] = (ask_checked & (1u << i)) ? 'x' : 'o';
+        row[lead - 1] = ' ';
+        memcpy(row + lead, ask_opt[i], l);
+        memset(row + lead + l, ' ', (size_t)(w - l));
+        row[lead + w] = 0;
+        ROW(row);
+    }
+    if (rows < ASK_ROWS) ROW(multi ? "Spc Ent Esc" : "Enter / Esc");
+    #undef ROW
+    if (n) n--;   /* drop the trailing newline */
+    if (fresh) display_notify_page_text(buf, n);
+    else       display_notify_page_update(buf, n);
+}
+
+static void ask_open(uint8_t flags, const char *txt, uint8_t len) {
+    ask_flags = flags;
+    ask_ndet  = 0;
+    ask_nopt  = 0;
+    ask_sel   = 0;
+    ask_checked = 0;
+    uint8_t want_det = flags & ASK_NDETAIL;
+    if (want_det > 2) want_det = 2;
+    uint8_t line = 0, start = 0;
+    for (uint8_t i = 0; i <= len; i++) {
+        if (i < len && txt[i] != '\n') continue;
+        uint8_t l = (uint8_t)(i - start);
+        if (line == 0)                 copy_row(ask_title, txt + start, l);
+        else if (line <= want_det)     copy_row(ask_det[ask_ndet++], txt + start, l);
+        else if (ask_nopt < ASK_MAX_OPTS && 1 + ask_ndet + ask_nopt < ASK_ROWS) {
+            if (l > PAGE_COLS - 2) l = PAGE_COLS - 2;
+            memcpy(ask_opt[ask_nopt], txt + start, l);
+            ask_opt[ask_nopt++][l] = 0;
+        }
+        line++;
+        start = (uint8_t)(i + 1);
+    }
+    if (line == 0) ask_title[0] = 0;
+    /* A permission needs its two answers; a choice at least one option. */
+    if (ask_nopt < ((flags & ASK_PERM) ? 2 : 1)) return;
+    ask_on = true;
+    ask_render(true);
+}
+
+static void answer(uint16_t usage) {
+    host_consumer_send(usage);
+    answer_release = true;   /* released on the next 10 Hz tick */
+    ask_on = false;
+}
+
+/* MULTI: the ticked options, then the end marker, via the queue. */
+static void answer_multi(void) {
+    answer_qn = answer_qi = 0;
+    for (uint8_t i = 0; i < ask_nopt; i++)
+        if (ask_checked & (1u << i)) answer_q[answer_qn++] = ANSWER_CHOICE[i];
+    answer_q[answer_qn++] = ANSWER_ALLOW;
+    answer(answer_q[answer_qi++]);
+}
+
 /* The slot's frame count, or 0 if it holds nothing valid. */
 static uint8_t gif_frames(uint8_t slot) {
     if (slot == 0 || slot > NOTIFY_GIF_SLOTS) return 0;
@@ -197,6 +349,20 @@ bool notify_frame(const uint8_t *b, uint8_t n) {
     const char *txt = (const char *)&b[5];
     uint8_t     len = b[4];
     bool        page = (b[0] >> 2) & 1;
+    uint8_t     kind = b[0] & 0x03;
+
+    if (kind == KIND_CLOSE) {
+        ask_on = false;
+        display_notify_page_close();
+        if (fx_on && !fx_until) fx_stop();
+        return true;
+    }
+    ask_on = false;   /* any new notification replaces a pending question */
+    if (kind == KIND_ASK) {
+        ask_open(b[3], txt, len);
+        if (b[2]) fx_start((uint8_t)((b[0] >> 3) & 0x07), b[1], b[2]);
+        return true;
+    }
     uint8_t     nl  = 0;
     while (nl < len && txt[nl] != '\n') nl++;
     if (page) {
@@ -270,26 +436,75 @@ void notify_leds_changed(uint8_t raw) {
 }
 
 void notify_task(void) {
+    if (answer_release) { host_consumer_send(0); answer_release = false; }
+    else if (answer_qi < answer_qn) { host_consumer_send(answer_q[answer_qi++]); answer_release = true; }
     if ((lc_bits || lc_bad) && timer_elapsed32(lc_last) >= LC_GAP_MS) lc_close();
     if (fx_on && fx_until && (int32_t)(timer_read32() - fx_until) >= 0) fx_stop();
 }
 
-/* --- Dismiss ---------------------------------------------------------------
- * Any key press closes the page and is swallowed, release included, so the
- * key that dismisses does not also type. An until-dismissed effect ends too. */
+/* --- Keys -----------------------------------------------------------------
+ * Any key press on a page is swallowed, release included, so it does not also
+ * type. On an ask page only the arrows, Enter and Esc do anything (see ASK);
+ * on a plain page any key dismisses. An until-dismissed effect ends with the
+ * page. */
 static bool     swallow_release = false;
 static keypos_t swallow_key;
 
-bool notify_process_record(keyrecord_t *record) {
+/* True while the question stays up after this key. */
+static bool ask_key(uint16_t kc) {
+    switch (kc) {
+        case KC_LEFT: case KC_UP:
+            ask_sel = (uint8_t)((ask_sel + ask_nopt - 1) % ask_nopt);
+            ask_render(false);
+            return true;
+        case KC_RIGHT: case KC_DOWN:
+            ask_sel = (uint8_t)((ask_sel + 1) % ask_nopt);
+            ask_render(false);
+            return true;
+        case KC_SPC:
+            if (ask_flags & ASK_MULTI) {
+                ask_checked ^= (uint8_t)(1u << ask_sel);
+                ask_render(false);
+            }
+            return true;
+        case KC_ENT:
+            if (ask_flags & ASK_PERM)       answer(ask_sel == 0 ? ANSWER_ALLOW : ANSWER_DENY);
+            else if (ask_flags & ASK_MULTI) answer_multi();
+            else                            answer(ANSWER_CHOICE[ask_sel]);
+            return false;
+        case KC_ESC:
+            answer(ANSWER_CANCEL);
+            return false;
+        default:
+            return true;   /* ignored: the question waits for a real answer */
+    }
+}
+
+bool notify_process_record(uint16_t keycode, keyrecord_t *record) {
     if (swallow_release && !record->event.pressed &&
         record->event.key.row == swallow_key.row && record->event.key.col == swallow_key.col) {
         swallow_release = false;
         return true;
     }
     if (!record->event.pressed || !display_notify_page_active()) return false;
-    display_notify_page_close();
-    if (fx_on && !fx_until) fx_stop();
     swallow_release = true;
     swallow_key     = record->event.key;
+    if (ask_on && ask_key(keycode)) return true;
+    ask_on = false;
+    display_notify_page_close();
+    if (fx_on && !fx_until) fx_stop();
     return true;
+}
+
+/* --- Raw HID staging -------------------------------------------------------- */
+static uint8_t stage_buf[LC_MAX_BYTES];
+
+bool notify_stage(uint8_t offset, const uint8_t *p, uint8_t n) {
+    if (n > 28 || (uint16_t)offset + n > sizeof(stage_buf)) return false;
+    memcpy(stage_buf + offset, p, n);
+    return true;
+}
+
+bool notify_commit(uint8_t len) {
+    return len <= sizeof(stage_buf) && notify_frame(stage_buf, len);
 }

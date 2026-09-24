@@ -963,9 +963,12 @@ static void np_compose(const char *s, uint8_t len) {
     uint8_t nrows = 0, col = 0;
     memset(rows, 0, sizeof(rows));
     uint8_t i = 0;
+    bool    soft = false;   /* this row began at an automatic wrap */
     while (i < len && nrows < NP_ROWS) {
-        if (s[i] == '\n') { nrows++; col = 0; i++; continue; }
-        if (s[i] == ' ' && col == 0) { i++; continue; }
+        if (s[i] == '\n') { nrows++; col = 0; soft = false; i++; continue; }
+        /* Leading spaces are dropped only after a wrap; after an explicit
+         * newline they are the caller's alignment and are kept. */
+        if (s[i] == ' ' && col == 0 && soft) { i++; continue; }
         uint8_t w = 0;                                   /* next word length */
         while (i + w < len && s[i + w] != ' ' && s[i + w] != '\n') w++;
         if (w == 0) {                                    /* a space between words */
@@ -976,10 +979,11 @@ static void np_compose(const char *s, uint8_t len) {
         if (col + w > NP_COLS && col > 0) {              /* wrap before the word */
             while (col && rows[nrows][col - 1] == ' ') rows[nrows][--col] = 0;
             if (++nrows >= NP_ROWS) break;
-            col = 0;
+            col  = 0;
+            soft = true;
         }
         for (uint8_t k = 0; k < w; k++) {                /* hard-split words > 12 */
-            if (col == NP_COLS) { if (++nrows >= NP_ROWS) break; col = 0; }
+            if (col == NP_COLS) { if (++nrows >= NP_ROWS) break; col = 0; soft = true; }
             char c = s[i + k];
             rows[nrows][col++] = (c >= 0x20 && c < 0x7F) ? c : '?';
         }
@@ -1005,6 +1009,13 @@ void display_notify_page_text(const char *s, uint8_t len) {
     np_clear_band = 1;
     memset(np_shown, ' ', sizeof(np_shown));
     for (uint8_t r = 0; r < NP_ROWS; r++) np_shown[r][NP_COLS] = '\0';
+}
+
+/* Replace the text of an open text page without clearing it: only the cells
+ * that changed are repainted (an ask page moving its selection marker). */
+void display_notify_page_update(const char *s, uint8_t len) {
+    if (!npage_active || np_gif_base) { display_notify_page_text(s, len); return; }
+    np_compose(s, len);
 }
 
 bool display_notify_page_gif(uint32_t base, uint8_t frames) {

@@ -129,6 +129,7 @@ void display_set_alert(const char *msg);
  * frames laid out at base+0x100, 0x8000 apart. Both refuse (GIF returns false)
  * while Fn+D or the flash animation owns the panel. */
 void display_notify_page_text(const char *s, uint8_t len);
+void display_notify_page_update(const char *s, uint8_t len);
 bool display_notify_page_gif(uint32_t base, uint8_t frames);
 void display_notify_page_close(void);
 bool display_notify_page_active(void);   /* 0-100 = progress, <0 = off */

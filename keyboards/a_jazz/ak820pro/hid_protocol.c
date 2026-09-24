@@ -680,6 +680,11 @@ enum {
     NOTIFY_SHOW       = 0x01,
     NOTIFY_STATS      = 0x02,
     NOTIFY_BOOTLOADER = 0x03,
+    /* [.., NOTIFY_STAGE, offset, n, n bytes] then [.., NOTIFY_COMMIT, len]: a
+     * frame longer than one report (an ASK with its options). n is explicit:
+     * the report length is always the full 32, so it cannot bound a piece. */
+    NOTIFY_STAGE      = 0x05,
+    NOTIFY_COMMIT     = 0x06,
 };
 
 static inline bool is_notify_cmd(const uint8_t *data, uint8_t length) {
@@ -697,6 +702,12 @@ static void notify_command(uint8_t *data, uint8_t length) {
         case NOTIFY_STATS:
             if (length >= 3 + NOTIFY_STATS_LEN) notify_stats_fill(&data[3]);
             else data[0] = RTC_UNHANDLED;
+            break;
+        case NOTIFY_STAGE:
+            if (length < 5 || data[4] > length - 5 || !notify_stage(data[3], &data[5], data[4])) data[0] = RTC_UNHANDLED;
+            break;
+        case NOTIFY_COMMIT:
+            if (length < 4 || !notify_commit(data[3])) data[0] = RTC_UNHANDLED;
             break;
 #ifdef NOTIFY_RAW_BOOTLOADER
         case NOTIFY_BOOTLOADER:
