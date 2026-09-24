@@ -456,6 +456,19 @@ static uint8_t          tx_retries   = 0;
  * collapse (you can out-type the link), not as mild latency. */
 static uint32_t tx_stat_sent = 0, tx_stat_timeout = 0, tx_stat_drop = 0;
 
+#ifdef CONSOLE_ENABLE
+/* ACK turnaround, instrumented builds (2026-09-23): docs/wireless.md asks for
+ * this before CH582_TX_ACK_TIMEOUT_MS is touched -- ~half of all frames time
+ * out at 10 ms and are ACKed after one retransmit. Measured from the FIRST
+ * send of a frame, in 1 ms buckets (the last pools >= 15 ms), plus the worst
+ * case and the number of retransmits the frame needed. `orphan` counts ACKs
+ * that arrive with nothing in flight: if `61 0D 0A` were also a periodic
+ * heartbeat (the other reading of the parser's comments), it would show there. */
+#define ACK_BUCKETS 16u
+static systime_t tx_first_sent_st;
+static uint32_t  ack_hist[ACK_BUCKETS], ack_orphan, ack_after_retry, ack_max_us;
+#endif
+
 /* Health-counter readout (health.c). Main-loop only, like everything here. */
 void ch582_tx_stats(uint32_t *sent, uint32_t *timeouts, uint32_t *drops) {
     *sent     = tx_stat_sent;
@@ -487,6 +500,9 @@ static void ch582_tx_pump(void) {
     if (tx_head == tx_tail) return;                                          /* queue empty */
     sdWrite(&CH582_SERIAL_DRIVER, tx_q[tx_head].data, tx_q[tx_head].len);
     tx_sent_time = timer_read();
+#ifdef CONSOLE_ENABLE
+    tx_first_sent_st = chVTGetSystemTimeX();
+#endif
     tx_in_flight = true;
     tx_stat_sent++;
 }
@@ -495,6 +511,17 @@ static void ch582_tx_pump(void) {
  * the first proof the module's UART is up (see module_alive). */
 static void ch582_tx_ack(void) {
     module_alive = true;
+#ifdef CONSOLE_ENABLE
+    if (tx_in_flight) {
+        uint32_t us = TIME_I2US(chVTTimeElapsedSinceX(tx_first_sent_st));
+        uint32_t ms = us / 1000u;
+        ack_hist[ms < ACK_BUCKETS ? ms : ACK_BUCKETS - 1u]++;
+        if (us > ack_max_us) ack_max_us = us;
+        if (tx_retries) ack_after_retry++;
+    } else {
+        ack_orphan++;
+    }
+#endif
     if (tx_in_flight) ch582_tx_pop();
 }
 
@@ -822,6 +849,16 @@ void ch582_task(void) {
                 seen_timeout = tx_stat_timeout;
                 seen_drop    = tx_stat_drop;
             }
+#ifdef CONSOLE_ENABLE
+            static uint8_t ack_report = 0;
+            if (++ack_report >= 12) {                      /* once a minute */
+                ack_report = 0;
+                printf("[ch582] ack ms:");
+                for (uint8_t i = 0; i < ACK_BUCKETS; i++) printf(" %lu", (unsigned long)ack_hist[i]);
+                printf(" | max=%luus retried=%lu orphan=%lu\n", (unsigned long)ack_max_us,
+                       (unsigned long)ack_after_retry, (unsigned long)ack_orphan);
+            }
+#endif
         }
     }
 
@@ -843,9 +880,6 @@ void ch582_task(void) {
         last_battery_poll = timer_read();
         ch582_poll_status();
     }
-
-    /* Drive the reliable TX queue: send/retransmit/drop the in-flight frame. */
-    ch582_tx_pump();
 
     uint8_t c;
     uint8_t bytes_processed = 0;
@@ -1032,4 +1066,13 @@ void ch582_task(void) {
             health_note_rx_malformed();
         }
     }
+
+    /* Drive the reliable TX queue: send/retransmit/drop the in-flight frame.
+     * AFTER the RX drain, not before it (codex review, 2026-09-23): an ACK
+     * already sitting in the input queue must release the in-flight frame
+     * before its timeout is judged. Pumped first, a buffered ACK could not
+     * stop a needless retransmit, whose own ACK then arrived with nothing in
+     * flight (an orphan) -- or, worse, popped the NEXT frame, since `61 0D 0A`
+     * carries no sequence number. */
+    ch582_tx_pump();
 }
