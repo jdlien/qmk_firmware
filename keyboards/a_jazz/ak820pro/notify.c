@@ -5,7 +5,7 @@
  * FRAME (identical on both transports)
  *
  *   [0] hdr   seq:2 (bits 7-6) | effect:3 (bits 5-3) | page:1 (bit 2) |
- *             kind:2 (bits 1-0): 0 SHOW, 1 CLOSE, 2 ASK
+ *             kind:2 (bits 1-0): 0 SHOW, 1 CLOSE, 2 ASK, 3 AMBIENT
  *   [1] hue   0-255, QMK hue scale
  *   [2] dur   effect duration in 100 ms units; 0 = no lighting,
  *             255 = until the page is dismissed
@@ -53,6 +53,13 @@
  *   ANSWER_ALLOW / ANSWER_DENY for a permission, ANSWER_CHOICE[i] for option
  *   i of a choice, ANSWER_CANCEL for Esc. The host reads them from the
  *   receiver's "Consumer Control" input device.
+ *
+ * AMBIENT (kind 3) sets the screensaver: [3] = GIF slot (0 = off), [2] =
+ * seconds without a key press before it starts (0 = 60). The GIF plays full
+ * screen until any key, and that key is NOT swallowed -- it types as usual.
+ * Notifications and questions always take the screen from it. The host picks
+ * the slot by what it is doing (e.g. idle vs. at work). Default after boot:
+ * slot 3 after 60 s, which shows nothing if that slot is empty.
  *
  * LED CHANNEL (BT/2.4G)
  *
@@ -107,7 +114,7 @@ static const uint16_t ANSWER_CHOICE[4] = {
     0x1BC,   /* AL Instant Messaging -> KEY_MESSENGER */
 };
 
-enum { KIND_SHOW = 0, KIND_CLOSE = 1, KIND_ASK = 2 };
+enum { KIND_SHOW = 0, KIND_CLOSE = 1, KIND_ASK = 2, KIND_AMBIENT = 3 };
 #define ASK_NDETAIL 0x03
 #define ASK_PERM    0x04
 #define ASK_MULTI   0x08
@@ -222,6 +229,13 @@ bool rgb_matrix_indicators_advanced_kb(uint8_t led_min, uint8_t led_max) {
 
 static uint8_t  last_seq    = 0xFF;
 static uint32_t last_seq_at = 0;
+
+/* --- Ambient (screensaver) ------------------------------------------------- */
+
+static uint8_t  amb_slot    = 3;        /* GIF slot, 0 = off */
+static uint16_t amb_after_s = 60;
+static bool     amb_showing = false;
+static uint32_t last_key_at = 0;
 
 /* --- Ask page --------------------------------------------------------------- */
 
@@ -437,18 +451,31 @@ bool notify_frame(const uint8_t *b, uint8_t n) {
     bool        page = (b[0] >> 2) & 1;
     uint8_t     kind = b[0] & 0x03;
 
+    if (kind == KIND_AMBIENT) {
+        bool changed = b[3] != amb_slot;
+        amb_slot    = b[3] <= NOTIFY_GIF_SLOTS ? b[3] : 0;
+        amb_after_s = b[2] ? b[2] : 60;
+        if (amb_showing && changed) {
+            uint8_t frames = amb_slot ? gif_frames(amb_slot) : 0;
+            if (frames) display_notify_page_gif(NOTIFY_GIF_BASE + (uint32_t)(amb_slot - 1) * NOTIFY_GIF_STRIDE, frames);
+            else { amb_showing = false; display_notify_page_close(); }
+        }
+        return true;
+    }
     if (kind == KIND_CLOSE) {
         if (b[3] & CLOSE_SLOT) {
             ask_drop((b[3] >> 4) & 0x03);
             if (!ask_count() && fx_on && !fx_until) fx_stop();
         } else if (!ask_count()) {   /* pending questions outlive a plain close */
-            ask_on = false;
+            ask_on      = false;
+            amb_showing = false;
             display_notify_page_close();
             if (fx_on && !fx_until) fx_stop();
         }
         return true;
     }
     if (kind == KIND_ASK) {
+        amb_showing = false;   /* a question outranks the screensaver */
         ask_open(b[3], txt, len);
         if (b[2]) fx_start((uint8_t)((b[0] >> 3) & 0x07), b[1], b[2]);
         return true;
@@ -459,7 +486,8 @@ bool notify_frame(const uint8_t *b, uint8_t n) {
         page = false;   /* questions are waiting: they keep the screen */
     }
     if (page) {
-        ask_on = false;
+        ask_on      = false;
+        amb_showing = false;
         uint8_t frames = gif_frames(b[3]);
         if (!(frames && display_notify_page_gif(NOTIFY_GIF_BASE + (uint32_t)(b[3] - 1) * NOTIFY_GIF_STRIDE, frames)))
             display_notify_page_text(txt, len);
@@ -529,7 +557,22 @@ void notify_leds_changed(uint8_t raw) {
     lc_bits++;
 }
 
+static void ambient_task(void) {
+    if (amb_showing) {
+        if (!display_notify_page_active()) amb_showing = false;   /* someone closed it */
+        return;
+    }
+    if (!amb_slot || display_notify_page_active() || display_debug_active() || !display_get_power()) return;
+    if (timer_elapsed32(last_key_at) < (uint32_t)amb_after_s * 1000u) return;
+    uint8_t frames = gif_frames(amb_slot);
+    if (frames && display_notify_page_gif(NOTIFY_GIF_BASE + (uint32_t)(amb_slot - 1) * NOTIFY_GIF_STRIDE, frames))
+        amb_showing = true;
+    else
+        last_key_at = timer_read32();   /* nothing to show: do not retry every tick */
+}
+
 void notify_task(void) {
+    ambient_task();
     if (answer_release) {
         host_consumer_send(0);
         answer_release = false;
@@ -590,6 +633,14 @@ static bool ask_key(uint16_t kc) {
 }
 
 bool notify_process_record(uint16_t keycode, keyrecord_t *record) {
+    if (record->event.pressed) {
+        last_key_at = timer_read32();
+        if (amb_showing) {   /* wake: back to the dashboard, and the key still types */
+            amb_showing = false;
+            if (display_notify_page_active()) display_notify_page_close();
+            return false;
+        }
+    }
     if (swallow_release && !record->event.pressed &&
         record->event.key.row == swallow_key.row && record->event.key.col == swallow_key.col) {
         swallow_release = false;
