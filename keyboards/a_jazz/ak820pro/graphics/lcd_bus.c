@@ -594,17 +594,54 @@ static uint16_t blit_retry_successes = 0;
 static uint16_t blit_busy_waits = 0;   /* see bus_quiesce() */
 
 #ifdef CONSOLE_ENABLE
-/* Arm-window timing, instrumented builds only (crash hunt, 2026-09-23). Every
- * blit timeout on record is a transfer that NEVER STARTED, and the hunt showed
- * those are what the hang and the remaining stalls ride on. Hypothesis under
- * test: an interrupt landing between the flash READ command and Fire() lets
- * SPI1's RX-threshold event -- the DMA trigger -- come and go (or be cleared by
- * the IC write) before DMAEN is set. ST ticks are 5.33 us; an unpreempted
- * command phase is a tick or two, the row ISR alone ~35. `cmd` = CS low to the
- * last address byte, `fire` = from there, across the SPI1 IC clear, to DMAEN. */
+/* Arm-window timing, instrumented builds only (crash hunt, 2026-09-23). The
+ * hypothesis it tested -- an interrupt landing between the flash READ command
+ * and Fire() loses the DMA trigger -- was REFUTED: 12% of arms have a slow
+ * command phase, and none of the failures did. Kept as a base-rate line.
+ * ST ticks are 5.33 us; an unpreempted command phase is a tick or two, the
+ * row ISR alone ~35. `cmd` = CS low to the last address byte, `fire` = from
+ * there, across the SPI1 IC clear, to DMAEN. */
 #define ARM_SLOW_TICKS 10u
 static uint16_t arm_cmd_ticks, arm_fire_ticks;          /* the most recent arm */
 static uint32_t arms_total, arms_slow_cmd, arms_slow_fire;
+/* Result: every never-start armed fast, so the arm window was not it. They
+ * were all 660-byte clock digits, and the cause was a completion lost in the
+ * SPI0 handler (ChibiOS c57623d0d2; plans/FIRMWARE-FINDINGS-2026-09-23.md).
+ * The diagnostics that found it stay, for the next hunt: the blit before
+ * each arm and the gap since it completed; arms, timeouts and the handler's
+ * rescues per transfer size; the SPI state just before Fire(); and CURCNT. */
+static uint32_t arm_prev_src, arm_prev_bytes;           /* the blit before this one */
+static uint16_t arm_gap_ticks;                          /* its completion -> this arm */
+static volatile systime_t blit_done_at;                 /* set by blit_done_cb */
+#define SIZE_SLOTS 16u  /* boot draws many clear sizes; last slot pools the rest */
+static uint32_t size_bytes[SIZE_SLOTS], size_arms[SIZE_SLOTS], size_never[SIZE_SLOTS];
+/* Completions the SPI0 handler rescued (its re-check found a DMATCIF that
+ * raced its flag clear), per size. The timing model puts them only on
+ * transfers that complete 188-258 us after the arm: measured 2026-09-23 on
+ * 660 and 672 bytes only, none of ~530,000 others. */
+static uint32_t size_rescued[SIZE_SLOTS], arm_rescues;
+static uint8_t  arm_size_slot;
+/* SPI0/SPI1 as the arm leaves them, just before Fire(): STAT and RIS, and
+ * how often either RX FIFO is not empty or SPI0 is still busy (never, in
+ * 580,000 arms). A full SPI0 RX FIFO at a timeout is the junk the panel side
+ * receives while the DMA shifts pixels out -- evidence the transfer ran. */
+static uint8_t  pre_s0, pre_ris0, pre_s1, pre_ris1;
+static uint32_t arms_s0_rx, arms_s0_busy, arms_s1_rx;
+/* DMACNT does NOT count down: it holds the programmed length through and
+ * after a transfer (every completion read it unchanged, 2026-09-23). Progress
+ * is CURCNT, "count from 0 to DMACNT". So at each completion: CURCNT at the
+ * programmed length is a full transfer (`tc_full`), anything else is counted
+ * (`tc_short`) with the last value kept; and CURCNT just before Fire() says
+ * whether it restarts from 0 (`pre_cur`, `arms_cur_stale`). */
+static uint32_t tc_full, tc_short, tc_short_cur, tc_short_len;
+static uint32_t pre_cur, arms_cur_stale;
+static uint8_t size_slot(uint32_t bytes) {
+    for (uint8_t i = 0; i < SIZE_SLOTS - 1u; i++) {
+        if (size_bytes[i] == bytes) return i;
+        if (size_bytes[i] == 0) { size_bytes[i] = bytes; return i; }
+    }
+    return SIZE_SLOTS - 1u;
+}
 #endif
 static bool     blit_retrying = false;
 /* Since boot, never reset: the exposure a soak reports against (finding 15). */
@@ -643,6 +680,15 @@ uint32_t lcd_blit_count_take(void) { uint32_t n = blit_count; blit_count = 0; re
 static void blit_done_cb(void) {
     gpio_write_pin(FLASH_CS, 1);
     cs(1);
+#ifdef CONSOLE_ENABLE
+    blit_done_at = chVTGetSystemTimeX();
+    if (spiSN32FlashDmaRescues() != arm_rescues) size_rescued[arm_size_slot]++;
+    {
+        uint32_t cur = SN_SPI0->CURCNT_b.CURCNT;
+        if (cur == blit_len_words) tc_full++;
+        else { tc_short++; tc_short_cur = cur; tc_short_len = blit_len_words; }
+    }
+#endif
     blit_done = true;
 }
 
@@ -679,6 +725,15 @@ void lcd_blit_flash(uint32_t src, uint16_t x, uint16_t y, uint16_t w, uint16_t h
     blit_count++;
     if (blits_issued != UINT32_MAX) blits_issued++;
     uint32_t bytes = (uint32_t)w * (uint32_t)h * 2u;
+#ifdef CONSOLE_ENABLE
+    arm_prev_src   = blit_src;
+    arm_prev_bytes = blit_len_words + 1u;
+    sysinterval_t gap = chVTTimeElapsedSinceX(blit_done_at);
+    arm_gap_ticks  = gap > 0xFFFFu ? 0xFFFFu : (uint16_t)gap;
+    arm_size_slot  = size_slot(bytes);
+    size_arms[arm_size_slot]++;
+    arm_rescues    = spiSN32FlashDmaRescues();
+#endif
     blit_len_words = bytes - 1;      // what Prepare() loads into DMACNT
     blit_src = src; blit_x = x; blit_y = y; blit_w = w; blit_h = h;
     blit_done = false;
@@ -698,6 +753,15 @@ void lcd_blit_flash(uint32_t src, uint16_t x, uint16_t y, uint16_t w, uint16_t h
     systime_t arm_t1 = chVTGetSystemTimeX();
 #endif
     SN_SPI1->IC = 0x3F;
+#ifdef CONSOLE_ENABLE
+    pre_cur = SN_SPI0->CURCNT_b.CURCNT;
+    if (pre_cur != 0) arms_cur_stale++;
+    pre_s0 = (uint8_t)SN_SPI0->STAT; pre_ris0 = (uint8_t)SN_SPI0->RIS;
+    pre_s1 = (uint8_t)SN_SPI1->STAT; pre_ris1 = (uint8_t)SN_SPI1->RIS;
+    if (!(pre_s0 & 0x04u)) arms_s0_rx++;      /* RX_EMPTY clear */
+    if (pre_s0 & 0x10u)    arms_s0_busy++;    /* BUSY */
+    if (!(pre_s1 & 0x04u)) arms_s1_rx++;
+#endif
     // Flip to 16-bit pixels and arm; blit_done_cb fires at completion.
     spiSN32FlashDmaFire(&SPID0, blit_done_cb);
 #ifdef CONSOLE_ENABLE
@@ -718,6 +782,23 @@ void lcd_blit_arm_report(void) {
             (unsigned long)arms_total, (unsigned long)arms_slow_cmd,
             (unsigned long)arms_slow_fire, (unsigned)blit_kinds[BLIT_NEVER_STARTED],
             (unsigned)blit_busy_waits);
+    dprintf("[lcd] tc: full=%lu short=%lu (last %lu/%lu) arms_cur_stale=%lu\n",
+            (unsigned long)tc_full, (unsigned long)tc_short,
+            (unsigned long)tc_short_cur, (unsigned long)tc_short_len,
+            (unsigned long)arms_cur_stale);
+    dprintf("[lcd] pre-fire: s0_rx=%lu s0_busy=%lu s1_rx=%lu\n",
+            (unsigned long)arms_s0_rx, (unsigned long)arms_s0_busy,
+            (unsigned long)arms_s1_rx);
+    /* bytes:arms/timeouts/rescued per transfer size; the last slot pools the rest. */
+    dprintf("[lcd] sizes");
+    for (uint8_t i = 0; i < SIZE_SLOTS; i++) {
+        if (!size_arms[i]) continue;
+        if (i == SIZE_SLOTS - 1u) dprintf(" other");
+        else dprintf(" %lu", (unsigned long)size_bytes[i]);
+        dprintf(":%lu/%lu/%lu", (unsigned long)size_arms[i], (unsigned long)size_never[i],
+                (unsigned long)size_rescued[i]);
+    }
+    dprintf("\n");
 }
 #endif
 
@@ -779,10 +860,14 @@ bool lcd_blit_wait(void) {
      * An unconditional store here made every flash stall report as "blit",
      * which sent the first phase-1 measurement chasing the wrong subsystem. */
     if (loop_stall_mark == LOOP_MARK_NONE) loop_stall_mark = LOOP_MARK_BLIT;
-    /* PHASE 1 -- did the DMA actually start? Watch DMACNT move (or a transfer
-     * flag appear) rather than waiting out a whole transfer. A blit that never
-     * starts is detected in ~10 ms instead of 250 ms, so the retry lands before
-     * the stall is visible. */
+    /* PHASE 1 -- did the DMA actually start? ⚠️ DMACNT NEVER MOVES: it holds
+     * the programmed length through and after the transfer (measured
+     * 2026-09-23; progress is CURCNT). So this really asks "did a DMA flag
+     * show before the ISR cleared it", and a transfer that started without
+     * one being caught reads as not started. Harmless for the recovery (the
+     * retry repaints the whole window) but it makes the classification below
+     * a symptom label, not a diagnosis. Reworking it on CURCNT/DMAEN is open
+     * (plans/FIRMWARE-FINDINGS-2026-09-23.md, disposition 4). */
     bool started = false;
     for (uint32_t i = 0; i < BLIT_START_SPINS && !blit_done; i++) {
         if (SN_SPI0->DMACNT_b.CNT != blit_len_words || (SN_SPI0->RIS & 0x30u)) {
@@ -790,9 +875,8 @@ bool lcd_blit_wait(void) {
             break;
         }
     }
-    /* PHASE 2 -- it is moving, so give it the generous bound to finish. A
-     * started transfer must NOT be cut short: it has already pushed pixels, so
-     * it cannot be retried blind. */
+    /* PHASE 2 -- a flag was seen, so give it the generous bound to finish
+     * (measured at up to 1.95 s of wall time under the row ISR's load). */
     if (started) {
         for (uint32_t i = 0; i < BLIT_WAIT_SPINS && !blit_done; i++) {
             __asm__ volatile("nop");
@@ -800,19 +884,19 @@ bool lcd_blit_wait(void) {
     }
     if (blit_done) return true;
 
-    /* NEVER STARTED -> retry once, and the frame is not even lost.
+    /* "NEVER STARTED" -> retry once, and the frame is not even lost.
      *
-     * Measured on hardware over 1h45m: all 13 failures read cnt == the
-     * programmed length with neither DMATCIF nor DMAHTIF set. The transfer had
-     * not begun, so nothing partial happened, nothing was half-written to the
-     * panel, and re-arming is exactly as safe as arming was the first time.
-     * That is a much better answer than dropping the frame, and it is only
-     * valid for this specific reading -- a transfer that stalled PARTWAY has
-     * pushed pixels already and must not be repeated blind.
+     * Every such timeout on record (hundreds, 2026-08-30 to 2026-09-23) was
+     * in fact a transfer that had COMPLETED -- CURCNT full, DMAEN cleared by
+     * the hardware -- whose DMATCIF the SPI0 handler cleared unseen. Fixed in
+     * the driver (ChibiOS c57623d0d2): E5 ran 580,000 blits with none. The
+     * retry was right for a different reason than it used to claim: it
+     * reissues the window command and RAMWR, so it repaints the whole
+     * rectangle whatever the first attempt did (codex review, 2026-09-23).
      *
-     * One retry, not a loop: if a second arm also fails to start, something is
-     * wrong beyond a missed trigger and spinning on it would be the original
-     * bug again. blit_retrying guards against recursing through the abort. */
+     * One retry, not a loop: if a second arm also fails, something is wrong
+     * beyond one lost event and spinning on it would be the original bug
+     * again. blit_retrying guards against recursing through the abort. */
     /* ONE observation decides everything below, taken with the completion ISR
      * held off (crash-hunt implementation review, finding 5):
      *   - blit_done is re-checked: a completion that landed after the wait
@@ -836,6 +920,9 @@ bool lcd_blit_wait(void) {
     uint32_t ris = SN_SPI0->RIS & 0x3Fu;
     uint32_t cnt = SN_SPI0->DMACNT_b.CNT;
     uint32_t s0 = SN_SPI0->STAT, s1 = SN_SPI1->STAT, ris1 = SN_SPI1->RIS & 0x3Fu;
+#ifdef CONSOLE_ENABLE
+    uint32_t cur = SN_SPI0->CURCNT_b.CURCNT, dmactrl = SN_SPI0->DMACTRL;
+#endif
     if (!completed) spiSN32FlashDmaAbort(&SPID0);
     chSysUnlock();
     (void)s0; (void)s1; (void)ris1;   /* console-only: dprintf is empty on the daily build */
@@ -847,9 +934,11 @@ bool lcd_blit_wait(void) {
     blit_done = true;
 
     if (blit_timeouts < 0xFFFFu) blit_timeouts++;
-    /* DMACNT, from the snapshot above, is the discriminator. It tells apart
-     * three different symptoms -- which is not the same as proving three
-     * root causes:
+    /* ⚠️ DMACNT never moves (see phase 1), so `cnt` is always the programmed
+     * length and this table degenerates to "was a flag pending": never
+     * started = no flag; IRQ lost / stalled cannot occur as written. Kept for
+     * the wire format (page 6) until it is reworked on CURCNT and DMAEN. The
+     * table as originally designed:
      *
      *   cnt == the programmed length  -> the transfer never started
      *   cnt somewhere in between      -> the SOURCE starved mid-transfer, which
@@ -876,6 +965,15 @@ bool lcd_blit_wait(void) {
             (unsigned long)s0, (unsigned long)s1, (unsigned long)ris1,
             (unsigned)arm_cmd_ticks, (unsigned)arm_fire_ticks,
             (unsigned)rtc_i2c_overlaps());
+    dprintf("[lcd]   src=%06lx %ux%u@%u,%u prev=%06lx/%lu gap=%u pre0=%02x/%02x pre1=%02x/%02x\n",
+            (unsigned long)blit_src, (unsigned)blit_w, (unsigned)blit_h,
+            (unsigned)blit_x, (unsigned)blit_y, (unsigned long)arm_prev_src,
+            (unsigned long)arm_prev_bytes, (unsigned)arm_gap_ticks,
+            (unsigned)pre_s0, (unsigned)pre_ris0, (unsigned)pre_s1, (unsigned)pre_ris1);
+    dprintf("[lcd]   curcnt=%lu/%lu pre_cur=%lu dmactrl=%lx started=%u\n",
+            (unsigned long)cur, (unsigned long)blit_len_words, (unsigned long)pre_cur,
+            (unsigned long)dmactrl, (unsigned)started);
+    size_never[arm_size_slot]++;             /* every timeout, of any kind */
 #endif
 
     if (never_started && !blit_retrying && blit_w && blit_h) {
