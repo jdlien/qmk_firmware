@@ -756,8 +756,11 @@ void ch582_task(void) {
      * Logic-analyzer-decoded against stock firmware. The ONLY trustworthy
      * connection signals are the 5B state transitions; everything else (61 0D 0A,
      * 5C battery, 5B 23) is periodic and streams regardless of link state:
-     *   - 61 0D 0A   -> "a\r\n" periodic IDLE HEARTBEAT (NOT a disconnect: it is
-     *                   emitted while connected too). Ignore for connection state.
+     *   - 61 0D 0A   -> "a\r\n": the per-frame ACK (see the parser below). An
+     *                   older reading called it a periodic idle heartbeat; the
+     *                   2026-09-23 measurement says ACK -- one ACK arrived with
+     *                   nothing in flight in ~2,200 frames (docs/wireless.md).
+     *                   Either way, ignore it for connection state.
      *   - 5A <led>   -> host keyboard LED bitmap (USB LED bits; bit1 = caps lock)
      *   - 5B <code>  -> connection state machine (code is a STATE, not a slot):
      *        32 = link established (connected);  31 = advertising/pairing;
