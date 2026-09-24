@@ -26,8 +26,9 @@
  * Written over the cable with `ak820ctl flash write`.
  *
  * CLOSE (kind 1) closes the page and ends an until-dismissed effect: the host
- * sends it when the notification was dealt with at the computer. Other fields
- * are ignored; len may be 0.
+ * sends it when the notification was dealt with at the computer. [3] bit7 set
+ * means "only question slot (bits 5-4)": that question is dropped and the next
+ * one shown. A plain CLOSE leaves pending questions alone. len may be 0.
  *
  * ASK (kind 2) is a page with a question, answered from the board. Text is
  * title\ndetail...\nopt1\nopt2..., one row each; [3] is flags:
@@ -36,10 +37,15 @@
  *   bit3     MULTI: checkboxes -- Space toggles the option under the cursor,
  *            Enter sends ANSWER_CHOICE[i] for every checked option, one at a
  *            time, then ANSWER_ALLOW as the end marker
+ *   bits5-4  SLOT 0-3: up to four questions wait at once, from different
+ *            sessions. The title shows "n/m"; PgUp/PgDn (or Home/End) switch
+ *            between them; answering one shows the next. Every answer is
+ *            preceded by ANSWER_SLOT[slot] so each asker takes only its own.
  * Title, details and options share the 5 rows; a hint fills a spare row.
  * The arrows move the selection (Left/Up back, Right/Down forward), Space
- * ticks a box (MULTI), Enter confirms, Esc cancels and gives the keyboard back. Every other key is
- * IGNORED while the question is up: one stray keystroke must not throw the
+ * ticks a box (MULTI), Enter confirms, Esc cancels and gives the keyboard back.
+ * Layer keys (Fn) pass through, so Fn+U/Fn+O reach PgUp/PgDn. Every other key
+ * is IGNORED while a question is up: one stray keystroke must not throw the
  * question away (the first version cancelled on any key, and while typing
  * that is the likeliest key to arrive). The answer goes back as one HID
  * consumer usage -- the only board-to-host path over BT/2.4G besides
@@ -87,6 +93,13 @@
 #define ANSWER_ALLOW  0x191   /* AL Finance       -> KEY_FINANCE */
 #define ANSWER_DENY   0x1AB   /* AL Spell Check   -> KEY_SPELLCHECK */
 #define ANSWER_CANCEL 0x1BD   /* AL Info          -> KEY_INFO */
+/* Slot markers, sent before every answer. */
+static const uint16_t ANSWER_SLOT[4] = {
+    0x199,   /* AL Network Chat  -> KEY_CHAT */
+    0x1A7,   /* AL Documents     -> KEY_DOCUMENTS */
+    0x1AE,   /* AL Keyboard Layout -> KEY_KEYBOARD */
+    0x18E,   /* AL Calendar      -> KEY_CALENDAR */
+};
 static const uint16_t ANSWER_CHOICE[4] = {
     0x1B6,   /* AL Image Browser -> KEY_IMAGES */
     0x1B7,   /* AL Audio Browser -> KEY_AUDIO */
@@ -98,6 +111,8 @@ enum { KIND_SHOW = 0, KIND_CLOSE = 1, KIND_ASK = 2 };
 #define ASK_NDETAIL 0x03
 #define ASK_PERM    0x04
 #define ASK_MULTI   0x08
+#define ASK_SLOTS   4
+#define CLOSE_SLOT  0x80
 #define ASK_MAX_OPTS 4
 #define ASK_ROWS     5
 
@@ -210,21 +225,24 @@ static uint32_t last_seq_at = 0;
 
 /* --- Ask page --------------------------------------------------------------- */
 
-static bool    ask_on    = false;
-static uint8_t ask_flags = 0;
-static uint8_t ask_ndet  = 0;
-static uint8_t ask_nopt  = 0;
-static uint8_t ask_sel   = 0;
-static char    ask_title[13];
-static char    ask_det[2][13];
-static char    ask_opt[ASK_MAX_OPTS][11];     /* 12 columns less the "> " marker */
-static uint8_t ask_checked = 0;               /* MULTI: bit i = option i ticked */
-static bool    answer_release = false;
-/* Usages still to send, one per 10 Hz tick with a release in between: a
- * MULTI answer is several usages, and pressing them back to back would merge
- * them in one consumer report. */
-static uint16_t answer_q[ASK_MAX_OPTS + 1];
-static uint8_t  answer_qn = 0, answer_qi = 0;
+typedef struct {
+    bool    used;
+    uint8_t flags, ndet, nopt, sel, checked;   /* checked: MULTI, bit i = option i */
+    char    title[13];
+    char    det[2][13];
+    char    opt[ASK_MAX_OPTS][11];             /* 12 columns less the "> " marker */
+} ask_t;
+
+static ask_t   asks[ASK_SLOTS];
+static uint8_t ask_cur = 0;       /* the slot on screen */
+static bool    ask_on  = false;   /* the page is showing questions */
+
+/* Usages still to send, one per 10 Hz tick with a release in between, so
+ * consecutive usages are never merged in one consumer report. A ring: answers
+ * given in quick succession queue up behind each other. */
+static uint16_t answer_q[16];
+static uint8_t  answer_qh = 0, answer_qt = 0;
+static bool     answer_release = false;
 
 #define PAGE_COLS 12
 
@@ -234,10 +252,27 @@ static void copy_row(char *dst, const char *s, uint8_t n) {
     dst[n] = 0;
 }
 
-/* Rebuild the page text from the ask state. Every row is centred HERE and
- * padded to the full width, so the page's own centring leaves it alone and
+static uint8_t ask_count(void) {
+    uint8_t n = 0;
+    for (uint8_t i = 0; i < ASK_SLOTS; i++) n += asks[i].used;
+    return n;
+}
+
+/* The next used slot from `from`, stepping `dir` (+1/-1), excluding `from`
+ * itself unless it is the only one. ASK_SLOTS if none. */
+static uint8_t ask_step(uint8_t from, int8_t dir) {
+    for (uint8_t k = 1; k <= ASK_SLOTS; k++) {
+        uint8_t i = (uint8_t)((from + ASK_SLOTS + dir * k) % ASK_SLOTS);
+        if (asks[i].used) return i;
+    }
+    return ASK_SLOTS;
+}
+
+/* Rebuild the page text for the question on screen. Every row is centred HERE
+ * and padded to the full width, so the page's own centring leaves it alone and
  * nothing shifts as the selection marker moves. */
 static void ask_render(bool fresh) {
+    ask_t  *a = &asks[ask_cur];
     char    buf[ASK_ROWS * (PAGE_COLS + 1)];
     uint8_t n = 0, rows = 0;
     #define ROW(s) do { const char *_s = (s); uint8_t _l = (uint8_t)strlen(_s); \
@@ -246,23 +281,39 @@ static void ask_render(bool fresh) {
         memcpy(buf + n, _s, _l); n += _l; \
         for (_k = (uint8_t)(_p + _l); _k < PAGE_COLS; _k++) buf[n++] = ' '; \
         buf[n++] = '\n'; rows++; } while (0)
-    ROW(ask_title);
-    for (uint8_t i = 0; i < ask_ndet; i++) ROW(ask_det[i]);
-    /* "> label" padded to the longest label, so every option row has the
-     * same width and they line up when centred. */
-    bool    multi = ask_flags & ASK_MULTI;
+    char row[PAGE_COLS + 1];
+    uint8_t total = ask_count();
+    if (total > 1) {
+        /* "Title  2/3": the title cut to fit, the position right-aligned. */
+        uint8_t pos = 1;
+        for (uint8_t i = 0; i < ask_cur; i++) pos += asks[i].used;
+        uint8_t tl = (uint8_t)strlen(a->title);
+        if (tl > PAGE_COLS - 4) tl = PAGE_COLS - 4;
+        memset(row, ' ', PAGE_COLS);
+        memcpy(row, a->title, tl);
+        row[PAGE_COLS - 3] = (char)('0' + pos);
+        row[PAGE_COLS - 2] = '/';
+        row[PAGE_COLS - 1] = (char)('0' + total);
+        row[PAGE_COLS] = 0;
+        ROW(row);
+    } else {
+        ROW(a->title);
+    }
+    for (uint8_t i = 0; i < a->ndet; i++) ROW(a->det[i]);
+    /* "> label" padded to the longest label, so every option row has the same
+     * width and they line up when centred. */
+    bool    multi = a->flags & ASK_MULTI;
     uint8_t lead  = multi ? 3 : 2;   /* ">x " / "> " */
     uint8_t w = 0;
-    for (uint8_t k = 0; k < ask_nopt; k++) if (strlen(ask_opt[k]) > w) w = (uint8_t)strlen(ask_opt[k]);
+    for (uint8_t k = 0; k < a->nopt; k++) if (strlen(a->opt[k]) > w) w = (uint8_t)strlen(a->opt[k]);
     if (w > PAGE_COLS - lead) w = PAGE_COLS - lead;
-    char row[PAGE_COLS + 1];
-    for (uint8_t i = 0; i < ask_nopt; i++) {
-        uint8_t l = (uint8_t)strlen(ask_opt[i]);
+    for (uint8_t i = 0; i < a->nopt; i++) {
+        uint8_t l = (uint8_t)strlen(a->opt[i]);
         if (l > w) l = w;
-        row[0] = (i == ask_sel) ? '>' : ' ';
-        if (multi) row[1] = (ask_checked & (1u << i)) ? 'x' : 'o';
+        row[0] = (i == a->sel) ? '>' : ' ';
+        if (multi) row[1] = (a->checked & (1u << i)) ? 'x' : 'o';
         row[lead - 1] = ' ';
-        memcpy(row + lead, ask_opt[i], l);
+        memcpy(row + lead, a->opt[i], l);
         memset(row + lead + l, ' ', (size_t)(w - l));
         row[lead + w] = 0;
         ROW(row);
@@ -272,50 +323,85 @@ static void ask_render(bool fresh) {
     if (n) n--;   /* drop the trailing newline */
     if (fresh) display_notify_page_text(buf, n);
     else       display_notify_page_update(buf, n);
+    ask_on = true;
 }
 
 static void ask_open(uint8_t flags, const char *txt, uint8_t len) {
-    ask_flags = flags;
-    ask_ndet  = 0;
-    ask_nopt  = 0;
-    ask_sel   = 0;
-    ask_checked = 0;
+    uint8_t slot = (flags >> 4) & 0x03;
+    ask_t  *a    = &asks[slot];
+    memset(a, 0, sizeof(*a));
+    a->flags = flags;
     uint8_t want_det = flags & ASK_NDETAIL;
     if (want_det > 2) want_det = 2;
     uint8_t line = 0, start = 0;
     for (uint8_t i = 0; i <= len; i++) {
         if (i < len && txt[i] != '\n') continue;
         uint8_t l = (uint8_t)(i - start);
-        if (line == 0)                 copy_row(ask_title, txt + start, l);
-        else if (line <= want_det)     copy_row(ask_det[ask_ndet++], txt + start, l);
-        else if (ask_nopt < ASK_MAX_OPTS && 1 + ask_ndet + ask_nopt < ASK_ROWS) {
+        if (line == 0)             copy_row(a->title, txt + start, l);
+        else if (line <= want_det) copy_row(a->det[a->ndet++], txt + start, l);
+        else if (a->nopt < ASK_MAX_OPTS && 1 + a->ndet + a->nopt < ASK_ROWS) {
             if (l > PAGE_COLS - 2) l = PAGE_COLS - 2;
-            memcpy(ask_opt[ask_nopt], txt + start, l);
-            ask_opt[ask_nopt++][l] = 0;
+            memcpy(a->opt[a->nopt], txt + start, l);
+            a->opt[a->nopt++][l] = 0;
         }
         line++;
         start = (uint8_t)(i + 1);
     }
-    if (line == 0) ask_title[0] = 0;
     /* A permission needs its two answers; a choice at least one option. */
-    if (ask_nopt < ((flags & ASK_PERM) ? 2 : 1)) return;
-    ask_on = true;
+    if (a->nopt < ((flags & ASK_PERM) ? 2 : 1)) return;
+    a->used = true;
+    if (ask_on && display_notify_page_active()) {
+        ask_render(false);   /* another question on screen: only its "n/m" changes */
+    } else {
+        ask_cur = slot;
+        ask_render(true);
+    }
+}
+
+static void answer_push(uint16_t usage) {
+    uint8_t next = (uint8_t)((answer_qt + 1) % (sizeof(answer_q) / sizeof(answer_q[0])));
+    if (next == answer_qh) return;   /* full: cannot happen with 4 slots x 6 usages */
+    answer_q[answer_qt] = usage;
+    answer_qt = next;
+}
+
+/* Answer the question on screen and drop it. True if another question is
+ * now showing, false if none is left (the caller closes the page). */
+static bool ask_answer(uint16_t usage) {
+    ask_t *a = &asks[ask_cur];
+    answer_push(ANSWER_SLOT[ask_cur]);
+    if (usage) {
+        answer_push(usage);
+    } else {   /* MULTI: the ticked options, then the end marker */
+        for (uint8_t i = 0; i < a->nopt; i++)
+            if (a->checked & (1u << i)) answer_push(ANSWER_CHOICE[i]);
+        answer_push(ANSWER_ALLOW);
+    }
+    a->used = false;
+    uint8_t next = ask_step(ask_cur, 1);
+    if (next == ASK_SLOTS) { ask_on = false; return false; }
+    ask_cur = next;
     ask_render(true);
+    return true;
 }
 
-static void answer(uint16_t usage) {
-    host_consumer_send(usage);
-    answer_release = true;   /* released on the next 10 Hz tick */
-    ask_on = false;
-}
-
-/* MULTI: the ticked options, then the end marker, via the queue. */
-static void answer_multi(void) {
-    answer_qn = answer_qi = 0;
-    for (uint8_t i = 0; i < ask_nopt; i++)
-        if (ask_checked & (1u << i)) answer_q[answer_qn++] = ANSWER_CHOICE[i];
-    answer_q[answer_qn++] = ANSWER_ALLOW;
-    answer(answer_q[answer_qi++]);
+/* Drop a question the host withdrew (answered at the computer, timed out). */
+static void ask_drop(uint8_t slot) {
+    if (!asks[slot].used) return;
+    asks[slot].used = false;
+    if (!ask_on) return;
+    if (slot == ask_cur) {
+        uint8_t next = ask_step(slot, 1);
+        if (next == ASK_SLOTS) {
+            ask_on = false;
+            display_notify_page_close();
+            return;
+        }
+        ask_cur = next;
+        ask_render(true);
+    } else {
+        ask_render(false);   /* the "n/m" changes */
+    }
 }
 
 /* The slot's frame count, or 0 if it holds nothing valid. */
@@ -352,12 +438,16 @@ bool notify_frame(const uint8_t *b, uint8_t n) {
     uint8_t     kind = b[0] & 0x03;
 
     if (kind == KIND_CLOSE) {
-        ask_on = false;
-        display_notify_page_close();
-        if (fx_on && !fx_until) fx_stop();
+        if (b[3] & CLOSE_SLOT) {
+            ask_drop((b[3] >> 4) & 0x03);
+            if (!ask_count() && fx_on && !fx_until) fx_stop();
+        } else if (!ask_count()) {   /* pending questions outlive a plain close */
+            ask_on = false;
+            display_notify_page_close();
+            if (fx_on && !fx_until) fx_stop();
+        }
         return true;
     }
-    ask_on = false;   /* any new notification replaces a pending question */
     if (kind == KIND_ASK) {
         ask_open(b[3], txt, len);
         if (b[2]) fx_start((uint8_t)((b[0] >> 3) & 0x07), b[1], b[2]);
@@ -365,7 +455,11 @@ bool notify_frame(const uint8_t *b, uint8_t n) {
     }
     uint8_t     nl  = 0;
     while (nl < len && txt[nl] != '\n') nl++;
+    if (page && ask_count()) {
+        page = false;   /* questions are waiting: they keep the screen */
+    }
     if (page) {
+        ask_on = false;
         uint8_t frames = gif_frames(b[3]);
         if (!(frames && display_notify_page_gif(NOTIFY_GIF_BASE + (uint32_t)(b[3] - 1) * NOTIFY_GIF_STRIDE, frames)))
             display_notify_page_text(txt, len);
@@ -436,8 +530,14 @@ void notify_leds_changed(uint8_t raw) {
 }
 
 void notify_task(void) {
-    if (answer_release) { host_consumer_send(0); answer_release = false; }
-    else if (answer_qi < answer_qn) { host_consumer_send(answer_q[answer_qi++]); answer_release = true; }
+    if (answer_release) {
+        host_consumer_send(0);
+        answer_release = false;
+    } else if (answer_qh != answer_qt) {
+        host_consumer_send(answer_q[answer_qh]);
+        answer_qh = (uint8_t)((answer_qh + 1) % (sizeof(answer_q) / sizeof(answer_q[0])));
+        answer_release = true;
+    }
     if ((lc_bits || lc_bad) && timer_elapsed32(lc_last) >= LC_GAP_MS) lc_close();
     if (fx_on && fx_until && (int32_t)(timer_read32() - fx_until) >= 0) fx_stop();
 }
@@ -450,31 +550,40 @@ void notify_task(void) {
 static bool     swallow_release = false;
 static keypos_t swallow_key;
 
-/* True while the question stays up after this key. */
+/* True while the page stays up after this key. */
 static bool ask_key(uint16_t kc) {
+    ask_t *a = &asks[ask_cur];
     switch (kc) {
         case KC_LEFT: case KC_UP:
-            ask_sel = (uint8_t)((ask_sel + ask_nopt - 1) % ask_nopt);
+            a->sel = (uint8_t)((a->sel + a->nopt - 1) % a->nopt);
             ask_render(false);
             return true;
         case KC_RIGHT: case KC_DOWN:
-            ask_sel = (uint8_t)((ask_sel + 1) % ask_nopt);
+            a->sel = (uint8_t)((a->sel + 1) % a->nopt);
             ask_render(false);
             return true;
+        case KC_PGUP: case KC_HOME:
+        case KC_PGDN: case KC_END: {
+            int8_t  dir  = (kc == KC_PGUP || kc == KC_HOME) ? -1 : 1;
+            uint8_t next = ask_step(ask_cur, dir);
+            if (next != ASK_SLOTS && next != ask_cur) {
+                ask_cur = next;
+                ask_render(true);
+            }
+            return true;
+        }
         case KC_SPC:
-            if (ask_flags & ASK_MULTI) {
-                ask_checked ^= (uint8_t)(1u << ask_sel);
+            if (a->flags & ASK_MULTI) {
+                a->checked ^= (uint8_t)(1u << a->sel);
                 ask_render(false);
             }
             return true;
         case KC_ENT:
-            if (ask_flags & ASK_PERM)       answer(ask_sel == 0 ? ANSWER_ALLOW : ANSWER_DENY);
-            else if (ask_flags & ASK_MULTI) answer_multi();
-            else                            answer(ANSWER_CHOICE[ask_sel]);
-            return false;
+            if (a->flags & ASK_PERM)       return ask_answer(a->sel == 0 ? ANSWER_ALLOW : ANSWER_DENY);
+            else if (a->flags & ASK_MULTI) return ask_answer(0);
+            else                           return ask_answer(ANSWER_CHOICE[a->sel]);
         case KC_ESC:
-            answer(ANSWER_CANCEL);
-            return false;
+            return ask_answer(ANSWER_CANCEL);
         default:
             return true;   /* ignored: the question waits for a real answer */
     }
@@ -487,6 +596,9 @@ bool notify_process_record(uint16_t keycode, keyrecord_t *record) {
         return true;
     }
     if (!record->event.pressed || !display_notify_page_active()) return false;
+    /* Layer keys pass, press and release: Fn+U / Fn+O must reach PgUp/PgDn. */
+    if (ask_on && (IS_QK_MOMENTARY(keycode) || IS_QK_LAYER_TAP(keycode) || IS_QK_ONE_SHOT_LAYER(keycode)))
+        return false;
     swallow_release = true;
     swallow_key     = record->event.key;
     if (ask_on && ask_key(keycode)) return true;
