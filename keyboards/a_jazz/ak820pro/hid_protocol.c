@@ -442,6 +442,10 @@ enum {
     /* Test-only: read one aligned RAM word. [.., .., HC_PEEK, a0..a3 LE] ->
      * [.., .., HC_PEEK, v0..v3 LE]. SRAM only. */
     HC_PEEK        = 0x78,
+    /* Test-only: [.., .., HC_BLITFAULT, n] drops the completion interrupt of
+     * the next n (<= 3) blits (lcd_bus.c) -- proves the lost-completion
+     * recovery and the display's repaint of a blit given up for good. */
+    HC_BLITFAULT   = 0x77,
 #endif
 };
 #define HEALTH_PROTO_VERSION 7
@@ -611,6 +615,12 @@ static void health_command(uint8_t *data, uint8_t length) {
             if ((a & 3u) || a < 0x20000000u || a > 0x20007FFCu) { data[0] = RTC_UNHANDLED; break; }
             uint32_t v = *(volatile uint32_t *)a;
             data[3] = v; data[4] = v >> 8; data[5] = v >> 16; data[6] = v >> 24;
+            break;
+        }
+        case HC_BLITFAULT: {
+            extern volatile uint8_t lcd_test_drop_tc;
+            if (length >= 4) lcd_test_drop_tc = data[3] > 3 ? 3 : data[3];
+            data[3] = lcd_test_drop_tc;
             break;
         }
         case HC_BOOTLOADER:

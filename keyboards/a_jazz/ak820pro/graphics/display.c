@@ -2177,14 +2177,47 @@ static void gq_push(uint16_t font, uint16_t x, uint16_t y, char c) {
 
 /* Called every main-loop iteration. Cheap by construction: one compare while
  * the DMA is running, one DMA arm when it is not. */
+/* The bus stayed busy for this pass. A healthy blit completes in well under a
+ * millisecond; one whose completion was lost never does. Give it a generous
+ * grace, then run the bounded recovery -- teardown, counter, [lcd] console
+ * line -- exactly as a blocking wait would. */
+static void pump_bus_busy(bool *blocked, uint32_t *since) {
+    if (!*blocked) {
+        *blocked = true;
+        *since   = timer_read32();
+    } else if (timer_elapsed32(*since) > 50) {
+        lcd_blit_wait();
+        *blocked = false;
+    }
+}
+
 void display_blit_pump(void) {
     static uint32_t blocked_since = 0;
     static bool     blocked       = false;
+    static uint32_t last_heal     = 0;
+
+    /* A blit given up for good left pixels unpainted that the shadows claim
+     * are there (codex review, 2026-09-23, finding 13). Repaint the whole
+     * dashboard through the staged, keystroke-safe Fn+D restore. At most once
+     * per 5 s, so a bus that keeps failing cannot become a repaint loop; the
+     * flag waits while the dashboard is not showing. */
+    if (!debug_active && !debug_exit_step && !display_paused &&
+        timer_elapsed32(last_heal) > 5000 && lcd_blit_lost_take()) {
+        last_heal       = timer_read32();
+        debug_exit_step = 1;
+        dprintf("[display] a blit was given up: repainting the dashboard\n");
+    }
 
     /* The debug page owns the panel outright while active, so the band queue is
      * idle and there is no contention. One cell per pass, same budget as a
-     * queued glyph. */
-    if (debug_active) { blocked = false; debug_pump_glyph(); return; }
+     * queued glyph -- and the same grace-then-recover on a busy bus, which it
+     * used to retry forever (codex review, finding 12). */
+    if (debug_active) {
+        if (lcd_blit_busy()) { pump_bus_busy(&blocked, &blocked_since); return; }
+        blocked = false;
+        debug_pump_glyph();
+        return;
+    }
     /* Restoring the dashboard after Fn+D: one stage per pass. Ahead of the
      * queue because stage 1 clears the panel and discards whatever is in it. */
     if (debug_exit_step) { blocked = false; debug_restore_step(); return; }
@@ -2194,20 +2227,11 @@ void display_blit_pump(void) {
         return;
     }
     if (!lcd_draw_flash_glyph_try(gq[gq_i].font, gq[gq_i].c, gq[gq_i].x, gq[gq_i].y)) {
-        /* Bus busy. A healthy blit completes in well under a millisecond; one
-         * whose completion IRQ was lost never completes -- and now that
-         * nothing on this path calls lcd_blit_wait() (the old gq_flush did,
-         * as a side effect), a wedged blit would park the queue AND the
-         * deferring housekeeping pass forever, freezing every band. Give the
-         * bus a generous grace, then run the bounded recovery -- teardown,
-         * counter, [lcd] console line -- exactly as a blocking wait would. */
-        if (!blocked) {
-            blocked       = true;
-            blocked_since = timer_read32();
-        } else if (timer_elapsed32(blocked_since) > 50) {
-            lcd_blit_wait();
-            blocked = false;
-        }
+        /* Bus busy. Nothing on this path calls lcd_blit_wait() (the old
+         * gq_flush did, as a side effect), so a wedged blit would park the
+         * queue AND the deferring housekeeping pass forever, freezing every
+         * band. pump_bus_busy() bounds it. */
+        pump_bus_busy(&blocked, &blocked_since);
         return;                        /* try again next iteration */
     }
     blocked = false;

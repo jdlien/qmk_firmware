@@ -31,6 +31,8 @@ bool lcd_blit_busy(void);
 /* Bounded wait that recovers a stuck blit rather than spinning forever.
  * Returns false if it had to abandon one. */
 bool     lcd_blit_wait(void);
+/* True once after lcd_blit_wait() has given a blit up for good (then clears). */
+bool     lcd_blit_lost_take(void);
 uint16_t lcd_blit_timeouts(void);
 uint32_t lcd_blit_count_take(void);
 uint16_t lcd_blit_retries(void);
