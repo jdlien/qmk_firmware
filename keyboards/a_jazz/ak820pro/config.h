@@ -243,6 +243,10 @@
 // that lives plugged in. Do not mistake it for the fix.
 #define CORTEX_ENABLE_WFI_IDLE FALSE
 
+/* NOT a debug leftover -- keep it in every build. It makes QMK count matrix
+ * scans, and health.c reads get_matrix_scan_rate() for the scan_rate counter
+ * (health page 1, the agent's history) and the Fn+D debug page. Without a
+ * console its once-a-second print is compiled out; the count is what stays. */
 #define DEBUG_MATRIX_SCAN_RATE
 // HH:MM:SS rather than HH:MM. display.c defaults this ON; the board shipped it
 // off with no stated reason. The per-second path is already cheap -- it redraws

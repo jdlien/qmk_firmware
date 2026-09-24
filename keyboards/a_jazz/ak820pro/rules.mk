@@ -11,9 +11,10 @@ SRC   += graphics/lcd_bus.c
 BLUETOOTH_ENABLE = yes
 BLUETOOTH_DRIVER = custom
 
-# WIP: external PCF8563 RTC over the ChibiOS software (bit-banged) I2C fallback LLD.
+# External PCF8563 RTC over the ChibiOS software (bit-banged) I2C fallback LLD.
 # Swaps the SN32 HW I2C driver for the SW fallback; rtc.c drives it via the I2C HAL
-# API. Does NOT work on hardware yet (compiles/links fine) -- see rtc.c.
+# API. Working on hardware since 2026-08 (docs/clock.md). The bit-banged
+# transaction runs with interrupts masked, ~1 ms per byte-sized transfer.
 USE_HAL_I2C_FALLBACK = yes
 
 SRC += bluetooth/ch582f_ajazz.c
