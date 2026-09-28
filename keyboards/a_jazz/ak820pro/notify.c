@@ -54,6 +54,15 @@
  *   i of a choice, ANSWER_CANCEL for Esc. The host reads them from the
  *   receiver's "Consumer Control" input device.
  *
+ * LOADING: over the LED channel a question takes seconds to arrive, and a key
+ * pressed meanwhile dismissed whatever page was up and sent key traffic over
+ * the link while the frame was still coming. So as soon as the first byte of
+ * a frame says ASK (and not the repeat of one already shown), the board shows
+ * GIF slot LOAD_SLOT (text if empty) and IGNORES every key press until the
+ * question is up -- or until LOAD_IDLE_MS without a bit, when the frame is
+ * given up and the page closed. Not shown when a question is already on
+ * screen: that one keeps the keys.
+ *
  * AMBIENT (kind 3) sets the screensaver: [3] = GIF slot (0 = off), [2] =
  * seconds without a key press before it starts (0 = 60). The GIF plays full
  * screen until any key, and that key is NOT swallowed -- it types as usual.
@@ -91,6 +100,8 @@
 #define NOTIFY_GIF_SLOTS  5
 #define NOTIFY_GIF_MAXF   ((NOTIFY_GIF_STRIDE - 0x100u) / 0x8000u)   /* 15 */
 #define DUP_WINDOW_MS   15000u
+#define LOAD_SLOT       5         /* the "a question is coming" GIF */
+#define LOAD_IDLE_MS    1500u     /* > the host's 500 ms between the two copies + LC_GAP_MS */
 
 #define LED_NUM    0x01u
 #define LED_SCROLL 0x04u
@@ -250,6 +261,7 @@ typedef struct {
 static ask_t   asks[ASK_SLOTS];
 static uint8_t ask_cur = 0;       /* the slot on screen */
 static bool    ask_on  = false;   /* the page is showing questions */
+static bool    load_on = false;   /* a question is arriving: keys are ignored (see LOADING) */
 
 /* Usages still to send, one per 10 Hz tick with a release in between, so
  * consecutive usages are never merged in one consumer report. A ring: answers
@@ -523,6 +535,8 @@ static void lc_close(void) {
     lc_bad  = false;
 }
 
+static void load_check(void);
+
 void notify_leds_changed(uint8_t raw) {
     uint8_t cur = raw & LC_MASK;
     uint8_t d = cur ^ lc_prev;
@@ -555,6 +569,7 @@ void notify_leds_changed(uint8_t raw) {
     if (lc_bits % 8u == 0) lc_buf[byte] = 0;
     lc_buf[byte] |= (uint8_t)(bit << (7u - lc_bits % 8u));
     lc_bits++;
+    if (lc_bits == 8) load_check();
 }
 
 static void ambient_task(void) {
@@ -571,6 +586,27 @@ static void ambient_task(void) {
         last_key_at = timer_read32();   /* nothing to show: do not retry every tick */
 }
 
+/* The first byte of a frame is in: if it is a new question, show LOAD_SLOT. */
+static void load_check(void) {
+    uint8_t hdr = lc_buf[0];
+    if (load_on || (hdr & 0x03) != KIND_ASK) return;
+    if ((hdr >> 6) == last_seq && timer_elapsed32(last_seq_at) < DUP_WINDOW_MS) return;   /* the repeat */
+    if (ask_on && display_notify_page_active()) return;   /* a question is up: it keeps the keys */
+    amb_showing = false;
+    uint8_t frames = gif_frames(LOAD_SLOT);
+    if (!(frames && display_notify_page_gif(NOTIFY_GIF_BASE + (uint32_t)(LOAD_SLOT - 1) * NOTIFY_GIF_STRIDE, frames)))
+        display_notify_page_text("Incoming...", 11);
+    load_on = true;
+}
+
+static void load_task(void) {
+    if (!load_on) return;
+    if (ask_on) { load_on = false; return; }   /* the question took the screen */
+    if (lc_bits || lc_bad || timer_elapsed32(lc_last) < LOAD_IDLE_MS) return;
+    load_on = false;                           /* no question after all */
+    if (display_notify_page_active()) display_notify_page_close();
+}
+
 void notify_task(void) {
     ambient_task();
     if (answer_release) {
@@ -582,6 +618,7 @@ void notify_task(void) {
         answer_release = true;
     }
     if ((lc_bits || lc_bad) && timer_elapsed32(lc_last) >= LC_GAP_MS) lc_close();
+    load_task();
     if (fx_on && fx_until && (int32_t)(timer_read32() - fx_until) >= 0) fx_stop();
 }
 
@@ -635,6 +672,7 @@ static bool ask_key(uint16_t kc) {
 bool notify_process_record(uint16_t keycode, keyrecord_t *record) {
     if (record->event.pressed) {
         last_key_at = timer_read32();
+        if (load_on) return true;   /* a question is arriving: ignored, see LOADING */
         if (amb_showing) {   /* wake: back to the dashboard, and the key still types */
             amb_showing = false;
             if (display_notify_page_active()) display_notify_page_close();
