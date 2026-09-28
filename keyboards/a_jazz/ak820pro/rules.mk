@@ -35,6 +35,7 @@ SRC += consumer_mod.c # modified-consumer endpoint-ordering sequencer
 SRC += param_overlay.c # RGB hold-to-repeat + parameter readout overlay
 SRC += indicators.c  # Caps/WinLock/Charging PWM, 20 kHz tick, lock states
 SRC += notify.c      # host notifications: LED channel (BT/2.4G) + raw HID 0x14
+SRC += menu.c        # settings menu on the LCD, Fn + knob
 SRC += hid_protocol.c # raw-HID channels 0x10-0x13 + VIA/non-VIA dispatch
 VPATH += bluetooth
 VPATH += graphics

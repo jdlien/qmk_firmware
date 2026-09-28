@@ -63,6 +63,12 @@
  * given up and the page closed. Not shown when a question is already on
  * screen: that one keeps the keys.
  *
+ * NOTICE: with the menu's "Ask Off" (kb_eeconfig notify_notice) an ASK is
+ * not shown as a question: GIF slot NOTICE_SLOT goes up (the text if empty)
+ * and the board answers ANSWER_CANCEL at once, so the host hands the question
+ * to the terminal and closes the notice when it is answered there. Questions
+ * already on screen keep it.
+ *
  * AMBIENT (kind 3) sets the screensaver: [3] = GIF slot (0 = off), [2] =
  * seconds without a key press before it starts (0 = 60). The GIF plays full
  * screen until any key, and that key is NOT swallowed -- it types as usual.
@@ -90,6 +96,8 @@
 #include "notify.h"
 #include "graphics/display.h"
 #include "graphics/lcd_bus.h"
+#include "kb_eeconfig.h"
+#include "menu.h"
 
 #define NOTIFY_TEXT_MAX 44
 #define LC_GAP_MS       400u
@@ -101,6 +109,7 @@
 #define NOTIFY_GIF_MAXF   ((NOTIFY_GIF_STRIDE - 0x100u) / 0x8000u)   /* 15 */
 #define DUP_WINDOW_MS   15000u
 #define LOAD_SLOT       5         /* the "a question is coming" GIF */
+#define NOTICE_SLOT     2         /* a question as a notice only (NOTICE) */
 #define LOAD_IDLE_MS    1500u     /* > the host's 500 ms between the two copies + LC_GAP_MS */
 
 #define LED_NUM    0x01u
@@ -486,6 +495,21 @@ bool notify_frame(const uint8_t *b, uint8_t n) {
         }
         return true;
     }
+    if (kind == KIND_ASK && kb_eeconfig_get_notify_notice()) {
+        amb_showing = false;
+        load_on     = false;   /* the notice replaces the loading page, keys work again */
+        if (!(ask_on && display_notify_page_active())) {
+            ask_on = false;
+            menu_lost();
+            uint8_t frames = gif_frames(NOTICE_SLOT);
+            if (!(frames && display_notify_page_gif(NOTIFY_GIF_BASE + (uint32_t)(NOTICE_SLOT - 1) * NOTIFY_GIF_STRIDE, frames)))
+                display_notify_page_text(txt, len);
+        }
+        answer_push(ANSWER_SLOT[(b[3] >> 4) & 0x03]);
+        answer_push(ANSWER_CANCEL);
+        if (b[2]) fx_start((uint8_t)((b[0] >> 3) & 0x07), b[1], b[2]);
+        return true;
+    }
     if (kind == KIND_ASK) {
         amb_showing = false;   /* a question outranks the screensaver */
         ask_open(b[3], txt, len);
@@ -500,6 +524,7 @@ bool notify_frame(const uint8_t *b, uint8_t n) {
     if (page) {
         ask_on      = false;
         amb_showing = false;
+        menu_lost();
         uint8_t frames = gif_frames(b[3]);
         if (!(frames && display_notify_page_gif(NOTIFY_GIF_BASE + (uint32_t)(b[3] - 1) * NOTIFY_GIF_STRIDE, frames)))
             display_notify_page_text(txt, len);
@@ -593,6 +618,7 @@ static void load_check(void) {
     if ((hdr >> 6) == last_seq && timer_elapsed32(last_seq_at) < DUP_WINDOW_MS) return;   /* the repeat */
     if (ask_on && display_notify_page_active()) return;   /* a question is up: it keeps the keys */
     amb_showing = false;
+    menu_lost();
     uint8_t frames = gif_frames(LOAD_SLOT);
     if (!(frames && display_notify_page_gif(NOTIFY_GIF_BASE + (uint32_t)(LOAD_SLOT - 1) * NOTIFY_GIF_STRIDE, frames)))
         display_notify_page_text("Incoming...", 11);
@@ -696,6 +722,16 @@ bool notify_process_record(uint16_t keycode, keyrecord_t *record) {
     if (fx_on && !fx_until) fx_stop();
     return true;
 }
+
+bool notify_page_busy(void) { return load_on || ask_count(); }
+
+void notify_yield_page(void) {
+    ask_on      = false;
+    amb_showing = false;
+    if (fx_on && !fx_until) fx_stop();
+}
+
+void notify_note_key(void) { last_key_at = timer_read32(); }
 
 /* --- Raw HID staging -------------------------------------------------------- */
 static uint8_t stage_buf[LC_MAX_BYTES];

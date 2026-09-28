@@ -17,7 +17,7 @@
 #include "bluetooth/ch582f_ajazz.h"
 #include "graphics/display.h"   /* DISPLAY_CLOCK_MODE_COUNT */
 
-/* Layout (5 bytes; EECONFIG_KB_DATA_SIZE in config.h must match).
+/* Layout (6 bytes; EECONFIG_KB_DATA_SIZE in config.h must match).
  * A fresh block holds ZEROS, so 0 must mean "unset" for every field added
  * after first ship -- hence the +1 encodings. Bytes 0..3 are the phase-4
  * block; byte 4 (clock format) was appended 2026-09-01 with a version bump. */
@@ -27,8 +27,9 @@ typedef struct __attribute__((packed)) {
     uint8_t rtc_period_hi;
     uint8_t lcd_brightness_p1; // backlight level + 1; 0 = unset
     uint8_t clock_mode_p1;     // clock band format (display_clock_mode) + 1; 0 = unset
+    uint8_t notify_notice;     // 1 = questions arrive as notices only; 0 = unset = questions
 } kb_config_t;
-_Static_assert(sizeof(kb_config_t) == 5, "block layout is assign-only; do not grow casually");
+_Static_assert(sizeof(kb_config_t) == 6, "block layout is assign-only; do not grow casually");
 _Static_assert(sizeof(kb_config_t) == EECONFIG_KB_DATA_SIZE, "config.h EECONFIG_KB_DATA_SIZE must match the struct");
 
 static kb_config_t kb_config;
@@ -106,6 +107,17 @@ void kb_eeconfig_set_clock_mode(uint8_t mode) {
     uint8_t p1 = (uint8_t)(mode + 1);
     if (kb_config.clock_mode_p1 == p1) return;
     kb_config.clock_mode_p1 = p1;
+    kb_mark_dirty();
+}
+
+bool kb_eeconfig_get_notify_notice(void) {
+    return kb_config.notify_notice == 1;
+}
+
+void kb_eeconfig_set_notify_notice(bool notice) {
+    uint8_t v = notice ? 1 : 0;
+    if (kb_config.notify_notice == v) return;
+    kb_config.notify_notice = v;
     kb_mark_dirty();
 }
 

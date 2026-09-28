@@ -7,9 +7,9 @@
 
 /* Persisted keyboard config (the EEPROM kb datablock). One module owns the
  * struct so its layout has exactly one home; everything else goes through
- * accessors. The block is 5 bytes (bt_profile, rtc_period u16,
- * lcd_brightness+1, clock_mode+1 -- the last appended 2026-09-01, growing
- * the block from 4) and its layout is ASSIGN-ONLY: existing on-device bytes
+ * accessors. The block is 6 bytes (bt_profile, rtc_period u16,
+ * lcd_brightness+1, clock_mode+1 -- appended 2026-09-01, growing the block
+ * from 4 -- and notify_notice, appended 2026-09-29) and its layout is ASSIGN-ONLY: existing on-device bytes
  * must keep their meaning, and 0 means "unset" for every field added after
  * first ship (a fresh block is zeros).
  *
@@ -42,6 +42,11 @@ void kb_eeconfig_set_lcd_brightness(uint8_t level);
  * compile-time default (24h). */
 bool kb_eeconfig_get_clock_mode(uint8_t *mode);
 void kb_eeconfig_set_clock_mode(uint8_t mode);
+
+/* Claude Code questions as notices only (the menu's "Ask Off", see
+ * notify.c NOTICE). Unset (fresh block) = false: questions on the board. */
+bool kb_eeconfig_get_notify_notice(void);
+void kb_eeconfig_set_notify_notice(bool notice);
 
 #ifdef WDT_TEST_HOOKS
 /* Force a real, immediate flash program (for the reset-during-write test). */

@@ -29,6 +29,13 @@ bool notify_frame(const uint8_t *buf, uint8_t len);
 #include "action.h"
 bool notify_process_record(uint16_t keycode, keyrecord_t *record);
 
+/* For the settings menu (menu.c): a question is waiting or arriving, so the
+ * panel is not free; give up a plain page the menu replaces (its
+ * until-dismissed effect ends with it); a key was used (screensaver). */
+bool notify_page_busy(void);
+void notify_yield_page(void);
+void notify_note_key(void);
+
 /* LED-channel counters for the raw-HID STATS reply (NOTIFY_STATS_LEN bytes). */
 #define NOTIFY_STATS_LEN 20
 void notify_stats_fill(uint8_t *out);

@@ -25,6 +25,7 @@
 #include "param_overlay.h"
 #include "indicators.h"
 #include "notify.h"
+#include "menu.h"
 
 void early_hardware_init_post(void) {
     // Configure SPI0 pins for the LCD panel. SEL0 is left UNMUXED: our bare-metal bus
@@ -323,6 +324,7 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
      * from "the report was lost downstream", and it is useless if it only
      * exists in a flavour nobody types on. */
     if (record->event.pressed) health_note_key_press();
+    if (menu_process_record(keycode, record)) return false;     // Fn + knob opens the settings menu; it owns the keys while open
     if (notify_process_record(keycode, record)) return false;   // a key press dismisses a notification page
 #ifdef CONSOLE_ENABLE
     if (record->event.pressed) key_press_count++;
@@ -568,6 +570,7 @@ void housekeeping_task_kb(void) {
 
         LOOP_SITE(LOOP_SITE_LEDS,     update_leds());
         LOOP_SITE(LOOP_SITE_LEDS,     notify_task());         // LED-channel frame gap + effect expiry
+        LOOP_SITE(LOOP_SITE_LEDS,     menu_task());           // settings menu idle timeout
         LOOP_SITE(LOOP_SITE_PAIR,     bt_pair_hold_task());   // hold-to-pair fires under the finger, not on release
         LOOP_SITE(LOOP_SITE_PAIR,     dbg_hold_task());       // hold-Fn+D resets the health counters
         LOOP_SITE(LOOP_SITE_CONSUMER, modified_consumer_task());  // drop held mods once a knob spin stops
