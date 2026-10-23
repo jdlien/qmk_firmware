@@ -16,6 +16,13 @@ void param_repeat_process_record(uint16_t keycode, keyrecord_t *record);
 /* Every main-loop pass: performs the repeat steps after the hold threshold. */
 void param_repeat_task(void);
 
+/* The menu's session (plans/CONFIG-MENU-BUILD-PLAN.md, C1): the repeat
+ * stopped and the end-stop readout forgotten at the opening; the readout's
+ * baseline re-primed at the close (a no-op without PARAM_OVERLAY). */
+void param_repeat_cancel(void);
+void param_overlay_cancel(void);
+void param_status_reprime(void);
+
 /* Push the LCD-brightness readout into the info band. Shared by the tap path in
  * process_record_kb and by the hold-repeat step, so a sweep keeps the readout
  * live instead of showing only the first value. Compiles to nothing without

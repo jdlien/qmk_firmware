@@ -95,6 +95,17 @@ void param_repeat_process_record(uint16_t keycode, keyrecord_t *record) {
     }
 }
 
+/* The menu's opening (plans/CONFIG-MENU-BUILD-PLAN.md, C1): a held adjust
+ * key's repeat stops, and its end-stop readout is forgotten. */
+void param_repeat_cancel(void) {
+    rep_kc         = KC_NO;
+    param_force_kc = KC_NO;
+}
+
+void param_overlay_cancel(void) {
+    param_force_kc = KC_NO;
+}
+
 void param_repeat_task(void) {
     if (rep_kc == KC_NO) return;
     if (!matrix_is_on(rep_pos.row, rep_pos.col)) {   // physically released
@@ -188,10 +199,18 @@ static void fmt_speed(char *buf, size_t n, uint8_t sp) {
     snprintf(buf, n, "Speed  %3u%%", (unsigned)((sp * 100u + 127u) / 255u));
 }
 
+static bool status_primed = false;
+
+/* At the menu's close: the next poll records a fresh baseline, so a change
+ * made while the overlays were suppressed doesn't surface afterwards. */
+void param_status_reprime(void) {
+    status_primed  = false;
+    param_force_kc = KC_NO;
+}
+
 void param_status_task(void) {
     static uint8_t last_mode = 0, last_h = 0, last_s = 0, last_v = 0, last_sp = 0;
     static bool    last_on = false, last_nkro = false;
-    static bool    primed    = false;
 
     uint8_t mode = rgb_matrix_get_mode();
     uint8_t h    = rgb_matrix_get_hue();
@@ -207,8 +226,8 @@ void param_status_task(void) {
 
     /* First pass only records the baseline -- otherwise the band would flash a
      * readout at every boot for a change that never happened. */
-    if (!primed) {
-        primed = true;
+    if (!status_primed) {
+        status_primed = true;
         last_mode = mode; last_h = h; last_s = sa; last_v = v; last_sp = sp;
         last_on = on; last_nkro = nkro;
         return;
@@ -261,4 +280,6 @@ void param_status_task(void) {
     last_on = on; last_nkro = nkro;
     display_set_param_status(buf);
 }
+#else
+void param_status_reprime(void) {}
 #endif // PARAM_OVERLAY

@@ -33,6 +33,11 @@ bool lcd_blit_busy(void);
 bool     lcd_blit_wait(void);
 /* True once after lcd_blit_wait() has given a blit up for good (then clears). */
 bool     lcd_blit_lost_take(void);
+/* The same, without taking it. */
+bool     lcd_blit_lost_pending(void);
+#ifdef AK820_DEV_HOOKS
+void     lcd_blit_lost_inject(void);   /* op 27 sub 8 */
+#endif
 uint16_t lcd_blit_timeouts(void);
 uint32_t lcd_blit_count_take(void);
 uint16_t lcd_blit_retries(void);
@@ -125,3 +130,15 @@ void lcd_fill_rect(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t 
 // flash 0x000000. Zero CPU in the data path, vs ~11-13 ms for a full-screen CPU
 // fill. Works for any rect: the source is uniform, so striding is irrelevant.
 void lcd_clear_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h);
+// The same, false when its transfer was given up (a banded clear retries it).
+bool lcd_clear_rect_ok(uint16_t x, uint16_t y, uint16_t w, uint16_t h);
+
+// The panel-order stream (plans/CONFIG-MENU-BUILD-PLAN.md, C4): begin quiesces
+// and sets the window, bytes sends synchronously, end releases. Opened and
+// ended within one main-loop pass.
+bool lcd_stream_begin(uint16_t x, uint16_t y, uint16_t w, uint16_t h);
+void lcd_stream_bytes(const uint8_t *panel_order, uint32_t n);
+void lcd_stream_end(void);
+#ifdef AK820_DEV_HOOKS
+uint16_t lcd_scratch_overlaps(void);   // a second acquire of the shared scratch: must stay 0
+#endif

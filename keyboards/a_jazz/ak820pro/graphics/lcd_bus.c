@@ -18,7 +18,10 @@
 #include "../rtc/rtc.h"
 #include "../ak820pro.h"
 
-extern void display_set_paused(bool paused);   // graphics/display.c
+/* graphics/display.c: the animation's start is admitted by the panel owner
+ * (C1), and its stop hands the panel back with a restore. */
+extern bool display_anim_begin(void);
+extern void display_anim_end(void);
 
 // --- pins --------------------------------------------------------------------
 #define PANEL_DC   D14
@@ -123,22 +126,48 @@ static void bus_quiesce(void);
 
 static void tx8(uint8_t b) { spiSend(&SPID0, 1, &b); }
 
+/* One scratch buffer for every CPU push (plans/CONFIG-MENU-BUILD-PLAN.md, C4):
+ * tx_pixels' and lcd_fill_rect's used to be separate, 512 B each.
+ *   - Acquired, filled and released only on the main thread, never
+ *     reentrantly, never from a callback or an ISR. Its users are the
+ *     synchronous draws below; the DMA completion callback and the backlight
+ *     ISR paint nothing.
+ *   - SPI0's FIFO ISR does READ it during spiSend() (hal_spi_v2_lld.c), so the
+ *     caller holds it until spiSend() returns.
+ *   - No pointer to it is kept.
+ * Dev builds count a second acquire (scratch_overlaps); it must stay 0. */
+static uint8_t lcd_scratch[512];
+#ifdef AK820_DEV_HOOKS
+static bool     scratch_held;
+static uint16_t scratch_overlaps;
+static inline void scratch_acquire(void) {
+    if (scratch_held && scratch_overlaps < 0xFFFFu) scratch_overlaps++;
+    scratch_held = true;
+}
+static inline void scratch_release(void) { scratch_held = false; }
+uint16_t lcd_scratch_overlaps(void) { return scratch_overlaps; }
+#else
+static inline void scratch_acquire(void) {}
+static inline void scratch_release(void) {}
+#endif
+
 // RGB565 is streamed hi-byte-first to match the panel. The driver takes a byte
 // buffer, but px[] is a little-endian uint16 array (lo byte first in memory), so
 // we byte-swap into a scratch buffer in chunks and hand each chunk to spiSend.
 // (This swap-copy is pure overhead versus the old inline tx_pipe -- it is one of
 // the costs the unified experiment is meant to expose.)
 static void tx_pixels(const uint16_t *px, uint32_t n) {
-    static uint8_t buf[512];
+    scratch_acquire();
     while (n) {
         uint32_t c = n < 256u ? n : 256u;
         for (uint32_t i = 0; i < c; i++) {
-            buf[2*i]   = (uint8_t)(px[i] >> 8);
-            buf[2*i+1] = (uint8_t)(px[i] & 0xFF);
+            lcd_scratch[2*i]   = (uint8_t)(px[i] >> 8);
+            lcd_scratch[2*i+1] = (uint8_t)(px[i] & 0xFF);
         }
-        spiSend(&SPID0, c * 2u, buf);
+        spiSend(&SPID0, c * 2u, lcd_scratch);
         px += c; n -= c;
     }
+    scratch_release();
 }
 
 static void reset_panel(void) {
@@ -177,13 +206,41 @@ void lcd_fill_rect(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t 
     bus_quiesce();
     lcd_window(x0, y0, x1, y1);
     uint32_t px = (uint32_t)(x1 - x0 + 1) * (uint32_t)(y1 - y0 + 1);
-    static uint8_t buf[512];
-    for (uint32_t i = 0; i < 256u; i++) { buf[2*i] = color >> 8; buf[2*i+1] = color & 0xFF; }
+    scratch_acquire();
+    for (uint32_t i = 0; i < 256u; i++) { lcd_scratch[2*i] = color >> 8; lcd_scratch[2*i+1] = color & 0xFF; }
     while (px) {
         uint32_t c = px < 256u ? px : 256u;
-        spiSend(&SPID0, c * 2u, buf);
+        spiSend(&SPID0, c * 2u, lcd_scratch);
         px -= c;
     }
+    scratch_release();
+    cs(1);
+}
+
+/* The panel-order stream (C4): generated pixels, already in the panel's byte
+ * order, sent through the shared scratch's rules. begin validates the rect,
+ * quiesces the bus, then sets the inclusive window; bytes sends synchronously;
+ * end deasserts CS. A stream never stays open across main-loop passes, so no
+ * other painter can move the window under it. bus_quiesce() stays out of
+ * lcd_window(): the DMA arm calls that after marking its own transfer busy. */
+static uint32_t stream_left;
+bool lcd_stream_begin(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
+    if (!w || !h || x + w > FRAME_W || y + h > FRAME_H) return false;
+    bus_quiesce();
+    scratch_acquire();
+    lcd_window(x, y, x + w - 1, y + h - 1);
+    stream_left = (uint32_t)w * h * 2u;
+    return true;
+}
+void lcd_stream_bytes(const uint8_t *panel_order, uint32_t n) {
+    if (n > stream_left) n = stream_left;
+    if (!n) return;
+    spiSend(&SPID0, n, panel_order);
+    stream_left -= n;
+}
+void lcd_stream_end(void) {
+    stream_left = 0;
+    scratch_release();
     cs(1);
 }
 
@@ -204,11 +261,18 @@ void lcd_fill_rect(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t 
 // apply -- any contiguous run of w*h*2 zero bytes is the correct source.
 #define FLASH_BLACK_FRAME 0x000000u
 
-void lcd_clear_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
-    if (!w || !h) return;
-    if ((uint32_t)w * h * 2u > 0x8000u) return;      // larger than the black frame
+/* False when the clear's own transfer was given up: an idle bus after an
+ * exhausted recovery isn't a clear. The banded clears (the menu's, the
+ * restore's, the debug page's) retry such a band (C3). */
+bool lcd_clear_rect_ok(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
+    if (!w || !h) return true;
+    if ((uint32_t)w * h * 2u > 0x8000u) return false;   // larger than the black frame
     lcd_blit_flash(FLASH_BLACK_FRAME, x, y, w, h);
-    lcd_blit_wait();
+    return lcd_blit_wait();
+}
+
+void lcd_clear_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
+    (void)lcd_clear_rect_ok(x, y, w, h);
 }
 
 void lcd_blit_ram(const uint16_t *px, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
@@ -1023,6 +1087,15 @@ bool lcd_blit_lost_take(void) {
     return lost;
 }
 
+/* A loss latched and not yet taken: nothing commits over it (C3, C1). */
+bool lcd_blit_lost_pending(void) { return blit_lost; }
+
+#ifdef AK820_DEV_HOOKS
+/* Op 27 sub 8: a loss marked as an exhausted recovery marks one, to test the
+ * owners' handlers. A real lost completion is HC_BLITFAULT's, on devfault. */
+void lcd_blit_lost_inject(void) { blit_lost = true; }
+#endif
+
 uint16_t lcd_blit_timeouts(void) { return blit_timeouts; }
 
 void lcd_blit_stats(lcd_blit_stats_t *out) {
@@ -1094,7 +1167,10 @@ void anim_toggle(void) {
          * reads flash constantly anyway (every glyph comes from there via
          * lcd_draw_flash_text). */
         if (!anim_read_header()) return;    // empty slot: true no-op
-        display_set_paused(true);           // stop QP touching the bus
+        /* Admitted only from the dashboard with no session and no restore
+         * running (C1's anim_admissible): refused under the Fn+D page, the
+         * menu, or a repaint still in progress. */
+        if (!display_anim_begin()) return;
         set_madctl(MADCTL_ANIM);            // frames authored for this orientation
         anim_on = true; anim_idx = 0;
         blit_arm(ANIM_BASE + ANIM_HDR);
@@ -1109,7 +1185,7 @@ void anim_toggle(void) {
         // The DMA extension restored SPI0 to the driver's 8-bit FIFO mode at the
         // last frame's completion, so the dashboard's spiSend path is ready again.
         set_madctl(MADCTL_DASH);             // restore dashboard orientation
-        display_set_paused(false);          // resume + full repaint
+        display_anim_end();                 // the panel back to the dashboard, a restore from band 1
     }
 }
 // Called from the 10 Hz housekeeping slot, so one frame per 100 ms.

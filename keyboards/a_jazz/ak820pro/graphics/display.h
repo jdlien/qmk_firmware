@@ -130,6 +130,18 @@ void display_bootloader_splash(void);
  * player owns the bus. */
 void display_debug_toggle(void);
 bool display_debug_active(void);
+
+/* The panel's owner, the menu's session and the restore
+ * (plans/CONFIG-MENU-BUILD-PLAN.md, C1; menu/panel_owner.c). */
+bool display_panel_lit_for_owner(void);   /* Lights out's exception: Fn+D, or the menu open */
+bool display_menu_sleep_blocked(void);    /* DSB_MENU: the session isn't NONE */
+bool display_wake_held(void);             /* a deep sleep's wake still holds the backlight */
+bool display_wake_notice_take(void);      /* the hold was released since the last take */
+#ifdef AK820_DEV_HOOKS
+bool    display_batt_dirty(void);         /* op 27 sub 5's flags */
+bool    display_logo_stale(void);
+uint8_t display_queue_depths(void);       /* gq low nibble, lq high, each saturating at 15 */
+#endif
 /* A message was first painted in the band (an overlay, an alert, a link state
  * with words, new host text, the pair gesture) within the last `ms`: power.c's
  * Minimal mode lights the backlight for it. */

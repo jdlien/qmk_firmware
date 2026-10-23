@@ -24,6 +24,7 @@
 #include "sleep.h"                    /* HC_DEVHOOK op 14, subs 3 and 4; op 24 */
 #include "overrun_diag.h"             /* HC_DEVHOOK ops 20-22 */
 #include "drivers/led/sn32f2xx.h"     /* scan-only, in sub 3's reply */
+#include "menu/menu_glue.h"           /* HC_DEVHOOK op 27 */
 
 // Apply a 7-byte time payload to the RTC:
 //   [0]=year-2000 [1]=month [2]=day [3]=weekday [4]=hour [5]=min [6]=sec
@@ -1287,6 +1288,9 @@ static void health_command(uint8_t *data, uint8_t length) {
                     break;
                 case 26:
                     if (length < 32 || !od_fill_mon_ring(data[4], &data[4])) data[0] = RTC_UNHANDLED;
+                    break;
+                case 27:   /* the configuration menu (plans/CONFIG-MENU-BUILD-PLAN.md, "Op 27") */
+                    if (length < 32 || !menu_op27(data)) data[0] = RTC_UNHANDLED;
                     break;
                 default: data[0] = RTC_UNHANDLED; break;
             }

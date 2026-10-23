@@ -243,7 +243,7 @@ void power_task(void) {
     }
 #endif
     bool lit = mode == POWER_MODE_MINIMAL &&
-               (display_message_recent(MESSAGE_WAKE_MS) || display_debug_active());
+               (display_message_recent(MESSAGE_WAKE_MS) || display_panel_lit_for_owner());
     /* The ceiling moves without a stage change too (Fn+B into or out of Saver,
      * the cable, the low cap), and apply() repaints only when what it applies
      * changes: under the dim, a new want_val changes nothing. */

@@ -152,6 +152,7 @@ enum {
     DSB_KEY = 0x0001, DSB_USB = 0x0002, DSB_TX = 0x0004, DSB_DISPLAY = 0x0008, DSB_FLASH = 0x0010,
     DSB_RTC = 0x0020, DSB_PINS = 0x0040, DSB_WDT = 0x0080, DSB_LIT = 0x0100, DSB_RGB = 0x0200,
     DSB_PAIRING = 0x0400, DSB_RECOVERY = 0x0800, DSB_KNOB = 0x1000, DSB_CHARGE = 0x2000,
+    DSB_MENU = 0x4000,   /* the configuration menu's session, PENDING included */
 };
 
 /* Register bits (the SN32F299 manual; sn32_uart.h and battery.c agree). */
@@ -264,6 +265,7 @@ static uint16_t blockers(void) {
     if (rc_active) b |= DSB_RECOVERY;
     if (!knob_at_rest()) b |= DSB_KNOB;
     if (!gpio_read_pin(CHARGE_CHRG_PIN)) b |= DSB_CHARGE;   /* charging: on USB power, never asleep */
+    if (display_menu_sleep_blocked()) b |= DSB_MENU;
     return b;
 }
 

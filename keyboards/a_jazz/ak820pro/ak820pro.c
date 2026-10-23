@@ -29,6 +29,7 @@
 #include "sleep.h"         /* the deep sleep, and the dev builds' light-sleep bits */
 #include "loop_acct.h"     /* D1: ACCT() around each board task */
 #include "flash_stats.h"   /* C1: flash write sessions by writer */
+#include "menu/menu_glue.h" /* the configuration menu: plans/CONFIG-MENU-BUILD-PLAN.md */
 #include "overrun_diag.h"  /* dev: the UART overruns' context */
 
 void early_hardware_init_post(void) {
@@ -333,6 +334,14 @@ void dbg_hold_task(void) {
     display_debug_refresh();        /* show the zeros now, not on the next second */
 }
 
+/* The configuration menu's knob (plans/CONFIG-MENU-BUILD-PLAN.md, C2):
+ * captured here, before combos and tapping, by physical identity. Everything
+ * it doesn't capture goes on as QMK's default chain would. */
+bool pre_process_record_kb(uint16_t keycode, keyrecord_t *record) {
+    if (!menu_pre_process(keycode, record)) return false;
+    return pre_process_record_user(keycode, record);
+}
+
 bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
     WDT_SCOPE(WDT_SITE_KEY_EVENT);
     /* Counted on EVERY build: this is what splits "the matrix never saw it"
@@ -369,9 +378,10 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
             }
             return false;
         case ANIM_TOG:
-            /* Not into the animation from the Fn+D page, which owns the panel
-             * (codex, the UART-latency implementation review); out of one always. */
-            if (record->event.pressed && (anim_active() || !display_debug_active())) anim_toggle();
+            /* Out of an animation always; into one only from the dashboard with
+             * no session and no restore running -- anim_toggle() asks the panel
+             * owner (C1), so not from the Fn+D page or the menu. */
+            if (record->event.pressed) anim_toggle();
             return false;
         case SCR_UP:
         case SCR_DN:
@@ -571,6 +581,9 @@ void housekeeping_task_kb(void) {
     WDT_CALL(WDT_SITE_PARAM_REPEAT, param_repeat_task());
     WDT_CALL(WDT_SITE_RTC_FAST, ACCT(ACCT_RTC_FAST, rtc_fast_task()));          // <= one queued PCF I2C transaction, only when no blit is in flight (R4)
     WDT_CALL(WDT_SITE_SECOND_EDGE, ACCT(ACCT_EDGE, display_second_edge_task()));  // clock digits repaint on the tick, not at the 10 Hz cadence (3.9)
+    /* The menu's input, timers and op 27, every pass and before the pump,
+     * independent of the gated display housekeeping (CONFIG-MENU-BUILD-PLAN C2). */
+    menu_task();
     /* One queued glyph per iteration, arming a DMA and returning -- EXCEPT that
      * it also drives the Fn+D page's banded clears and the staged restore, and
      * lcd_clear_rect() ends in lcd_blit_wait(): bounded (a 128x16 band is

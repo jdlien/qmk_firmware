@@ -24,6 +24,9 @@
  * counters through it. */
 #include "bluetooth/ch582f_ajazz.h"
 #include "health.h"        /* debug-page counters */
+#include "menu/panel_owner.h"   /* who owns the panel: plans/CONFIG-MENU-BUILD-PLAN.md, C1 */
+#include "menu/menu_glue.h"
+#include "param_overlay.h"
 
 #ifdef AK820_DEV_HOOKS
 #    include "loop_acct.h"   /* ACCT_NOW: the 16-bit system tick, 5.33 us */
@@ -133,20 +136,26 @@ static inline void dprobe_note(uint8_t i, uint16_t t0) {
  * without it today (no caching loop), but the one exception invites the
  * refactor that silently caches it. (Audit C-2.) */
 static volatile bool display_powered = true;
-static bool display_paused  = false;   // true while the flash-animation player owns the bus
-static bool debug_active    = false;   // true while the Fn+D debug page owns the panel
-static uint8_t debug_exit_step  = 0;   // >0 while the dashboard is being restored
+/* Who owns the panel -- the dashboard, the Fn+D page, the menu or the
+ * animation -- the menu's session and the dashboard's restore live in
+ * menu/panel_owner.c (C1). They replaced display_paused, debug_active and
+ * debug_exit_step, whose uses are migrated one by one below. */
+#define OWNER_IS(o) (po_owner() == (o))
 static uint8_t debug_clear_band = 0;   // >0 while the entry clear is banding down the panel
 static bool    debug_big        = false; // the second Fn+D tap: the camera page (big digits)
 static bool    locks_stage_first = true; // restore: the next lock-band pass forgets the (cleared) band
 static bool splash_cleared = false;
 static bool mac_mode = false;
+/* The two logo regions, the OS logo and the connection row: their state
+ * changes at once, their paint waits for the dashboard (or the restore's
+ * RESIDUAL). They used to paint at once, over the Fn+D page too. */
+static bool logo_os_stale   = false;
+static bool logo_conn_stale = false;
+/* C7: true while the menu's session is OPEN. Main code publishes it after an
+ * event's setup; the PWM ISR only reads it. */
+static volatile bool menu_visibility = false;
 
-uint32_t display_redraw_dashboard(uint32_t trigger_time, void *cb_arg);
-void display_set_paused(bool paused) {
-    display_paused = paused;
-    if (!paused) display_redraw_dashboard(0, NULL);   // resume: full repaint
-}
+static void po_apply(uint16_t acts);
 
 enum {
     CONN_MODE_WIRED = 0,
@@ -235,11 +244,29 @@ static bool clock_ticked_this_pass = false;
  * tick, which ak820pro.c owns because the indicator LEDs share it. Full and zero
  * duty are handled without toggling so a static backlight is not switched
  * needlessly. */
-void display_backlight_tick(void) {
-    uint8_t level = bkl_level;
-    if (bkl_cap < level) level = bkl_cap;
+/* The one effective level (C7), shared by the PWM ISR, the reporting and
+ * display_set_power()'s GPIO write. A pure calculation over local copies of
+ * byte-sized volatiles, which don't tear on this M0: it reads no menu state
+ * beyond menu_visibility, no timer, and never moves the PWM's phase.
+ *   - The menu's session lights the panel: powered, the cap lifted, the
+ *     level at least 1. The requested power and level are never changed.
+ *   - The wake hold is applied last. */
+static inline uint8_t bkl_effective(void) {
+    bool    powered = display_powered;
+    uint8_t level   = bkl_level;
+    uint8_t cap     = bkl_cap;
+    if (menu_visibility) {
+        powered = true;
+        cap     = BKL_NO_CAP;
+        if (level < 1) level = 1;
+    }
+    if (cap < level) level = cap;
     if (bkl_wake_hold) level = 0;
-    uint8_t duty = display_powered ? bkl_duty[level] : 0;
+    return powered ? level : 0;
+}
+
+void display_backlight_tick(void) {
+    uint8_t duty = bkl_duty[bkl_effective()];
 
     if (duty >= BKL_PWM_TICKS) {
         gpio_write_pin(PANEL_BKL, 1);
@@ -281,10 +308,7 @@ void display_set_backlight_cap(uint8_t cap) {
 }
 
 uint8_t display_backlight_effective(void) {
-    uint8_t level = bkl_level;
-    if (bkl_cap < level) level = bkl_cap;
-    if (bkl_wake_hold) level = 0;
-    return display_powered ? level : 0;
+    return bkl_effective();
 }
 
 void display_backlight_pin_off(void) {
@@ -308,8 +332,9 @@ void display_brightness_down(void) {
 void display_set_power(bool on) {
     display_powered = on;
     /* The ISR hook drives the pin from here on; write it once so power-off takes
-     * effect immediately rather than at the next tick. */
-    gpio_write_pin(PANEL_BKL, on && (bkl_duty[bkl_level] > 0));
+     * effect immediately rather than at the next tick. From the effective
+     * level, so the menu's session keeps the panel lit through a power-off. */
+    gpio_write_pin(PANEL_BKL, bkl_duty[bkl_effective()] > 0);
 }
 
 void display_toggle_power(void) {
@@ -399,8 +424,9 @@ static void draw_text_slot(bool force);
 static void draw_debug_page(void);   // Fn+D full-panel diagnostics
 static bool debug_pump_glyph(void);  // one changed debug cell, non-blocking
 static bool cam_pump_glyph(void);    // one changed camera-page cell, non-blocking
-static bool debug_restore_step(void); // one stage of the post-debug dashboard repaint
+static void debug_restore_step(void); // one step of the restore's CLEAR and STAGES (C1)
 static void draw_conn_row(void);      // three-transport strip, top row
+static void conn_status_update(void);   // the band's wireless status, before the restore's text stage
 
 /* ---- Playback position ----------------------------------------------------
  *
@@ -832,12 +858,18 @@ static bool debug_pump_glyph(void) {
     /* Clear first, one band per pass. No glyph may land before the panel is
      * blank or a later band would wipe it. */
     if (debug_clear_band) {
-        lcd_clear_rect(0, (uint16_t)((debug_clear_band - 1) * DBG_CLEAR_BAND_H),
-                       PANEL_WIDTH, DBG_CLEAR_BAND_H);
-        if (++debug_clear_band > DBG_CLEAR_BANDS) debug_clear_band = 0;
+        /* A band whose transfer was given up is retried, the band not
+         * advanced: a clear completes only when every band succeeded (C3). */
+        if (lcd_clear_rect_ok(0, (uint16_t)((debug_clear_band - 1) * DBG_CLEAR_BAND_H),
+                              PANEL_WIDTH, DBG_CLEAR_BAND_H) &&
+            ++debug_clear_band > DBG_CLEAR_BANDS)
+            debug_clear_band = 0;
         return true;
     }
-    if (debug_big && cam_pump_glyph()) return true;
+    /* Exclusive: on the camera page, the Health grid is never painted, even
+     * when the camera has nothing left to paint (a loss recovery's reset
+     * would otherwise paint Health's spaces over the camera's digits). */
+    if (debug_big) return cam_pump_glyph();
     if (!dbg_dirty) return false;
     for (uint8_t r = 0; r < DBG_ROWS; r++) {
         if (!(dbg_dirty & (1u << r))) continue;
@@ -1168,57 +1200,54 @@ static void dbg_compose(void) {
 }
 
 bool display_debug_active(void) {
-    return debug_active;
+    return OWNER_IS(PANEL_DEBUG);
 }
 
-void display_debug_toggle(void) {
-    /* Refuse while the animation player owns the bus rather than drawing over
-     * it: both would keep blitting and the panel would tear between them. */
-    if (!debug_active && display_paused) return;
-    /* A cycle: dashboard -> debug page -> camera page -> dashboard. The middle
-     * step keeps the panel and only changes what is drawn on it. */
-    if (debug_active && !debug_big) {
-        debug_big        = true;
-        debug_clear_band = 1;   /* the same banded clear as on entry */
-        /* Blank the debug text NOW, not at the next compose: the clear takes
-         * eight passes and the compose runs on the 10 Hz tick, so a stale dirty
-         * row could otherwise be painted straight over the digits. */
-        for (uint8_t r = 0; r < DBG_ROWS; r++) {
-            memset(dbg_text[r], ' ', DBG_COLS);  dbg_text[r][DBG_COLS]  = '\0';
-            memset(dbg_shown[r], ' ', DBG_COLS); dbg_shown[r][DBG_COLS] = '\0';
-        }
-        dbg_dirty = 0;
-        cam_reset();   /* the clear leaves the panel blank: a grid of spaces */
-        dbg_force_recompose = true;
-        return;
+/* Entering a debug page, or Health to Camera in place: the page's text
+ * blanked NOW, not at the next compose (the clear takes eight passes and the
+ * compose runs on the 10 Hz tick, so a stale dirty row could otherwise be
+ * painted straight over it), and the clear handed to the pump, one band a pass.
+ * This runs in process_record_kb or a raw-HID handler and can't span passes,
+ * so it must not clear the panel itself: a full-screen clear is the 43 ms
+ * stall the exit path was split up to avoid.
+ *
+ * A cleared panel is BLANK, which is exactly what a space paints, so the
+ * shadows are seeded with spaces and the diff skips every blank cell. */
+static void debug_page_reset(bool camera) {
+    debug_big        = camera;
+    debug_clear_band = 1;
+    for (uint8_t r = 0; r < DBG_ROWS; r++) {
+        memset(dbg_text[r], ' ', DBG_COLS);  dbg_text[r][DBG_COLS]  = '\0';
+        memset(dbg_shown[r], ' ', DBG_COLS); dbg_shown[r][DBG_COLS] = '\0';
     }
-    debug_big    = false;
-    debug_active = !debug_active;
-    if (debug_active) {
-        /* Hand the clear to the pump, one band per pass. This is a single call
-         * from process_record_kb and cannot span passes, so it must not clear
-         * the panel itself -- a full-screen clear here is the same 43 ms stall
-         * the exit path was split up to avoid. */
-        debug_clear_band = 1;
-        /* A cleared panel is BLANK, which is exactly what a space paints. Seed
-         * the shadow with spaces rather than NULs so the diff skips every blank
-         * cell on the first paint -- about a third of the 189, and the page
-         * fills in that much sooner. */
-        memset(dbg_shown, ' ', sizeof(dbg_shown));
-        for (uint8_t r = 0; r < DBG_ROWS; r++) dbg_shown[r][DBG_COLS] = '\0';
+    dbg_dirty = 0;
+    cam_reset();
+    dbg_force_recompose = true;
+}
+
+/* A loss under the debug page: only the page showing is invalidated, so every
+ * one of its cells repaints after the clear. Its shown cells advance when a
+ * glyph's DMA starts, which is why a loss has to reset them. On Camera, the
+ * Health grid stays blank and clean. */
+static void debug_page_invalidate(void) {
+    if (debug_big) {
+        memset(cam_shown, 0x01, sizeof(cam_shown));
+        cam_dirty = (uint8_t)((1u << CAM_LINES) - 1u);
     } else {
-        /* Hand the panel back in STAGES, not with one display_redraw_dashboard()
-         * call. That function clears the whole panel and then blits the icons
-         * and status synchronously: measured 66 ms on the main loop, which
-         * count_ge_25ms_nonflash duly flagged as a stall long enough to lose a
-         * keypress. Pressing Fn+D to dismiss a DIAGNOSTICS page must not put the
-         * next keystroke at risk.
-         *
-         * Driven one step per main-loop pass from display_blit_pump(), so each
-         * step stays well under the 25 ms threshold and the whole restore still
-         * completes in a few milliseconds of wall time -- visually instant. */
-        debug_exit_step = 1;
+        for (uint8_t r = 0; r < DBG_ROWS; r++) memset(dbg_shown[r], 0x01, DBG_COLS);
+        dbg_dirty = (uint16_t)((1u << DBG_ROWS) - 1u);
     }
+    debug_clear_band = 1;
+}
+
+/* The DBG_PAGE key and op 1: dashboard -> Health -> Camera -> dashboard on
+ * its own, and inside the menu's session Health -> Camera -> the menu. C1's
+ * table decides; it refuses under the animation, which would tear the panel
+ * between two painters, and while the menu's opening is pending. The way back
+ * to the dashboard is the staged restore, one step a pass from the pump: the
+ * one-call repaint was a 66 ms stall, long enough to lose a keypress. */
+void display_debug_toggle(void) {
+    po_apply(po_event(PO_EV_DBG_PAGE, bkl_wake_hold, timer_read32()));
 }
 
 void display_bootloader_splash(void) {
@@ -1385,66 +1414,73 @@ void draw_clock(void) {
     }
 }
 
-/* One stage of the dashboard's repaint: the Fn+D exit's, and since 10-19 the
- * animation's stop and the boot's too (display_redraw_dashboard requests it;
- * the one-call version's full clear was 43-44 ms). Returns true while more
- * stages remain. The whole repaint's work, in its order, split so no single
- * main-loop pass carries all of it. The animation owns the panel while
- * paused: the pump runs no stage then, and its stop starts again at 1. */
-static bool debug_restore_step(void) {
-    uint8_t step = debug_exit_step;
+/* One step of the dashboard's restore, in its CLEAR and STAGES phases (C1):
+ * the Fn+D exit's, the menu's close, the animation's stop and the boot's. The
+ * whole repaint's work, in its order, split so no single main-loop pass
+ * carries all of it (the one-call version's full clear was 43-44 ms). The
+ * cursor is panel_owner.c's; everything left after the stages -- the queues
+ * they filled, the battery's other parts, a stale logo -- is RESIDUAL's, run
+ * from the pump. */
+_Static_assert(PO_CLEAR_BANDS == DBG_CLEAR_BANDS, "the restore's clear is the debug page's bands");
+_Static_assert(PO_STAGES == 6, "the restore's six components");
+static void debug_restore_step(void) {
+    uint8_t step = po_restore_step();
+    if (!step) return;
 
     /* Anything queued belongs to the pre-clear frame; painting it afterwards
      * would scatter stale glyphs over the fresh dashboard. */
     if (step == 1) { display_queue_discard(); locks_stage_first = true; }
 
     if (step <= DBG_CLEAR_BANDS) {
-        lcd_clear_rect(0, (uint16_t)((step - 1) * DBG_CLEAR_BAND_H),
-                       PANEL_WIDTH, DBG_CLEAR_BAND_H);
-    } else {
-        switch (step - DBG_CLEAR_BANDS) {
-            case 1:
-                splash_cleared = true;
-                lcd_draw_flash_image(mac_mode ? ASSET_APPLE_ICON_24X24 : ASSET_WINDOWS_ICON_24X24, 0, 0);
-                break;
-            case 2:
-                draw_conn_row();
-                clock_force_repaint = true;   /* draw_clock queues; cheap here */
-                draw_clock();
-                break;
-            case 3: draw_conn_number(true); break;
-            case 4: draw_battery(true);     break;
-            case 5:
-                /* Lock band, ONE component per pass. A label is up to four
-                 * synchronous glyphs (~10 ms), and one draw_locks(true) with
-                 * CAPS, WIN and FN all lit was 25-30 ms -- the last stall on
-                 * the board long enough to lose a keypress (measured
-                 * 2026-09-03: `worst 30ms blit` on every Fn+D exit). Stays on
-                 * this stage until the band matches the lock state. */
-                if (draw_locks_staged(locks_stage_first)) {
-                    locks_stage_first = false;
-                    return true;             /* painted one; the rest next pass */
-                }
-                break;                       /* nothing left: advance */
-            default: draw_text_slot(true);  break;
-        }
+        /* A band whose transfer was given up is retried, the cursor not
+         * advanced: the clear completes only when every band succeeded. */
+        if (lcd_clear_rect_ok(0, (uint16_t)((step - 1) * DBG_CLEAR_BAND_H),
+                              PANEL_WIDTH, DBG_CLEAR_BAND_H))
+            po_restore_advance();
+        return;
     }
-
-    if (++debug_exit_step > DBG_CLEAR_BANDS + 6) { debug_exit_step = 0; return false; }
-    return true;
+    switch (step - DBG_CLEAR_BANDS) {
+        case 1:
+            splash_cleared = true;
+            lcd_draw_flash_image(mac_mode ? ASSET_APPLE_ICON_24X24 : ASSET_WINDOWS_ICON_24X24, 0, 0);
+            logo_os_stale = false;
+            break;
+        case 2:
+            draw_conn_row();
+            logo_conn_stale     = false;
+            clock_force_repaint = true;   /* draw_clock queues; cheap here */
+            draw_clock();
+            break;
+        case 3: draw_conn_number(true); break;
+        case 4: draw_battery(true);     break;
+        case 5:
+            /* Lock band, ONE component per pass. A label is up to four
+             * synchronous glyphs (~10 ms), and one draw_locks(true) with
+             * CAPS, WIN and FN all lit was 25-30 ms -- the last stall on
+             * the board long enough to lose a keypress (measured
+             * 2026-09-03: `worst 30ms blit` on every Fn+D exit). Stays on
+             * this stage until the band matches the lock state. */
+            if (draw_locks_staged(locks_stage_first)) {
+                locks_stage_first = false;
+                return;                      /* painted one; the rest next pass */
+            }
+            break;                           /* nothing left: advance */
+        default:
+            /* The overlays re-prime here: the band's status first. */
+            conn_status_update();
+            draw_text_slot(true);
+            break;
+    }
+    po_restore_advance();
 }
 
-/* The whole dashboard, repainted: as a request since 10-19, through the Fn+D
- * restore's stages (a band of clear, then one component, a pass), because
- * the one-call version cleared the whole panel at once, 43-44 ms on the loop
- * that scans the matrix (plans/UART-LATENCY-PLAN.md, fix 4). Its callers are
- * main-loop code: the boot's defer_exec after the splash, and the
- * animation's stop (display_set_paused(false)). The bootloader splash has its
- * own clear. The Fn+D page restores itself on its exit. */
+/* The startup callback: the boot's defer_exec after the splash. C1 starts the
+ * restore under the dashboard, or leaves it WAITING for another owner's exit.
+ * The bootloader splash has its own clear. */
 uint32_t display_redraw_dashboard(uint32_t trigger_time, void *cb_arg) {
     (void)trigger_time;
     (void)cb_arg;
-    if (!debug_active) debug_exit_step = 1;
+    po_apply(po_event(PO_EV_STARTUP, bkl_wake_hold, timer_read32()));
     return 0;   /* one-shot */
 }
 
@@ -2558,6 +2594,9 @@ static uint32_t param_status_since                    = 0;
 static bool     param_status_on                       = false;
 
 void display_set_param_status(const char *s) {
+    /* Every post is dropped while the menu's session is PENDING or OPEN,
+     * Diagnostics included (C1); one already showing was cleared at entry. */
+    if (s && po_session() != SESSION_NONE) return;
     if (!s) {
         if (param_status_on) { param_status_on = false; text_dirty = true; }
         return;
@@ -2598,7 +2637,9 @@ static bool alert_active(void) {
 }
 
 bool display_band_busy(void) {
-    if (display_paused || debug_active || debug_exit_step) return true;   /* the band is not on the panel */
+    /* The band isn't on the panel: another owner, a session (PENDING too:
+     * param posts are dropped then), or a restore. The tests below stay. */
+    if (po_owner_band_busy()) return true;
     if (pair_hint_pct >= 0) return true;
     if (alert_on && timer_elapsed32(alert_since) < ALERT_HOLD_MS) return true;
 #ifdef PARAM_OVERLAY
@@ -2907,7 +2948,7 @@ static void gq_reset(void) { gq_n = gq_i = 0; }
 static bool gq_pending(void) { return gq_i < gq_n; }
 
 bool display_bus_idle(void) {
-    return !gq_pending() && !lq_pending() && !debug_exit_step && !lcd_blit_busy();
+    return !gq_pending() && !lq_pending() && !po_restoring() && !lcd_blit_busy();
 }
 
 static void shadow_invalidate(void) {
@@ -2947,80 +2988,150 @@ static void pump_bus_busy(bool *blocked, uint32_t *since) {
     }
 }
 
-void display_blit_pump(void) {
-    static uint32_t blocked_since = 0;
-    static bool     blocked       = false;
-    static uint32_t last_heal     = 0;
-
-    if (pass_deferred) return;   /* a deep sleep's recovery used the PCF this pass */
-    if (clock_ticked_this_pass) return;   /* the second's clock diff ran this pass */
-
-    /* A blit given up for good left pixels unpainted that the shadows claim
-     * are there (codex review, 2026-09-23, finding 13). Repaint the whole
-     * dashboard through the staged, keystroke-safe Fn+D restore. At most once
-     * per 5 s, so a bus that keeps failing cannot become a repaint loop; the
-     * flag waits while the dashboard is not showing. */
-    if (!debug_active && !debug_exit_step && !display_paused &&
-        timer_elapsed32(last_heal) > 5000 && lcd_blit_lost_take()) {
-        last_heal       = timer_read32();
-        debug_exit_step = 1;
-        dprintf("[display] a blit was given up: repainting the dashboard\n");
-    }
-
-    /* The debug page owns the panel outright while active, so the band queue is
-     * idle and there is no contention. One cell per pass, same budget as a
-     * queued glyph -- and the same grace-then-recover on a busy bus, which it
-     * used to retry forever (codex review, finding 12). */
-    if (debug_active) {
-        if (lcd_blit_busy()) { pump_bus_busy(&blocked, &blocked_since); return; }
-        blocked = false;
-        DPROBE(DP_DBG_GLYPH, debug_pump_glyph());
-        return;
-    }
-    /* The animation owns the panel while paused, the staged restore included:
-     * one requested when it stops starts again from stage 1 (fix 4). */
-    if (display_paused) {
-        blocked = false;   /* stale grace must not carry into later work */
-        return;
-    }
-    /* Restoring the dashboard after Fn+D, the animation or the boot splash:
-     * one stage per pass. Ahead of the queue because stage 1 clears the panel
-     * and discards whatever is in it. */
-#ifdef AK820_DEV_HOOKS
-    if (debug_exit_step) {
-        blocked = false;
-        uint8_t st = debug_exit_step;   /* 1..14, before the stage advances it */
-        DPROBE(DP_RESTORE0 + st - 1u, debug_restore_step());
-        return;
-    }
-#else
-    if (debug_exit_step) { blocked = false; debug_restore_step(); return; }
-#endif
-
-    /* The labels first (see LQ_MAX): one glyph a pass, as below. */
+/* One queued label or glyph: the ordinary drain, and RESIDUAL's. The labels
+ * first (see LQ_MAX). Nothing on this path calls lcd_blit_wait() (the old
+ * gq_flush did, as a side effect), so a wedged blit would park the queue AND
+ * the deferring housekeeping pass forever, freezing every band.
+ * pump_bus_busy() bounds it. */
+static void pump_one_queued(bool *blocked, uint32_t *since) {
     if (lq_pending()) {
         if (!lcd_draw_flash_glyph_try(FONT_STATUS, lq[lq_i].c, lq[lq_i].x, LOCK_Y)) {
-            pump_bus_busy(&blocked, &blocked_since);
+            pump_bus_busy(blocked, since);
             return;
         }
-        blocked = false;
+        *blocked = false;
         if (++lq_i >= lq_n) lq_reset();
         return;
     }
     if (gq_i >= gq_n) {
-        blocked = false;
+        *blocked = false;
         return;
     }
     if (!lcd_draw_flash_glyph_try(gq[gq_i].font, gq[gq_i].c, gq[gq_i].x, gq[gq_i].y)) {
-        /* Bus busy. Nothing on this path calls lcd_blit_wait() (the old
-         * gq_flush did, as a side effect), so a wedged blit would park the
-         * queue AND the deferring housekeeping pass forever, freezing every
-         * band. pump_bus_busy() bounds it. */
-        pump_bus_busy(&blocked, &blocked_since);
+        pump_bus_busy(blocked, since);
         return;                        /* try again next iteration */
     }
-    blocked = false;
+    *blocked = false;
     if (++gq_i >= gq_n) gq_reset();
+}
+
+static void restore_done(void);
+
+/* RESIDUAL (C1): what the stages left, one thing a pass, run by the restore
+ * itself: the dashboard's own painters stay gated until DONE. The pump's
+ * restore dispatch used to return before the queue drain, so the restore
+ * drains the queues itself. */
+static void residual_step(bool *blocked, uint32_t *since) {
+    po_residual_in_t in = {
+        .busy      = lcd_blit_busy(),
+        .lq        = lq_pending(),
+        .gq        = gq_pending(),
+        .batt      = batt_dirty || batt_bulb_stale(),
+        .logo_os   = logo_os_stale,
+        .logo_conn = logo_conn_stale,
+        .lost      = lcd_blit_lost_pending(),
+    };
+    switch (po_residual_next(&in, timer_read32())) {
+        case PO_RES_RECOVER:
+            pump_bus_busy(blocked, since);
+            return;
+        case PO_RES_LQ:
+        case PO_RES_GQ:
+            pump_one_queued(blocked, since);
+            return;
+        case PO_RES_BATT:
+            *blocked = false;
+            draw_battery(false);   /* one component; incremental, and not gated on the owner */
+            return;
+        case PO_RES_LOGO_OS:
+            *blocked = false;
+            logo_os_stale = false;
+            lcd_draw_flash_image(mac_mode ? ASSET_APPLE_ICON_24X24 : ASSET_WINDOWS_ICON_24X24, 0, 0);
+            return;
+        case PO_RES_LOGO_CONN:
+            *blocked = false;
+            logo_conn_stale = false;
+            draw_conn_row();
+            return;
+        case PO_RES_DONE:
+            restore_done();
+            return;
+        default:   /* WAIT, RESTART (its band 1 next pass) */
+            *blocked = false;
+            return;
+    }
+}
+
+/* A transfer given up for good, taken once a pass at the pump's top and handed
+ * to the owner's handler (C1, "Loss"). Nothing else takes it. Under the
+ * dashboard panel_owner.c records it as damage at once, and the restore's
+ * RESIDUAL repairs it when the 5 s cooldown allows, so a bus that keeps
+ * failing can't become a repaint loop. */
+static void display_loss(void) {
+    uint16_t a = po_loss(timer_read32());
+    menu_note_loss();
+    if (a & PO_ACT_RESET_BUFFERS) menu_screen_invalidate();
+    if (a & PO_ACT_DEBUG_ENTER) debug_page_invalidate();
+    if (a & PO_ACT_ANIM_STOP) anim_toggle();   /* its stop hands the panel back (display_anim_end) */
+    dprintf("[display] a blit was given up: owner %u repairs\n", (unsigned)po_owner());
+}
+
+void display_blit_pump(void) {
+    static uint32_t blocked_since = 0;
+    static bool     blocked       = false;
+
+    if (pass_deferred) return;   /* a deep sleep's recovery used the PCF this pass */
+    if (clock_ticked_this_pass) return;   /* the second's clock diff ran this pass */
+
+    /* A blit given up for good left pixels unpainted that a shadow claims are
+     * there (codex review, 2026-09-23, finding 13). */
+    if (lcd_blit_lost_take()) display_loss();
+
+    switch (po_owner()) {
+        case PANEL_DEBUG:
+            /* The debug page owns the panel outright, so the band queue is idle
+             * and there is no contention. One cell per pass, same budget as a
+             * queued glyph -- and the same grace-then-recover on a busy bus,
+             * which it used to retry forever (codex review, finding 12). */
+            if (lcd_blit_busy()) { pump_bus_busy(&blocked, &blocked_since); return; }
+            blocked = false;
+            DPROBE(DP_DBG_GLYPH, debug_pump_glyph());
+            return;
+        case PANEL_MENU:
+            /* The menu's one bounded operation (C3), the same recovery. */
+            if (lcd_blit_busy()) { pump_bus_busy(&blocked, &blocked_since); return; }
+            blocked = false;
+            menu_pump();
+            return;
+        case PANEL_ANIM:
+            /* The animation's frames are its own DMAs, and anim_task() only
+             * waits for blit_done: a lost completion was never given up. The
+             * same bounded recovery here, and its loss stops the animation. */
+            if (lcd_blit_busy()) pump_bus_busy(&blocked, &blocked_since);
+            else blocked = false;
+            return;
+        case PANEL_DASH:
+            break;
+    }
+
+    /* Restoring the dashboard: one step per pass, ahead of the queue because
+     * the first band discards whatever is in it. */
+    if (po_phase() == RESTORE_RESIDUAL) {
+        residual_step(&blocked, &blocked_since);
+        return;
+    }
+    if (po_restoring()) {
+        blocked = false;
+#ifdef AK820_DEV_HOOKS
+        uint8_t st = po_restore_step();   /* 1..14, before the step advances it */
+        DPROBE(DP_RESTORE0 + st - 1u, debug_restore_step());
+#else
+        debug_restore_step();
+#endif
+        return;
+    }
+
+    pump_one_queued(&blocked, &blocked_since);
 }
 
 /* Throw away everything queued and forget the panel contents. For the two
@@ -3313,7 +3424,7 @@ void display_wake_corrected(void) {
 }
 
 static void wake_paint_step(void) {
-    if (pass_deferred || !splash_cleared || display_paused || debug_active || debug_exit_step) return;
+    if (pass_deferred || !splash_cleared || !po_dash_paints()) return;
     if (gq_pending() || lq_pending() || lcd_blit_busy()) return;   /* the pump finishes what is queued first */
     if (wake_clock_due) {
         wake_clock_due = false;
@@ -3326,16 +3437,36 @@ static void wake_paint_step(void) {
     }
 }
 
+/* Under another owner (the Fn+D page, the menu, the animation) no dashboard
+ * work is expected: the dashboard is WAITING, and the restore at that owner's
+ * exit repaints the clock and the battery. So only the bus is waited for. It
+ * used to wait for a batt_dirty that a gated painter never cleared, until
+ * RC_HOLD_MAX_MS. Under the dashboard a running restore keeps the bus busy,
+ * and its DONE settles the wake's flags (restore_done). */
 bool display_wake_repainted(void) {
-    bool no_clock = !splash_cleared || display_paused || debug_active || clock_mode == DISPLAY_CLOCK_OFF || pb.active;
+    if (!OWNER_IS(PANEL_DASH)) return display_bus_idle();
+    bool no_clock = !splash_cleared || clock_mode == DISPLAY_CLOCK_OFF || pb.active;
     bool clock_ok = no_clock || (!wake_clock_due && (int16_t)(clock_gen_painted - wake_clock_target) >= 0);
     return clock_ok && !wake_batt_due && !batt_dirty && display_bus_idle();
 }
+
+/* The menu's pending opening waits for this (C1): the notice is taken by
+ * menu_task(). */
+static bool wake_released_notice = false;
 
 void display_wake_release(void) {
     bkl_wake_hold  = false;
     wake_painting  = false;
     wake_clock_due = wake_batt_due = false;
+    wake_released_notice = true;
+}
+
+bool display_wake_held(void) { return bkl_wake_hold; }
+
+bool display_wake_notice_take(void) {
+    bool n = wake_released_notice;
+    wake_released_notice = false;
+    return n;
 }
 
 void display_pass_end(void) {
@@ -3359,9 +3490,10 @@ void display_housekeeping_task(void) {
         return;
     if (pass_deferred) return;   /* a deep sleep's recovery used the PCF this pass */
 
-    if (display_paused) return;   // animation owns the bus
-    if (debug_active) { DPROBE(DP_DEBUG_PAGE, draw_debug_page()); return; }   // Fn+D owns the panel
-    /* The Fn+D restore owns the panel too, one stage per main-loop pass from
+    if (OWNER_IS(PANEL_ANIM)) return;   // animation owns the bus
+    if (OWNER_IS(PANEL_DEBUG)) { DPROBE(DP_DEBUG_PAGE, draw_debug_page()); return; }   // Fn+D owns the panel
+    if (OWNER_IS(PANEL_MENU)) return;   // the menu paints from the pump (menu_pump)
+    /* The restore owns the panel too, one step per main-loop pass from
      * display_blit_pump(). A 10 Hz tick landing inside it would paint into a
      * clear band still sweeping down, or run draw_locks(false) and collapse the
      * staged lock repaint back into one 25-30 ms call. It is over in ~40 ms;
@@ -3369,12 +3501,12 @@ void display_housekeeping_task(void) {
      *
      * ⚠️ THIS GATE IS SAFE ONLY BECAUSE display_blit_pump() IS CALLED FROM ITS
      * OWN SITE in housekeeping_task_kb() (ak820pro.c), not from here. The pump
-     * is the only thing that advances debug_exit_step. Fold the pump into this
+     * is the only thing that advances the restore. Fold the pump into this
      * function -- the obvious tidy-up, both are display work -- and this line
-     * blocks the one caller that can clear the flag: the restore never finishes,
+     * blocks the one caller that can finish it: the restore never finishes,
      * the dashboard never comes back, and the main loop stays alive so the
      * watchdog does not save you. */
-    if (debug_exit_step) return;
+    if (po_restoring()) return;
 
     if (splash_cleared) {
         /* A queued line is mid-paint: let the pump finish before any owner
@@ -3386,6 +3518,16 @@ void display_housekeeping_task(void) {
          * tick rather than being skipped. */
         if (gq_pending() || lq_pending()) return;
         if (gq_retry_clock) { gq_retry_clock = false; clock_force_repaint = true; }
+
+        /* A logo region whose state changed (the OS switch, the slider): one
+         * a tick, in this owner's turn, never over another owner's page. */
+        if (logo_os_stale) {
+            logo_os_stale = false;
+            lcd_draw_flash_image(mac_mode ? ASSET_APPLE_ICON_24X24 : ASSET_WINDOWS_ICON_24X24, 0, 0);
+        } else if (logo_conn_stale) {
+            logo_conn_stale = false;
+            draw_conn_row();
+        }
 
         // Connection digit every tick (~10 Hz) so its blink animates; self-guarded.
         LOOP_SITE(LOOP_SITE_CONN, DPROBE(DP_CONN, draw_conn_number(false)));
@@ -3426,32 +3568,110 @@ void display_housekeeping_task(void) {
     }
 }
 
+/* The logo painters set the state at once and leave the paint to the
+ * dashboard's housekeeping, or to the restore's RESIDUAL. Painting at once
+ * drew over the Fn+D page (and would over the menu). */
 void display_draw_mac_logo(void) {
-    mac_mode = true;
-    if (splash_cleared && !display_paused)
-        lcd_draw_flash_image(ASSET_APPLE_ICON_24X24, 0, 0);
+    mac_mode      = true;
+    logo_os_stale = true;
 }
 
 void display_draw_windows_logo(void) {
-    mac_mode = false;
-    if (splash_cleared && !display_paused)
-        lcd_draw_flash_image(ASSET_WINDOWS_ICON_24X24, 0, 0);
+    mac_mode      = false;
+    logo_os_stale = true;
 }
 
 void display_draw_usb_logo(void) {
     connection_mode = CONN_MODE_WIRED;
-    if (splash_cleared && !display_paused)
-        draw_conn_row();
+    logo_conn_stale = true;
 }
 
 void display_draw_bluetooth_logo(void) {
     connection_mode = CONN_MODE_BLUETOOTH;
-    if (splash_cleared && !display_paused)
-        draw_conn_row();
+    logo_conn_stale = true;
 }
 
 void display_draw_2_4_g_logo(void) {
     connection_mode = CONN_MODE_2_4G;
-    if (splash_cleared && !display_paused)
-        draw_conn_row();
+    logo_conn_stale = true;
 }
+
+/* --- The panel's owner (C1) --------------------------------------------------- */
+
+/* RESIDUAL's DONE: the sticky check from fresh reads, then the wake's flags.
+ * The restore painted the battery, so wake_batt_due is settled; the clock is
+ * settled only if the painted generation reached the wake's target (a later
+ * correction is wake_paint_step()'s, once the dashboard paints again). */
+static void restore_done(void) {
+    if (gq_pending() || lq_pending() || lcd_blit_busy() || lcd_blit_lost_pending() || batt_dirty ||
+        logo_os_stale || logo_conn_stale || po_damaged())
+        po_note_fail(PO_FAIL_EARLY_DONE);
+    wake_batt_due = false;
+    if ((int16_t)(clock_gen_painted - wake_clock_target) >= 0) wake_clock_due = false;
+}
+
+/* What an event decided, done in C1's order. */
+static void po_apply(uint16_t a) {
+    if (a & PO_ACT_REFUSED) return;
+    if (a & PO_ACT_QUIESCE_DROP) {
+        /* The owner changes: the bus quiesced (bounded), and a loss latched by
+         * then dropped. Every new owner starts with a full clear, so nothing of
+         * the old owner's survives to repair. */
+        if (lcd_blit_busy()) lcd_blit_wait();
+        if (lcd_blit_lost_take()) menu_loss_dropped();
+    }
+    if (a & PO_ACT_RESET_BUFFERS) {
+        for (uint8_t r = 0; r < DBG_ROWS; r++) {
+            memset(dbg_text[r], ' ', DBG_COLS);  dbg_text[r][DBG_COLS]  = '\0';
+            memset(dbg_shown[r], ' ', DBG_COLS); dbg_shown[r][DBG_COLS] = '\0';
+        }
+        dbg_dirty = 0;
+        cam_reset();
+    }
+    if (a & PO_ACT_OVERLAYS_OFF) {
+#ifdef PARAM_OVERLAY
+        if (param_status_on) { param_status_on = false; text_dirty = true; }
+#endif
+        param_overlay_cancel();
+    }
+    if (a & PO_ACT_REPEAT_CANCEL) param_repeat_cancel();
+    if (a & PO_ACT_INPUT_CLEAR) menu_input_clear();
+    if (a & PO_ACT_DEBUG_ENTER) debug_page_reset(po_debug_page() == DEBUG_PAGE_CAMERA);
+    if (a & PO_ACT_DEBUG_CAMERA) debug_page_reset(true);
+    if (a & PO_ACT_MENU_CLEAR) menu_screen_open(po_return_to_diag());
+    if (a & PO_ACT_OVERLAYS_REPRIME) param_status_reprime();
+    /* C7: published after the setup, read by the PWM ISR. */
+    menu_visibility = po_visible();
+}
+
+uint16_t display_po_event(po_event_t ev) {
+    uint16_t a = po_event(ev, bkl_wake_hold, timer_read32());
+    po_apply(a);
+    return a;
+}
+
+bool display_anim_begin(void) {
+    uint16_t a = po_event(PO_EV_ANIM_START, bkl_wake_hold, timer_read32());
+    if (a & PO_ACT_REFUSED) return false;
+    po_apply(a);
+    return true;
+}
+
+void display_anim_end(void) {
+    (void)display_po_event(PO_EV_ANIM_STOP);
+}
+
+bool display_panel_lit_for_owner(void) { return po_panel_lit_for_owner(); }
+
+#ifdef AK820_DEV_HOOKS
+/* Op 27 sub 5's view of the dashboard's outstanding work. */
+bool display_batt_dirty(void) { return batt_dirty != 0 || batt_bulb_stale(); }
+bool display_logo_stale(void) { return logo_os_stale || logo_conn_stale; }
+uint8_t display_queue_depths(void) {
+    uint8_t g = (uint8_t)(gq_n - gq_i), l = (uint8_t)(lq_n - lq_i);
+    if (g > 15) g = 15;
+    if (l > 15) l = 15;
+    return (uint8_t)(g | (l << 4));
+}
+#endif
+bool display_menu_sleep_blocked(void) { return po_sleep_blocked(); }
