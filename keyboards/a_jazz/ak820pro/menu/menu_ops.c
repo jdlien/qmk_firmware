@@ -231,6 +231,17 @@ bool menu_ops_op27(uint8_t *d, uint32_t now) {
             if (st != MI_OK) break;
             env_lost_inject();
             break;
+        case 9: {   /* the handoff probe (the board's A3): bytes 7-10 */
+            uint8_t q[4] = {0};
+            st = mi_begin(MI_KIND_PROBE, &seq);
+            if (st != MI_OK) break;
+            mi_finish(env_probe_handoff(q) ? MI_ST_DONE : MI_ST_REFUSED);
+            memset(&d[5], 0, 27);
+            d[5] = st;
+            d[6] = seq;
+            memcpy(&d[7], q, 4);
+            return true;
+        }
         default:
             return false;
     }

@@ -3679,6 +3679,25 @@ bool display_anim_admissible(void) { return po_anim_admissible(); }
 /* Op 27 sub 5's view of the dashboard's outstanding work. */
 bool display_batt_dirty(void) { return batt_dirty != 0 || batt_bulb_stale(); }
 bool display_logo_stale(void) { return logo_os_stale || logo_conn_stale; }
+/* Op 27 sub 9 (plans/CONFIG-MENU-S0-BOARD-TESTS.md, A3): the dashboard's
+ * queues made non-empty, then handed to the Fn+D page in the same call, so the
+ * drop at the boundary is seen with work in both queues. Its glyphs would
+ * never paint: the handoff discards them, and the Fn+D page owns the panel.
+ * out4: gq and lq before, then after. False unless the dashboard is DONE. */
+bool display_probe_handoff(uint8_t *out4) {
+    if (!OWNER_IS(PANEL_DASH) || po_session() != SESSION_NONE || po_phase() != RESTORE_DONE ||
+        !splash_cleared || gq_pending() || lq_pending())
+        return false;
+    for (uint8_t i = 0; i < 3; i++) gq_push(FONT_SMALL, (uint16_t)(i * FONT_SMALL_ADV), 0, ' ');
+    lq_push_label(0, "X");
+    out4[0] = (uint8_t)(gq_n - gq_i);
+    out4[1] = (uint8_t)(lq_n - lq_i);
+    (void)display_po_event(PO_EV_DBG_PAGE);
+    out4[2] = (uint8_t)(gq_n - gq_i);
+    out4[3] = (uint8_t)(lq_n - lq_i);
+    return true;
+}
+
 uint8_t display_queue_depths(void) {
     uint8_t g = (uint8_t)(gq_n - gq_i), l = (uint8_t)(lq_n - lq_i);
     if (g > 15) g = 15;

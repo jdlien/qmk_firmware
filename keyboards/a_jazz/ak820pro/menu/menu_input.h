@@ -54,7 +54,7 @@ bool       mi_knob_down(void);      /* the physical knob, captured or forwarded 
 typedef enum { MI_ST_NONE = 0, MI_ST_PENDING, MI_ST_DONE, MI_ST_CANCELLED, MI_ST_SUPERSEDED, MI_ST_REFUSED } mi_state_t;
 typedef enum {
     MI_KIND_NONE = 0, MI_KIND_TURNS, MI_KIND_CLICK, MI_KIND_HOLD, MI_KIND_OPENER,
-    MI_KIND_PATTERN, MI_KIND_PATTERN_STOP, MI_KIND_RESTORE, MI_KIND_LOSS, MI_KIND_ARM,
+    MI_KIND_PATTERN, MI_KIND_PATTERN_STOP, MI_KIND_RESTORE, MI_KIND_LOSS, MI_KIND_ARM, MI_KIND_PROBE,
 } mi_kind_t;
 
 /* Status values (reply byte 5). */

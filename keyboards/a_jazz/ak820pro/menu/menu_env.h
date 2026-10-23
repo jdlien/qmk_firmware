@@ -18,3 +18,4 @@ bool     env_wake_held(void);
 bool     env_batt_dirty(void);          /* op 27 sub 5's view of the dashboard */
 bool     env_logo_stale(void);
 uint8_t  env_queue_depths(void);
+bool     env_probe_handoff(uint8_t *out4);   /* op 27 sub 9: false unless the dashboard is DONE */

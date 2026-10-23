@@ -141,6 +141,7 @@ bool display_wake_notice_take(void);      /* the hold was released since the las
 bool    display_batt_dirty(void);         /* op 27 sub 5's flags */
 bool    display_logo_stale(void);
 uint8_t display_queue_depths(void);       /* gq low nibble, lq high, each saturating at 15 */
+bool    display_probe_handoff(uint8_t *out4);   /* op 27 sub 9: queues filled, then handed to Fn+D */
 #endif
 /* A message was first painted in the band (an overlay, an alert, a link state
  * with words, new host text, the pair gesture) within the last `ms`: power.c's

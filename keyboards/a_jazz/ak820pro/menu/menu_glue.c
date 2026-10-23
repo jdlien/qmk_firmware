@@ -35,6 +35,7 @@ void    env_lost_inject(void) { lcd_blit_lost_inject(); }
 bool    env_batt_dirty(void) { return display_batt_dirty(); }
 bool    env_logo_stale(void) { return display_logo_stale(); }
 uint8_t env_queue_depths(void) { return display_queue_depths(); }
+bool    env_probe_handoff(uint8_t *out4) { return display_probe_handoff(out4); }
 #endif
 
 /* --- The knob -------------------------------------------------------------------- */
