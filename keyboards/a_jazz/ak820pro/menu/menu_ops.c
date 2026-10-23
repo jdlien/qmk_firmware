@@ -102,7 +102,9 @@ void menu_ops_task(uint32_t now) {
     }
     /* 24 s with no knob input closes it (C7: hint repaints, host traffic and
      * typing don't restart this). The fixture has no edit, so no backstop. */
-    if ((uint32_t)(now - mi_last_input()) >= MI_IDLE_MS) (void)env_po_event(PO_EV_CLOSE);
+    /* Signed: an input stamped a little after `now` (an event read its own
+     * timer) is no idle at all, never a wrapped 49 days. */
+    if ((int32_t)(now - mi_last_input()) >= (int32_t)MI_IDLE_MS) (void)env_po_event(PO_EV_CLOSE);
 }
 
 /* --- Op 27 ------------------------------------------------------------------ */

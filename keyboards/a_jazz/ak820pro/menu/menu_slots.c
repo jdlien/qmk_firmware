@@ -66,7 +66,10 @@ void ms_set_layout(const ms_layout_t *l, bool fresh) {
         slots[i].state = (l && i < l->n) ? MS_INVALID : MS_EMPTY;
     cursor = NO_CURSOR;
     new_target();
-    if (stopped) {   /* a layout change releases a reached stop too */
+    /* A reached stop holds through navigation, a layout change included,
+     * until the next op 27 sub 0. Opening, or coming back from another
+     * owner, is a new screen: that lets it go. */
+    if (fresh) {
         stopped = false;
         stop_n  = 0;
     }
@@ -96,6 +99,9 @@ ms_step_t ms_step(void) {
     if (!layout) return MS_STEP_IDLE;
     settle_ops();
 
+    /* A reached stop holds everything, a pending layout clear included. */
+    if (stopped) return MS_STEP_STOPPED;
+
     /* A clear completes only when every band succeeded: a failed band is
      * retried, the cursor not advanced. */
     if (clear_band) {
@@ -105,7 +111,6 @@ ms_step_t ms_step(void) {
         return MS_STEP_CLEAR;
     }
 
-    if (stopped) return MS_STEP_STOPPED;
     if (stop_n && ops >= stop_n) {
         /* After operation n's transfer has completed or failed. */
         if (mb_busy()) return MS_STEP_WAIT;
