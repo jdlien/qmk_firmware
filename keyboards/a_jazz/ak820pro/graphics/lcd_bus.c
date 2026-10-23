@@ -17,9 +17,11 @@
 #include "lcd_bus.h"
 #include "../rtc/rtc.h"
 #include "../ak820pro.h"
+#include "../menu/panel_owner.h"   /* op 27's sticky failure bits (dev builds) */
 
 /* graphics/display.c: the animation's start is admitted by the panel owner
  * (C1), and its stop hands the panel back with a restore. */
+extern bool display_anim_admissible(void);
 extern bool display_anim_begin(void);
 extern void display_anim_end(void);
 
@@ -138,13 +140,22 @@ static void tx8(uint8_t b) { spiSend(&SPID0, 1, &b); }
  * Dev builds count a second acquire (scratch_overlaps); it must stay 0. */
 static uint8_t lcd_scratch[512];
 #ifdef AK820_DEV_HOOKS
+/* Dev builds check the rules: a second acquire, or a release without one,
+ * counts and sets op 27's sticky PO_FAIL_SCRATCH (menu/panel_owner.h). */
 static bool     scratch_held;
 static uint16_t scratch_overlaps;
+static inline void scratch_fail(void) {
+    if (scratch_overlaps < 0xFFFFu) scratch_overlaps++;
+    po_note_fail(PO_FAIL_SCRATCH);
+}
 static inline void scratch_acquire(void) {
-    if (scratch_held && scratch_overlaps < 0xFFFFu) scratch_overlaps++;
+    if (scratch_held) scratch_fail();
     scratch_held = true;
 }
-static inline void scratch_release(void) { scratch_held = false; }
+static inline void scratch_release(void) {
+    if (!scratch_held) scratch_fail();
+    scratch_held = false;
+}
 uint16_t lcd_scratch_overlaps(void) { return scratch_overlaps; }
 #else
 static inline void scratch_acquire(void) {}
@@ -224,8 +235,18 @@ void lcd_fill_rect(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t 
  * other painter can move the window under it. bus_quiesce() stays out of
  * lcd_window(): the DMA arm calls that after marking its own transfer busy. */
 static uint32_t stream_left;
+#ifdef AK820_DEV_HOOKS
+static bool stream_open;   /* dev builds: a nested, overlong or short stream is PO_FAIL_STREAM */
+#    define STREAM_FAIL() po_note_fail(PO_FAIL_STREAM)
+#else
+#    define STREAM_FAIL() ((void)0)
+#endif
 bool lcd_stream_begin(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
     if (!w || !h || x + w > FRAME_W || y + h > FRAME_H) return false;
+#ifdef AK820_DEV_HOOKS
+    if (stream_open) STREAM_FAIL();
+    stream_open = true;
+#endif
     bus_quiesce();
     scratch_acquire();
     lcd_window(x, y, x + w - 1, y + h - 1);
@@ -233,12 +254,19 @@ bool lcd_stream_begin(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
     return true;
 }
 void lcd_stream_bytes(const uint8_t *panel_order, uint32_t n) {
-    if (n > stream_left) n = stream_left;
+    if (n > stream_left) {
+        STREAM_FAIL();
+        n = stream_left;
+    }
     if (!n) return;
     spiSend(&SPID0, n, panel_order);
     stream_left -= n;
 }
 void lcd_stream_end(void) {
+    if (stream_left) STREAM_FAIL();   /* ended short */
+#ifdef AK820_DEV_HOOKS
+    stream_open = false;
+#endif
     stream_left = 0;
     scratch_release();
     cs(1);
@@ -1166,6 +1194,9 @@ void anim_toggle(void) {
          * Safe to read here: it is a 1-byte SPI1 flash read, and the dashboard
          * reads flash constantly anyway (every glyph comes from there via
          * lcd_draw_flash_text). */
+        /* Refused before any flash access when the panel isn't the
+         * dashboard's to give: no quiesce, no wait on a transfer in flight. */
+        if (!display_anim_admissible()) return;
         if (!anim_read_header()) return;    // empty slot: true no-op
         /* Admitted only from the dashboard with no session and no restore
          * running (C1's anim_admissible): refused under the Fn+D page, the

@@ -3408,6 +3408,10 @@ bool display_pass_deferred(void) {
 void display_sleep_wake(void) {
     bkl_wake_hold = true;
     wake_painting = false;
+    /* Not expected: DSB_MENU keeps the board awake while a session is open.
+     * Recorded (op 27's sticky bits), and the session closes when the hold
+     * lifts (C1). */
+    if (po_session() == SESSION_OPEN) (void)display_po_event(PO_EV_WAKE_WHILE_OPEN);
     if (text_present) {
         text_present = false;
         text_dirty   = true;
@@ -3444,7 +3448,7 @@ static void wake_paint_step(void) {
  * RC_HOLD_MAX_MS. Under the dashboard a running restore keeps the bus busy,
  * and its DONE settles the wake's flags (restore_done). */
 bool display_wake_repainted(void) {
-    if (!OWNER_IS(PANEL_DASH)) return display_bus_idle();
+    if (!OWNER_IS(PANEL_DASH)) return !lcd_blit_busy();
     bool no_clock = !splash_cleared || clock_mode == DISPLAY_CLOCK_OFF || pb.active;
     bool clock_ok = no_clock || (!wake_clock_due && (int16_t)(clock_gen_painted - wake_clock_target) >= 0);
     return clock_ok && !wake_batt_due && !batt_dirty && display_bus_idle();
@@ -3613,12 +3617,18 @@ static void restore_done(void) {
 /* What an event decided, done in C1's order. */
 static void po_apply(uint16_t a) {
     if (a & PO_ACT_REFUSED) return;
+    bool dropped = false;
     if (a & PO_ACT_QUIESCE_DROP) {
         /* The owner changes: the bus quiesced (bounded), and a loss latched by
          * then dropped. Every new owner starts with a full clear, so nothing of
-         * the old owner's survives to repair. */
+         * the old owner's survives to repair. Leaving the dashboard, its queued
+         * glyphs are dropped too: nothing drains them under another owner, and
+         * left there they'd hold display_bus_idle() false, and with it the
+         * wake's release and rtc.c's admission. The restore at the owner's
+         * exit repaints from a clear and fresh shadows. */
         if (lcd_blit_busy()) lcd_blit_wait();
-        if (lcd_blit_lost_take()) menu_loss_dropped();
+        dropped = lcd_blit_lost_take();
+        if (!OWNER_IS(PANEL_DASH)) display_queue_discard();
     }
     if (a & PO_ACT_RESET_BUFFERS) {
         for (uint8_t r = 0; r < DBG_ROWS; r++) {
@@ -3635,11 +3645,12 @@ static void po_apply(uint16_t a) {
         param_overlay_cancel();
     }
     if (a & PO_ACT_REPEAT_CANCEL) param_repeat_cancel();
-    if (a & PO_ACT_INPUT_CLEAR) menu_input_clear();
     if (a & PO_ACT_DEBUG_ENTER) debug_page_reset(po_debug_page() == DEBUG_PAGE_CAMERA);
     if (a & PO_ACT_DEBUG_CAMERA) debug_page_reset(true);
-    if (a & PO_ACT_MENU_CLEAR) menu_screen_open(po_return_to_diag());
     if (a & PO_ACT_OVERLAYS_REPRIME) param_status_reprime();
+    /* The menu's side: the input cleared, its screen opened, an injected loss
+     * that was dropped ended (menu_ops.c). */
+    menu_ops_apply(a, dropped, timer_read32());
     /* C7: published after the setup, read by the PWM ISR. */
     menu_visibility = po_visible();
 }
@@ -3662,6 +3673,7 @@ void display_anim_end(void) {
 }
 
 bool display_panel_lit_for_owner(void) { return po_panel_lit_for_owner(); }
+bool display_anim_admissible(void) { return po_anim_admissible(); }
 
 #ifdef AK820_DEV_HOOKS
 /* Op 27 sub 5's view of the dashboard's outstanding work. */

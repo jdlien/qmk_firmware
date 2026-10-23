@@ -21,8 +21,9 @@
 /* The colours, shared with the host's expected frames. */
 extern const uint16_t fx_row_colors[2][FX_ROWS][2];   /* [pattern][row][half] */
 extern const uint16_t fx_tile_colors[16];
-#define FX_SEP_COLOR   0x7BEFu
-#define FX_THUMB_COLOR 0xAD55u
+extern const uint16_t fx_sep_colors[2];     /* [pattern] */
+extern const uint16_t fx_track_colors[2];
+extern const uint16_t fx_thumb_colors[2];
 #define FX_THUMB_H     26
 
 typedef enum { FX_NONE = 0, FX_DIAG, FX_CLOSE } fx_result_t;

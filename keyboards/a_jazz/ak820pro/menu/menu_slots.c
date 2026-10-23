@@ -14,9 +14,11 @@ static uint8_t   tgen;            /* the target's generation */
 static uint8_t   cursor;          /* the one slot that may be PARTIAL */
 static uint8_t   chunk;           /* its next chunk */
 static uint8_t   clear_band;      /* 1..MB_BANDS while clearing */
-static uint8_t   ops;
-static uint8_t   stop_n;
+static uint8_t   ops;             /* completed paint operations since the last target */
+static bool      ops_inflight;    /* the last operation's DMA, counted when it ends */
+static uint8_t   stop_n;          /* op 27's partial stop: pending while > 0 and not stopped */
 static bool      stopped;
+static bool      stop_cancelled;  /* a pending stop disposed of by a retarget or layout change */
 
 void ms_init(void) {
     layout = 0;
@@ -26,24 +28,48 @@ void ms_init(void) {
     chunk = 0;
     clear_band = 0;
     ops = 0;
+    ops_inflight = false;
     stop_n = 0;
-    stopped = false;
+    stopped = stop_cancelled = false;
 }
 
+/* An asynchronous operation counts when its transfer has ended (completed or
+ * given up); a synchronous fill when it returns. */
+static void settle_ops(void) {
+    if (ops_inflight && !mb_busy()) {
+        ops_inflight = false;
+        if (ops < 0xFFu) ops++;
+    }
+}
+
+/* A pending stop's work is disposed of by a new target: its sequence ends
+ * (ms_stop_cancelled_take). A stop already reached holds until
+ * ms_stop_release(), the next op 27 sub 0. */
 static void new_target(void) {
     tgen++;
-    ops     = 0;
-    stop_n  = 0;
-    stopped = false;
+    settle_ops();
+    ops          = 0;
+    ops_inflight = false;
+    if (stop_n && !stopped) {
+        stop_n         = 0;
+        stop_cancelled = true;
+    }
 }
 
-void ms_set_layout(const ms_layout_t *l) {
-    layout     = l;
-    clear_band = 1;   /* never superseded: a later target change only retargets */
+void ms_set_layout(const ms_layout_t *l, bool fresh) {
+    layout = l;
+    /* A clear in progress is never restarted by navigation: it finishes its
+     * remaining bands. Opening, or coming back from another owner, sweeps
+     * the panel afresh. */
+    if (fresh || !clear_band) clear_band = 1;
     for (uint8_t i = 0; i < MS_MAX_SLOTS; i++)
         slots[i].state = (l && i < l->n) ? MS_INVALID : MS_EMPTY;
     cursor = NO_CURSOR;
     new_target();
+    if (stopped) {   /* a layout change releases a reached stop too */
+        stopped = false;
+        stop_n  = 0;
+    }
 }
 
 void ms_retarget(void) { new_target(); }
@@ -61,12 +87,14 @@ static bool settled(uint8_t i) {
 static ms_step_t paint_chunk(void) {
     if (!layout->paint(cursor, chunk)) return MS_STEP_BUSY;   /* the same chunk next pass */
     chunk++;
-    if (ops < 0xFFu) ops++;
+    if (mb_busy()) ops_inflight = true;   /* a DMA armed: counted when it ends */
+    else if (ops < 0xFFu) ops++;
     return MS_STEP_PAINT;
 }
 
 ms_step_t ms_step(void) {
     if (!layout) return MS_STEP_IDLE;
+    settle_ops();
 
     /* A clear completes only when every band succeeded: a failed band is
      * retried, the cursor not advanced. */
@@ -131,7 +159,23 @@ uint8_t ms_unsettled(void) {
     return n;
 }
 
-uint8_t ms_ops(void) { return ops; }
-void    ms_stop_after(uint8_t n) { stop_n = n; stopped = false; }
-bool    ms_stopped(void) { return stopped; }
+uint8_t ms_ops(void) {
+    settle_ops();
+    return ops;
+}
+void ms_stop_after(uint8_t n) {
+    stop_n         = n;
+    stopped        = false;
+    stop_cancelled = false;
+}
+void ms_stop_release(void) {
+    stop_n  = 0;
+    stopped = false;
+}
+bool ms_stopped(void) { return stopped; }
+bool ms_stop_cancelled_take(void) {
+    bool c         = stop_cancelled;
+    stop_cancelled = false;
+    return c;
+}
 const ms_slot_t *ms_slot(uint8_t i) { return i < MS_MAX_SLOTS ? &slots[i] : 0; }

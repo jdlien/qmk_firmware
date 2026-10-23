@@ -111,6 +111,12 @@ po_residual_t po_residual_next(const po_residual_in_t *in, uint32_t now);
 uint16_t po_loss(uint32_t now);
 
 /* Sticky invariant failures (op 27 sub 5, bytes 24-25). */
-enum { PO_FAIL_EARLY_COMMIT = 1u << 0, PO_FAIL_EARLY_DONE = 1u << 1, PO_FAIL_WAKE_OPEN = 1u << 2 };
+enum {
+    PO_FAIL_EARLY_COMMIT = 1u << 0,
+    PO_FAIL_EARLY_DONE   = 1u << 1,
+    PO_FAIL_WAKE_OPEN    = 1u << 2,
+    PO_FAIL_SCRATCH      = 1u << 3,   /* lcd_bus.c, dev builds: the shared scratch's rules broken */
+    PO_FAIL_STREAM       = 1u << 4,   /* a nested, overlong or short panel-order stream */
+};
 uint16_t po_invariant_fail(void);
 void     po_note_fail(uint16_t bit);

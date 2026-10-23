@@ -27,6 +27,8 @@ static bool       syn_fired;
 static uint32_t   syn_start;
 static uint16_t   syn_ms;
 static bool       owed;           /* the outstanding synthetic action is in the input */
+static mi_latch_t syn_latch;      /* the latch it set (none for turns) */
+static bool       syn_lost;       /* its effect was discarded: a higher latch, or a close */
 
 static mi_kind_t  out_kind;
 static uint8_t    last_seq;
@@ -40,7 +42,8 @@ void mi_init(void) {
     latch = MI_LATCH_NONE;
     dropped = 0;
     last_input = 0;
-    syn_hold = syn_fired = owed = false;
+    syn_hold = syn_fired = owed = syn_lost = false;
+    syn_latch = MI_LATCH_NONE;
     syn_start = 0;
     syn_ms = 0;
     out_kind = MI_KIND_NONE;
@@ -53,10 +56,15 @@ static void drop(void) {
 }
 
 /* Close outranks Back, which outranks a click; a lower one after a higher one
- * is dropped. */
+ * is dropped. A synthetic action whose latch is replaced, or whose turns a
+ * close will discard, ends superseded when the batch is taken. */
 static void set_latch(mi_latch_t l) {
-    if (l > latch) latch = l;
-    else drop();
+    if (l > latch) {
+        if (owed && (syn_latch != MI_LATCH_NONE || l == MI_LATCH_CLOSE)) syn_lost = true;
+        latch = l;
+    } else {
+        drop();
+    }
 }
 
 /* A latch freezes the turns before it: later ones are dropped and counted. */
@@ -146,25 +154,33 @@ void mi_tick(uint32_t now) {
             set_latch(MI_LATCH_BACK);
         }
         if (held >= syn_ms) {   /* the scheduled release */
+            mi_latch_t l = syn_fired ? MI_LATCH_BACK : MI_LATCH_CLICK;
             if (!syn_fired) set_latch(MI_LATCH_CLICK);
             syn_hold = syn_fired = false;
-            owed = true;        /* done once the screen has taken it */
+            owed      = true;   /* ends once the screen has taken the batch */
+            syn_latch = l;
+            syn_lost  = latch != l;
             last_input = now;
         }
     }
 }
 
+/* True when there's a batch to act on: turns, a latch, or an outstanding
+ * synthetic action -- even one whose turns a physical turn cancelled to a net
+ * zero, which still ends here. */
 bool mi_take(int8_t *t, mi_latch_t *l) {
-    if (!turns && latch == MI_LATCH_NONE) return false;
+    if (!turns && latch == MI_LATCH_NONE && !owed) return false;
     *l = latch;
     *t = latch == MI_LATCH_CLOSE ? 0 : turns;   /* close discards the turns */
     turns = 0;
     latch = MI_LATCH_NONE;
     if (owed) {
-        owed = false;
-        if (out_kind == MI_KIND_TURNS || out_kind == MI_KIND_CLICK || out_kind == MI_KIND_HOLD ||
-            out_kind == MI_KIND_OPENER)
-            mi_finish(MI_ST_DONE);
+        bool lost = syn_lost;
+        owed      = false;
+        syn_lost  = false;
+        syn_latch = MI_LATCH_NONE;
+        if (out_kind == MI_KIND_TURNS || out_kind == MI_KIND_CLICK || out_kind == MI_KIND_HOLD)
+            mi_finish(lost ? MI_ST_SUPERSEDED : MI_ST_DONE);
     }
     return true;
 }
@@ -179,9 +195,10 @@ void mi_clear(void) {
     latch = MI_LATCH_NONE;
     mi_session_closed();
     if (owed) {
-        owed = false;
-        if (out_kind == MI_KIND_TURNS || out_kind == MI_KIND_CLICK || out_kind == MI_KIND_HOLD ||
-            out_kind == MI_KIND_OPENER)
+        owed      = false;
+        syn_lost  = false;
+        syn_latch = MI_LATCH_NONE;
+        if (out_kind == MI_KIND_TURNS || out_kind == MI_KIND_CLICK || out_kind == MI_KIND_HOLD)
             mi_finish(MI_ST_CANCELLED);
     }
 }
@@ -209,6 +226,8 @@ void mi_finish(mi_state_t st) {
     out_kind   = MI_KIND_NONE;
     last_state = st;
     owed       = false;
+    syn_lost   = false;
+    syn_latch  = MI_LATCH_NONE;
 }
 
 mi_kind_t  mi_outstanding(void) { return out_kind; }
@@ -222,7 +241,9 @@ uint8_t mi_syn_turns(int8_t n) {
         return MI_OK;
     }
     add_turns(n);
-    owed = true;
+    owed      = true;
+    syn_latch = MI_LATCH_NONE;
+    syn_lost  = false;
     return MI_OK;
 }
 
@@ -232,7 +253,9 @@ uint8_t mi_syn_click(void) {
         mi_finish(MI_ST_SUPERSEDED);
         return MI_OK;
     }
-    owed = true;
+    owed      = true;
+    syn_latch = MI_LATCH_CLICK;
+    syn_lost  = false;
     return MI_OK;
 }
 

@@ -42,7 +42,8 @@ typedef enum {
 } ms_step_t;
 
 void      ms_init(void);
-void      ms_set_layout(const ms_layout_t *l);   /* a layout change: a banded clear, every slot INVALID */
+void      ms_set_layout(const ms_layout_t *l, bool fresh);   /* a layout change: every slot INVALID, and a
+                                                              * banded clear (a running one finishes, unless fresh) */
 void      ms_retarget(void);                     /* same layout, new targets: rule 2 restarts what changed */
 void      ms_invalidate_all(void);               /* a loss under this owner */
 ms_step_t ms_step(void);
@@ -52,5 +53,7 @@ bool      ms_settled(void);                      /* pixels_done, but for the own
 uint8_t   ms_unsettled(void);                    /* op 27 sub 5, byte 21 */
 uint8_t   ms_ops(void);                          /* completed paint operations since the last target */
 void      ms_stop_after(uint8_t n);              /* 0: no stop */
+void      ms_stop_release(void);                 /* the next op 27 sub 0: a reached stop lets go */
 bool      ms_stopped(void);
+bool      ms_stop_cancelled_take(void);          /* a pending stop was disposed of by a new target */
 const ms_slot_t *ms_slot(uint8_t i);

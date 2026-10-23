@@ -49,12 +49,13 @@ SRC += flash_stats.c  # C1: which writer each internal-flash write session belon
 SRC += loop_acct.c    # D1: per-task accounting of every main-loop pass
 SRC += sleep.c        # sleep experiments: light sleep's sizing bits, a deep-sleep test (dev builds only)
 SRC += rtc/rtc_persist.c  # C2: when the RTC period is saved (<= 4 a day)
-# The configuration menu (plans/CONFIG-MENU-BUILD-PLAN.md). The first four are
-# pure logic, tested on the host by scripts/menu_s0_test.c.
+# The configuration menu (plans/CONFIG-MENU-BUILD-PLAN.md). All but menu_glue.c
+# are pure logic, tested on the host by scripts/menu_s0_test.c.
 SRC += menu/panel_owner.c   # who owns the panel, the menu's session, the restore (C1)
 SRC += menu/menu_input.c    # the knob's capture, coalesced input, op 27's single flight (C2)
 SRC += menu/menu_slots.c    # the damage model (C3)
 SRC += menu/menu_fixture.c  # S0's fixture (C9)
+SRC += menu/menu_ops.c      # the task each pass, op 27, the menu's side of an owner event
 SRC += menu/menu_glue.c     # the hook, the task, op 27
 VPATH += bluetooth
 VPATH += graphics

@@ -20,6 +20,9 @@ const uint16_t fx_row_colors[2][FX_ROWS][2] = {
         {0xC618, 0x4208}, {0x0410, 0x8400}, {0x041F, 0xFBE0}, {0x2945, 0xB5B6},
     },
 };
+const uint16_t fx_sep_colors[2]   = {0x7BEF, 0x39E7};
+const uint16_t fx_track_colors[2] = {0x4208, 0x8410};
+const uint16_t fx_thumb_colors[2] = {0xAD55, 0xFFFF};
 const uint16_t fx_tile_colors[16] = {
     0xF800, 0x07E0, 0x001F, 0xFFE0, 0x07FF, 0xF81F, 0xFD20, 0x8010,
     0x4208, 0xC618, 0x8400, 0x0410, 0xFBE0, 0x041F, 0xB5B6, 0x2945,
@@ -32,10 +35,9 @@ const uint16_t fx_tile_colors[16] = {
 #define ROW_XMID   63
 #define ROW_X1     124
 #define SEP_Y      14
-#define BAR_X0     125
-#define BAR_X1     127
+#define BAR_X      125
 #define BAR_Y0     15
-#define BAR_Y1     127
+#define BAR_Y1     126
 
 static uint8_t screen  = FX_SCREEN_F1;
 static uint8_t pattern = 0;
@@ -58,7 +60,7 @@ static uint8_t f1_chunks(uint8_t s) {
 static bool f1_paint(uint8_t s, uint8_t c) {
     if (s == 0) return mb_glyph(fx_title(pattern)[c], (uint16_t)(4 + c * MB_GLYPH_W), 0);
     if (s == 1) {
-        mb_fill(4, SEP_Y, 123, SEP_Y, FX_SEP_COLOR);
+        mb_fill(4, SEP_Y, 123, SEP_Y, fx_sep_colors[pattern]);
         return true;
     }
     if (s < 2 + FX_ROWS) {
@@ -70,9 +72,10 @@ static bool f1_paint(uint8_t s, uint8_t c) {
         else        mb_fill(ROW_XMID + 1, y0, ROW_X1, (uint16_t)(y0 + ROW_H - 1), col);
         return true;
     }
-    /* The scrollbar: its track, then a thumb at the top, one operation. */
-    mb_fill(BAR_X0, BAR_Y0, BAR_X1, BAR_Y1, 0x0000);
-    mb_fill(BAR_X0, BAR_Y0, BAR_X1 - 1, BAR_Y0 + FX_THUMB_H - 1, FX_THUMB_COLOR);
+    /* The scrollbar (C8: x 125, y 15-126): its track, then a thumb at the top,
+     * one operation. */
+    mb_fill(BAR_X, BAR_Y0, BAR_X, BAR_Y1, fx_track_colors[pattern]);
+    mb_fill(BAR_X, BAR_Y0, BAR_X, BAR_Y0 + FX_THUMB_H - 1, fx_thumb_colors[pattern]);
     return true;
 }
 static const ms_layout_t f1 = {(uint8_t)(2 + FX_ROWS + 1), f1_sig, f1_chunks, f1_paint};
@@ -91,13 +94,13 @@ void fx_open(void) {
     screen  = FX_SCREEN_F1;
     pattern = 0;
     row     = 0;
-    ms_set_layout(&f1);
+    ms_set_layout(&f1, true);
 }
 
 void fx_return_from_diag(void) {
     screen = FX_SCREEN_F1;
     row    = FX_ROW_DIAG;
-    ms_set_layout(&f1);
+    ms_set_layout(&f1, true);
 }
 
 void fx_invalidate(void) { ms_invalidate_all(); }
@@ -105,11 +108,11 @@ void fx_invalidate(void) { ms_invalidate_all(); }
 void fx_other_layout(void) {
     if (screen == FX_SCREEN_F1) {
         screen = FX_SCREEN_F2;
-        ms_set_layout(&f2);
+        ms_set_layout(&f2, false);
     } else {
         screen = FX_SCREEN_F1;
         row    = FX_ROW_F2;
-        ms_set_layout(&f1);
+        ms_set_layout(&f1, false);
     }
 }
 
