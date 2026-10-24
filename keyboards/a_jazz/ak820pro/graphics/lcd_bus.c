@@ -286,6 +286,32 @@ static void lcd_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
     dc(0); tx8(0x2C); dc(1);
 }
 
+/* The same window, polled (C4, revision 14), for the polled bulk sends only:
+ * fills, RAM blits and the stream. Through tx8() each of its 11 bytes is a
+ * whole spiSend() -- an interrupt, a thread sleep and a wake, ~0.2 ms of
+ * wall time at this ISR load -- so a window cost ~1.8 ms: most of a 512 B
+ * piece's 5.4 ms, and the battery outline's 9.6 ms for a few dozen pixels
+ * (the display probe and sub 10, 10-24). Each part is a polled send, which
+ * waits out BUSY before returning, so DC changes only between whole bytes.
+ * The DMA arm keeps lcd_window(): it sends its window after
+ * spiSN32FlashDmaPrepare() has set SPI0's IE for the DMA, which a polled
+ * send would overwrite. False: a part gave up (blit_lost set); CS is left
+ * asserted for the caller to release. */
+static bool lcd_window_polled(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
+    x0 += LCD_OFF_X; x1 += LCD_OFF_X; y0 += LCD_OFF_Y; y1 += LCD_OFF_Y;
+    const uint8_t caset = 0x2A, raset = 0x2B, ramwr = 0x2C;
+    const uint8_t xs[4] = {(uint8_t)(x0 >> 8), (uint8_t)x0, (uint8_t)(x1 >> 8), (uint8_t)x1};
+    const uint8_t ys[4] = {(uint8_t)(y0 >> 8), (uint8_t)y0, (uint8_t)(y1 >> 8), (uint8_t)y1};
+    cs(0);
+    dc(0); if (!spi0_poll_send(&caset, 1)) return false;
+    dc(1); if (!spi0_poll_send(xs, 4)) return false;
+    dc(0); if (!spi0_poll_send(&raset, 1)) return false;
+    dc(1); if (!spi0_poll_send(ys, 4)) return false;
+    dc(0); if (!spi0_poll_send(&ramwr, 1)) return false;
+    dc(1);
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // Bare-metal dashboard drawing (replaces Quantum Painter). RGB565 is streamed
 // hi-byte-first to match the panel.
@@ -305,7 +331,7 @@ bool lcd_fill_rect_ok(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16
     if (x1 < x0 || y1 < y0) return true;
     bool ok = true;
     bus_quiesce();
-    lcd_window(x0, y0, x1, y1);
+    if (!lcd_window_polled(x0, y0, x1, y1)) { cs(1); return false; }   /* given up: blit_lost repaints */
     uint32_t px = (uint32_t)(x1 - x0 + 1) * (uint32_t)(y1 - y0 + 1);
     scratch_acquire();
     for (uint32_t i = 0; i < 256u; i++) { lcd_scratch[2*i] = color >> 8; lcd_scratch[2*i+1] = color & 0xFF; }
@@ -344,9 +370,8 @@ bool lcd_stream_begin(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
 #endif
     bus_quiesce();
     scratch_acquire();
-    lcd_window(x, y, x + w - 1, y + h - 1);
     stream_left   = (uint32_t)w * h * 2u;
-    stream_broken = false;
+    stream_broken = !lcd_window_polled(x, y, x + w - 1, y + h - 1);   /* given up: the bytes are dropped, blit_lost repaints */
     return true;
 }
 void lcd_stream_bytes(const uint8_t *panel_order, uint32_t n) {
@@ -403,8 +428,7 @@ void lcd_blit_ram(const uint16_t *px, uint16_t x, uint16_t y, uint16_t w, uint16
     WDT_SCOPE(WDT_SITE_LCD_TRANSFER);
     if (!px || !w || !h) return;
     bus_quiesce();
-    lcd_window(x, y, x + w - 1, y + h - 1);
-    tx_pixels(px, (uint32_t)w * (uint32_t)h);
+    if (lcd_window_polled(x, y, x + w - 1, y + h - 1)) tx_pixels(px, (uint32_t)w * (uint32_t)h);
     cs(1);
 }
 
