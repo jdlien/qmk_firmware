@@ -147,7 +147,9 @@ static void tx8(uint8_t b) { spiSend(&SPID0, 1, &b); }
  *     the panel's owner repaints as it does after a DMA given up. The caller
  *     stops the operation: the panel got only a prefix (codex, 10-24). */
 static volatile bool blit_lost;   /* defined with the blit state below */
+static volatile bool blit_done;   /* likewise: false while a flash->LCD DMA is in flight */
 #define SPI0_POLL_SPIN_PER_BYTE 64u
+#define SPI0_POLL_ENTRY_SPIN    256u
 static uint16_t spi0_poll_giveups;
 #ifdef AK820_DEV_HOOKS
 uint16_t lcd_spi0_poll_giveups(void) { return spi0_poll_giveups; }
@@ -155,25 +157,57 @@ uint16_t lcd_spi0_poll_giveups(void) { return spi0_poll_giveups; }
 #else
 #    define POLL_FAIL() ((void)0)
 #endif
+#ifdef WDT_TEST_HOOKS
+/* HC_POLLFAULT (test builds): the next N polled sends give up, mode 0 halfway
+ * through their bytes, mode 1 at the BUSY tail with every byte sent: the two
+ * give-ups the failure path handles (C4, S1's proof). HC_BLITFAULT covers DMA
+ * completions only. */
+volatile uint8_t lcd_test_poll_fault = 0;
+volatile uint8_t lcd_test_poll_fault_mode = 0;
+#endif
+static void poll_give_up(bool reset) {
+    if (reset) SN_SPI0->CTRL0_b.FRESET = 0b11;
+    if (spi0_poll_giveups < 0xFFFFu) spi0_poll_giveups++;
+    POLL_FAIL();
+    blit_lost = true;
+}
 static bool spi0_poll_send(const uint8_t *buf, uint32_t n) {
-    SN_SPI0->IE = 0;                                     /* RXFIFOTHIE off */
+    /* The entry check (C4, S1): SPI0 idle -- no DMA in flight, not shifting,
+     * RX empty. Every caller has quiesced the bus, so this only ever fires on
+     * a broken invariant. It never resets a live transaction and strands its
+     * owner: it allows BUSY a short bounded time to clear, then refuses as a
+     * give-up, touching nothing. */
+    uint32_t e = 0;
+    while (SN_SPI0->STAT_b.BUSY && e < SPI0_POLL_ENTRY_SPIN) e++;
+    if (!blit_done || SN_SPI0->STAT_b.BUSY || !SN_SPI0->STAT_b.RX_EMPTY) {
+        poll_give_up(false);
+        return false;
+    }
+    SN_SPI0->IE = 0;                                     /* every SPI0 source off: safe only quiesced */
     uint32_t tx = 0, rx = 0, spin = 0;
     const uint32_t limit = n * SPI0_POLL_SPIN_PER_BYTE + 1000u;
-    bool ok = true;
-    while (rx < n) {
-        while (tx < n && (tx - rx) < 8u && !SN_SPI0->STAT_b.TX_FULL) SN_SPI0->DATA = buf[tx++];
+    uint32_t       stop  = n;                            /* where a test fault gives up */
+    bool           ok    = true;
+#ifdef WDT_TEST_HOOKS
+    bool fault = false;
+    if (lcd_test_poll_fault) {
+        lcd_test_poll_fault--;
+        fault = true;
+        if (lcd_test_poll_fault_mode == 0) stop = n / 2u;
+    }
+#endif
+    while (rx < stop) {
+        while (tx < stop && (tx - rx) < 8u && !SN_SPI0->STAT_b.TX_FULL) SN_SPI0->DATA = buf[tx++];
         while (!SN_SPI0->STAT_b.RX_EMPTY) { (void)SN_SPI0->DATA; rx++; }
         if (++spin > limit) { ok = false; break; }
     }
     while (ok && SN_SPI0->STAT_b.BUSY) {
         if (++spin > limit + 1000u) ok = false;
     }
-    if (!ok) {
-        SN_SPI0->CTRL0_b.FRESET = 0b11;
-        if (spi0_poll_giveups < 0xFFFFu) spi0_poll_giveups++;
-        POLL_FAIL();
-        blit_lost = true;
-    }
+#ifdef WDT_TEST_HOOKS
+    if (fault) ok = false;   /* mode 0: half sent; mode 1: all sent, BUSY "stuck" */
+#endif
+    if (!ok) poll_give_up(true);
     for (uint32_t d = 0; d < 16u && !SN_SPI0->STAT_b.RX_EMPTY; d++) (void)SN_SPI0->DATA;
     SN_SPI0->IC = 1u << 2;                               /* RXFIFOTHIC: a literal write, as the driver does */
     SN_SPI0->IE = 0b0100;                                /* RXFIFOTHIE back */

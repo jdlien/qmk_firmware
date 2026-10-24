@@ -560,6 +560,10 @@ enum {
      * the next n (<= 3) blits (lcd_bus.c) -- proves the lost-completion
      * recovery and the display's repaint of a blit given up for good. */
     HC_BLITFAULT   = 0x77,
+    /* Test-only: [.., .., HC_POLLFAULT, n, mode] makes the next n (<= 3)
+     * polled SPI0 sends give up, mode 0 halfway through, mode 1 at the BUSY
+     * tail (lcd_bus.c) -- proves a give-up's loss, cleanup and repaint. */
+    HC_POLLFAULT   = 0x75,
 #endif
 #if defined(WDT_TEST_HOOKS) || defined(AK820_RAW_BOOTLOADER)
     /* Jump to the bootloader, so a flash needs no Fn+Esc (flash.sh sends it
@@ -980,6 +984,16 @@ static void health_command(uint8_t *data, uint8_t length) {
             extern volatile uint8_t lcd_test_drop_tc;
             if (length >= 4) lcd_test_drop_tc = data[3] > 3 ? 3 : data[3];
             data[3] = lcd_test_drop_tc;
+            break;
+        }
+        case HC_POLLFAULT: {
+            extern volatile uint8_t lcd_test_poll_fault, lcd_test_poll_fault_mode;
+            if (length >= 5) {
+                lcd_test_poll_fault_mode = data[4] ? 1 : 0;
+                lcd_test_poll_fault      = data[3] > 3 ? 3 : data[3];
+            }
+            data[3] = lcd_test_poll_fault;
+            data[4] = lcd_test_poll_fault_mode;
             break;
         }
         case HC_FAULT: {
