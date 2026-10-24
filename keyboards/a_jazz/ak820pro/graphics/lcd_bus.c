@@ -158,10 +158,13 @@ uint16_t lcd_spi0_poll_giveups(void) { return spi0_poll_giveups; }
 #    define POLL_FAIL() ((void)0)
 #endif
 #ifdef WDT_TEST_HOOKS
-/* HC_POLLFAULT (test builds): the next N polled sends give up, mode 0 halfway
- * through their bytes, mode 1 at the BUSY tail with every byte sent: the two
- * give-ups the failure path handles (C4, S1's proof). HC_BLITFAULT covers DMA
- * completions only. */
+/* HC_POLLFAULT (test builds): the next N polled sends are forced to give up,
+ * mode 0 after half their bytes (a prefix painted), mode 1 after all of them.
+ * It covers the give-up's cleanup -- the reset, the count, the sticky bit,
+ * blit_lost, the drain and IE -- and the callers' stop and the repaint. It
+ * doesn't exercise the spin limits' own detection or a BUSY that never
+ * clears: those remain a board question (codex, 10-24). HC_BLITFAULT covers
+ * DMA completions. */
 volatile uint8_t lcd_test_poll_fault = 0;
 volatile uint8_t lcd_test_poll_fault_mode = 0;
 #endif
@@ -172,14 +175,14 @@ static void poll_give_up(bool reset) {
     blit_lost = true;
 }
 static bool spi0_poll_send(const uint8_t *buf, uint32_t n) {
-    /* The entry check (C4, S1): SPI0 idle -- no DMA in flight, not shifting,
-     * RX empty. Every caller has quiesced the bus, so this only ever fires on
+    /* The entry check (C4, S1): SPI0 idle -- no DMA in flight, the ChibiOS
+     * driver READY (no FIFO transfer of its own), not shifting, RX empty. Every caller has quiesced the bus, so this only ever fires on
      * a broken invariant. It never resets a live transaction and strands its
      * owner: it allows BUSY a short bounded time to clear, then refuses as a
      * give-up, touching nothing. */
     uint32_t e = 0;
     while (SN_SPI0->STAT_b.BUSY && e < SPI0_POLL_ENTRY_SPIN) e++;
-    if (!blit_done || SN_SPI0->STAT_b.BUSY || !SN_SPI0->STAT_b.RX_EMPTY) {
+    if (!blit_done || SPID0.state != SPI_READY || SN_SPI0->STAT_b.BUSY || !SN_SPI0->STAT_b.RX_EMPTY) {
         poll_give_up(false);
         return false;
     }
@@ -297,9 +300,10 @@ static void lcd_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
 // So a RAM tile promoted to flash must have its bytes SWAPPED on the way in --
 // it is not a straight copy. See docs/LCD_FLASH_LAYER.md (Stage D).
 // ---------------------------------------------------------------------------
-void lcd_fill_rect(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t color) {
+bool lcd_fill_rect_ok(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t color) {
     WDT_SCOPE(WDT_SITE_LCD_TRANSFER);
-    if (x1 < x0 || y1 < y0) return;
+    if (x1 < x0 || y1 < y0) return true;
+    bool ok = true;
     bus_quiesce();
     lcd_window(x0, y0, x1, y1);
     uint32_t px = (uint32_t)(x1 - x0 + 1) * (uint32_t)(y1 - y0 + 1);
@@ -307,11 +311,15 @@ void lcd_fill_rect(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t 
     for (uint32_t i = 0; i < 256u; i++) { lcd_scratch[2*i] = color >> 8; lcd_scratch[2*i+1] = color & 0xFF; }
     while (px) {
         uint32_t c = px < 256u ? px : 256u;
-        if (!spi0_poll_send(lcd_scratch, c * 2u)) break;   /* given up: blit_lost repaints */
+        if (!spi0_poll_send(lcd_scratch, c * 2u)) { ok = false; break; }   /* given up: blit_lost repaints */
         px -= c;
     }
     scratch_release();
     cs(1);
+    return ok;
+}
+void lcd_fill_rect(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t color) {
+    (void)lcd_fill_rect_ok(x0, y0, x1, y1, color);
 }
 
 /* The panel-order stream (C4): generated pixels, already in the panel's byte

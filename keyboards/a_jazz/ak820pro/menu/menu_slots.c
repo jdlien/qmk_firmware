@@ -100,9 +100,18 @@ static bool settled(uint8_t i) {
 }
 
 /* One piece. The chunk's op ends with its last piece: at once for a fill,
- * when its DMA ends for a glyph. */
+ * when its DMA ends for a glyph. A failed piece ends the op there (counted,
+ * its stop latched) and the slot sends nothing more: its PARTIAL state
+ * waits for the owner's loss handler, which repaints (C4). */
 static ms_step_t paint_piece(void) {
-    if (!layout->paint(cursor, chunk, piece)) return MS_STEP_BUSY;   /* the same piece next pass */
+    ms_paint_t r = layout->paint(cursor, chunk, piece);
+    if (r == MS_PAINT_BUSY) return MS_STEP_BUSY;   /* the same piece next pass */
+    if (r == MS_PAINT_FAILED) {
+        piece = 0;
+        chunk = layout->chunks(cursor);
+        end_op();
+        return MS_STEP_PAINT;
+    }
     if (++piece < layout->pieces(cursor, chunk)) return MS_STEP_PAINT;
     piece = 0;
     chunk++;

@@ -16,8 +16,8 @@
 bool mb_clear_band(uint8_t band) {
     return lcd_clear_rect_ok(0, (uint16_t)(band * MB_BAND_H), MB_W, MB_BAND_H);
 }
-void mb_fill(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t rgb565) {
-    lcd_fill_rect(x0, y0, x1, y1, rgb565);
+bool mb_fill(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t rgb565) {
+    return lcd_fill_rect_ok(x0, y0, x1, y1, rgb565);
 }
 bool mb_glyph(char c, uint16_t x, uint16_t y) {
     return lcd_draw_flash_glyph_try(ASSET_IOSEVKA_MEDIUM_13, c, x, y);   /* FONT_SMALL: Cozette 6x14 */

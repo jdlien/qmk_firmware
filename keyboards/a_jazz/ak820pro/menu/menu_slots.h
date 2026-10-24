@@ -20,18 +20,24 @@ typedef struct {
 } ms_slot_t;
 _Static_assert(sizeof(ms_slot_t) == 4, "C3: 4 B a slot");
 
+/* A piece's outcome. */
+typedef enum {
+    MS_PAINT_BUSY = 0,   /* the bus was busy: nothing sent, the same piece next pass */
+    MS_PAINT_DONE,       /* sent (a glyph: its DMA armed) */
+    MS_PAINT_FAILED,     /* given up, a loss latched: the op ends here */
+} ms_paint_t;
+
 /* A layout: its slots' count, and for each its current target's signature,
- * its chunk count, a chunk's piece count, and one piece's paint (false: the
- * bus was busy, retry). A chunk is a logical op (C9 counts them); its pieces
- * together paint the chunk's whole share of the slot's footprint, background
- * included, and each piece sends at most MB_PASS_BYTES of CPU-fed pixels
- * (C4). One piece is sent a pass. */
+ * its chunk count, a chunk's piece count, and one piece's paint. A chunk is
+ * a logical op (C9 counts them); its pieces together paint the chunk's whole
+ * share of the slot's footprint, background included, and each piece sends at
+ * most MB_PASS_BYTES of CPU-fed pixels (C4). One piece is sent a pass. */
 typedef struct {
     uint8_t n;
     uint16_t (*sig)(uint8_t slot);
     uint8_t (*chunks)(uint8_t slot);
     uint8_t (*pieces)(uint8_t slot, uint8_t chunk);
-    bool (*paint)(uint8_t slot, uint8_t chunk, uint8_t piece);
+    ms_paint_t (*paint)(uint8_t slot, uint8_t chunk, uint8_t piece);
 } ms_layout_t;
 
 typedef enum {
