@@ -766,6 +766,11 @@ uint16_t lcd_flash_text_width(uint16_t font_id, const char *s) {
 }
 
 static volatile bool blit_done = true;
+/* The 16-bit system tick when the last blit ended -- its CS released by the
+ * completion ISR, or given up on the main thread -- so the menu's C10 timing
+ * ends a DMA op when it ended, not when a later pass noticed. */
+static volatile uint16_t blit_end_tick16;
+uint16_t lcd_blit_end_tick16(void) { return blit_end_tick16; }
 
 /* Blits armed since the last read. The missed-completion failure scales with
  * how many blits run, so this is the number that says whether a display change
@@ -887,6 +892,7 @@ uint32_t lcd_blit_count_take(void) { uint32_t n = blit_count; blit_count = 0; re
 static void blit_done_cb(void) {
     gpio_write_pin(FLASH_CS, 1);
     cs(1);
+    blit_end_tick16 = (uint16_t)st_lld_get_counter();
 #ifdef CONSOLE_ENABLE
     blit_done_at = chVTGetSystemTimeX();
     if (spiSN32FlashDmaRescues() != arm_rescues) size_rescued[arm_size_slot]++;
@@ -1148,6 +1154,7 @@ bool lcd_blit_wait(void) {
 
     gpio_write_pin(FLASH_CS, 1);          // then the CS lines, as blit_done_cb does
     cs(1);
+    blit_end_tick16 = (uint16_t)st_lld_get_counter();
     blit_done = true;
 
     if (blit_timeouts < 0xFFFFu) blit_timeouts++;

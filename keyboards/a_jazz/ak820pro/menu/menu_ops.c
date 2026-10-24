@@ -77,6 +77,7 @@ static void op27_poll(void) {
 /* Each pass, in housekeeping_task_kb, before display_blit_pump(), independent of
  * the gated display housekeeping (C2). */
 void menu_ops_task(uint32_t now) {
+    (void)ms_ops();   /* a DMA op that ended is settled within a pass, under any owner (C10) */
     if (env_wake_notice_take()) (void)env_po_event(PO_EV_WAKE_RELEASED);
     mi_tick(now);
     op27_poll();
@@ -155,9 +156,9 @@ static void op27_read(uint8_t *d) {
     d[22] = losses_seen;
     d[23] = mi_capture_bits();
     put16(&d[24], po_invariant_fail());
+    d[29] = ms_ops();   /* settles an ended DMA first, so its latency is in this reply */
     put16(&d[26], ticks_to_us16(ms_last_op_ticks()));   /* the last ended op's latency (C10) */
     /* 28: the pairing phase (P3) */
-    d[29] = ms_ops();
     d[30] = ms_stopped() ? 1u : 0u;
     d[31] = env_debug_done() ? 1u : 0u;
 }
@@ -190,6 +191,7 @@ static void op27_meas(uint8_t *d) {
     d[28] = m.health_gen;
     d[29] = m.dbg_sec;
     d[30] = m.rtc_sec;
+    d[31] = m.aliased ? 1u : 0u;   /* the interval's ticks are ambiguous: the gate fails it */
     if (arm) {   /* the reply above is the old interval's; the next sub 10 reads the new token */
         ms_meas_reset();
         (void)env_meas_arm();

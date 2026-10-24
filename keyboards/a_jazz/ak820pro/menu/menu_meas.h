@@ -15,8 +15,11 @@
  * Main thread only, and read at least every 349 ms (meas_pass() does, each
  * pass) or a wrap of the 16-bit counter is missed. */
 uint32_t meas_ticks(void);
+/* A 16-bit tick taken in the last 349 ms (an ISR's timestamp), on the
+ * extended clock. */
+uint32_t meas_ticks_at16(uint16_t t16);
 
-void     meas_pass(void);                                 /* once a main-loop pass */
+void     meas_pass(uint32_t now_ms);                      /* once a main-loop pass, with timer_read32() */
 void     meas_band(uint32_t ticks);                       /* a restore or debug clear band */
 
 uint32_t meas_pass_max_ticks(void);
@@ -24,4 +27,5 @@ uint16_t meas_pass_over15(void);
 uint16_t meas_passes(void);
 uint32_t meas_band_max_ticks(void);
 uint16_t meas_token(void);
+bool     meas_aliased(void);                              /* a pass of 340 ms or more: the interval's ticks are ambiguous */
 uint16_t meas_arm(void);                                  /* zero the interval, a new token */

@@ -767,9 +767,11 @@ static char dbg_shown[DBG_ROWS][DBG_COLS + 1];
  * to read at 6px than a still one. Always fills the full width, so a staged
  * blit overwrites the previous row completely and short values cannot leave
  * stale characters behind. */
+static bool dbg_text_changed;   /* C10: a Health row's composed text changed */
+static bool cam_text_changed;   /* ...a Camera line's */
 static void dbg_row(uint8_t row, const char *label, const char *value) {
     if (row >= DBG_ROWS) return;
-    char *line = dbg_text[row];
+    char line[DBG_COLS + 1];
     uint8_t i = 0;
     while (label[i] && i < DBG_COLS) { line[i] = label[i]; i++; }
     uint8_t vn = 0;
@@ -780,6 +782,10 @@ static void dbg_row(uint8_t row, const char *label, const char *value) {
     for (uint8_t k = 0; k < vn && i < DBG_COLS; k++) line[i++] = value[k];
     while (i < DBG_COLS) line[i++] = ' ';
     line[DBG_COLS] = '\0';
+    if (memcmp(line, dbg_text[row], DBG_COLS + 1) != 0) {
+        memcpy(dbg_text[row], line, DBG_COLS + 1);
+        dbg_text_changed = true;
+    }
 }
 
 /* u32 -> decimal, no printf.
@@ -845,7 +851,6 @@ static bool dbg_force_recompose = false;
 static uint8_t    dbg_gen, dbg_done_gen;
 static uint8_t    dbg_sec = 0xFFu;
 static bool       dbg_composed;        /* a composition since the page was entered or reset */
-static uint16_t   dbg_sum;             /* the last composition's checksum */
 static void       dbg_note_composed(void);   /* after the camera page's grids */
 #    define DBG_GEN(stmt) do { stmt; } while (0)
 #else
@@ -869,6 +874,7 @@ static void draw_debug_page(void) {
     dbg_force_recompose = false;
 
     compose_now_ok = rtc_get_time(&compose_now);
+    dbg_text_changed = cam_text_changed = false;
     dbg_compose();
     for (uint8_t r = 0; r < DBG_ROWS; r++)
         if (memcmp(dbg_text[r], dbg_shown[r], DBG_COLS) != 0)
@@ -986,6 +992,7 @@ static void cam_set(uint8_t i, const char *s) {
     if (memcmp(line, cam_text[i], cols) != 0) {
         memcpy(cam_text[i], line, cols);
         cam_dirty |= (uint8_t)(1u << i);
+        cam_text_changed = true;
     }
 }
 
@@ -1056,16 +1063,12 @@ static void cam_compose(void) {
 }
 
 #ifdef AK820_DEV_HOOKS
-/* C10: a new generation when the composition's text differs from the last
- * one's, both grids together; the second it shows. */
+/* C10: a new generation when the page showing's composed text changed (each
+ * cell compared as it was composed: dbg_row, cam_set); Camera's Health grid,
+ * composed behind it, doesn't count. The second it shows. */
 static void dbg_note_composed(void) {
-    uint16_t sum = 0;
-    for (uint8_t r = 0; r < DBG_ROWS; r++)
-        for (uint8_t c = 0; c < DBG_COLS; c++) sum = (uint16_t)(sum * 31u + (uint8_t)dbg_text[r][c]);
-    for (uint8_t i = 0; i < CAM_LINES; i++)
-        for (uint8_t c = 0; c < CAM_MAX_COLS; c++) sum = (uint16_t)(sum * 31u + (uint8_t)cam_text[i][c]);
-    if (!dbg_composed || sum != dbg_sum) dbg_gen++;
-    dbg_sum      = sum;
+    bool changed = debug_big ? cam_text_changed : dbg_text_changed;
+    if (!dbg_composed || changed) dbg_gen++;
     dbg_composed = true;
     dbg_sec      = compose_now_ok ? compose_now.seconds : 0xFFu;
 }
@@ -1486,14 +1489,15 @@ static void debug_restore_step(void) {
         meas_band(meas_ticks() - t);
         if (ok) {
             /* The last band: the whole panel is blank, so the text lines'
-             * and the clock's shadows are known blank, not unknown, and
-             * their first paint clears nothing. Their "unknown" full-width
-             * clears were ~3.8 ms each of black on black: most of the text
-             * slot stage's 16 ms and some of the clock stage's 8.5 (the
-             * display probe, 10-24). Nothing the stages paint before them
-             * lands in their rows: the logo and the connection row are
-             * y 0-24, the text band 27-55, the clock 56-78, the locks 82-104
-             * and the battery 105 down. */
+             * and the clock's shadows are known blank, not unknown, and the
+             * text lines' first paint clears nothing. Their "unknown"
+             * full-width clears were ~3.8 ms each of black on black: most of
+             * the text slot stage's 16 ms (the display probe, 10-24). The
+             * clock paints its own band in stage 2 (draw_clock, which still
+             * clears it when forced) and keeps its shadow current. Nothing
+             * else the stages paint lands in the text rows: the logo and the
+             * connection row are y 0-24, the text band 27-55, the clock
+             * 56-78, the locks 82-104 and the battery 105 down. */
             if (step == DBG_CLEAR_BANDS) shadow_mark_all_blank();
             po_restore_advance();
         }

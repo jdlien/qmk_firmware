@@ -28,6 +28,7 @@ typedef struct {
     uint16_t passes;            /* passes in the interval (wrapping) */
     uint32_t band_max_ticks;    /* the restore's and the debug page's clear bands */
     uint16_t token;             /* the session token: 0 at boot */
+    bool     aliased;           /* a pass of 340 ms or more in the interval: its ticks are ambiguous */
     uint8_t  health_gen;        /* moves at every health_reset() */
     uint8_t  page;              /* the debug page showing: 0 none, 1 Health, 2 Camera */
     uint8_t  dbg_gen, dbg_done_gen, dbg_sec;

@@ -24,6 +24,7 @@ static bool      stop_cancelled;  /* a pending stop disposed of by a retarget or
 /* C10's measures. */
 static bool      op_started;      /* the current op's first piece has been tried */
 static uint32_t  op_t0;
+static uint32_t  dma_piece_t0;    /* an in-flight glyph's piece: its start */
 static uint32_t  last_op_ticks, op_max_ticks, piece_max_ticks, band_max_ticks, repaint_max_ticks;
 static bool      target_live;     /* a target exists to settle or be superseded */
 static bool      target_settled;  /* ...and it has settled */
@@ -56,22 +57,26 @@ void ms_meas_reset(void) {
  * (C4, revision 9). Before, a synchronous op counted at once but its stop
  * latched only on the next ms_step(), so navigation in between could cancel
  * a stop that had been reached. */
-static void end_op(void) {
+static void end_op_at(uint32_t end) {
     if (ops < 0xFFu) ops++;
     if (stop_n && ops >= stop_n && !mb_busy()) stopped = true;
     if (op_started) {
         op_started    = false;
-        last_op_ticks = mb_now_ticks() - op_t0;
+        last_op_ticks = end - op_t0;
         if (last_op_ticks > op_max_ticks) op_max_ticks = last_op_ticks;
     }
 }
+static void end_op(void) { end_op_at(mb_now_ticks()); }
 
 /* An asynchronous op ends when its transfer has ended (completed or given
- * up); a synchronous one when its last piece returns. */
+ * up), timed at the bus endpoint, not when this notices; a synchronous one
+ * when its last piece returns. */
 static void settle_ops(void) {
     if (ops_inflight && !mb_busy()) {
         ops_inflight = false;
-        end_op();
+        uint32_t end = mb_dma_end_ticks();
+        if (end - dma_piece_t0 > piece_max_ticks) piece_max_ticks = end - dma_piece_t0;
+        end_op_at(end);
     }
 }
 
@@ -114,7 +119,12 @@ void ms_set_layout(const ms_layout_t *l, bool fresh) {
     }
 }
 
-void ms_retarget(void) { new_target(); }
+/* A target already on the panel (the same pattern again, eight rows round)
+ * settles at once, not on a later read. */
+void ms_retarget(void) {
+    new_target();
+    (void)ms_settled();
+}
 
 void ms_invalidate_all(void) {
     settle_ops();   /* an op that ended latches its stop before the loss resets anything */
@@ -152,8 +162,12 @@ static ms_step_t paint_piece(void) {
     }
     ms_paint_t r = layout->paint(cursor, chunk, piece);
     if (r == MS_PAINT_BUSY) return MS_STEP_BUSY;   /* the same piece next pass */
-    uint32_t dt = mb_now_ticks() - t;
-    if (dt > piece_max_ticks) piece_max_ticks = dt;
+    if (mb_busy()) {
+        dma_piece_t0 = t;   /* a glyph: its piece ends with its DMA (settle_ops) */
+    } else {
+        uint32_t dt = mb_now_ticks() - t;
+        if (dt > piece_max_ticks) piece_max_ticks = dt;
+    }
     if (r == MS_PAINT_FAILED) {
         piece = 0;
         chunk = layout->chunks(cursor);

@@ -29,4 +29,5 @@ bool mb_busy(void);                                                /* a DMA in f
  * Differences are taken modulo 2^32. */
 #define MB_TICK_HZ 187500u
 uint32_t mb_now_ticks(void);
+uint32_t mb_dma_end_ticks(void);   /* when the last DMA ended, on the same clock */
 bool mb_lost_pending(void);                                        /* a loss latched, not yet taken */

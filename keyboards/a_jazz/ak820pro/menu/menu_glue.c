@@ -28,6 +28,7 @@ bool mb_glyph(char c, uint16_t x, uint16_t y) {
 bool mb_busy(void) { return lcd_blit_busy(); }
 bool mb_lost_pending(void) { return lcd_blit_lost_pending(); }
 uint32_t mb_now_ticks(void) { return meas_ticks(); }
+uint32_t mb_dma_end_ticks(void) { return meas_ticks_at16(lcd_blit_end_tick16()); }
 
 /* --- menu_env.h ---------------------------------------------------------------- */
 
@@ -47,6 +48,7 @@ void env_meas(env_meas_t *m) {
     m->passes         = meas_passes();
     m->band_max_ticks = meas_band_max_ticks();
     m->token          = meas_token();
+    m->aliased        = meas_aliased();
     m->health_gen     = health_reset_generation();
     display_debug_meas(&m->page, &m->dbg_gen, &m->dbg_done_gen, &m->dbg_sec);
     rtc_time_t t;
@@ -81,8 +83,9 @@ bool menu_pre_process(uint16_t keycode, keyrecord_t *record) {
 }
 
 void menu_task(void) {
-    meas_pass();   /* C10's pass timing, and the tick's extension: every pass */
-    menu_ops_task(timer_read32());
+    uint32_t now = timer_read32();
+    meas_pass(now);   /* C10's pass timing, and the tick's extension: every pass */
+    menu_ops_task(now);
 }
 
 #ifdef AK820_DEV_HOOKS
