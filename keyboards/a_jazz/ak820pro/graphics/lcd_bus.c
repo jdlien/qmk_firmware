@@ -167,6 +167,10 @@ uint16_t lcd_spi0_poll_giveups(void) { return spi0_poll_giveups; }
  * DMA completions. */
 volatile uint8_t lcd_test_poll_fault = 0;
 volatile uint8_t lcd_test_poll_fault_mode = 0;
+/* ...after letting this many polled sends through first: a fill is five
+ * window sends (CASET, its 4, RASET, its 4, RAMWR) then its payload, so a
+ * skip of 0-4 faults a window part and 5 the first payload chunk. */
+volatile uint8_t lcd_test_poll_fault_skip = 0;
 #endif
 static void poll_give_up(bool reset) {
     if (reset) SN_SPI0->CTRL0_b.FRESET = 0b11;
@@ -194,9 +198,13 @@ static bool spi0_poll_send(const uint8_t *buf, uint32_t n) {
 #ifdef WDT_TEST_HOOKS
     bool fault = false;
     if (lcd_test_poll_fault) {
-        lcd_test_poll_fault--;
-        fault = true;
-        if (lcd_test_poll_fault_mode == 0) stop = n / 2u;
+        if (lcd_test_poll_fault_skip) {
+            lcd_test_poll_fault_skip--;
+        } else {
+            lcd_test_poll_fault--;
+            fault = true;
+            if (lcd_test_poll_fault_mode == 0) stop = n / 2u;
+        }
     }
 #endif
     while (rx < stop) {
@@ -289,14 +297,14 @@ static void lcd_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
 /* The same window, polled (C4, revision 14), for the polled bulk sends only:
  * fills, RAM blits and the stream. Through tx8() each of its 11 bytes is a
  * whole spiSend() -- an interrupt, a thread sleep and a wake, ~0.2 ms of
- * wall time at this ISR load -- so a window cost ~1.8 ms: most of a 512 B
- * piece's 5.4 ms, and the battery outline's 9.6 ms for a few dozen pixels
- * (the display probe and sub 10, 10-24). Each part is a polled send, which
- * waits out BUSY before returning, so DC changes only between whole bytes.
- * The DMA arm keeps lcd_window(): it sends its window after
- * spiSN32FlashDmaPrepare() has set SPI0's IE for the DMA, which a polled
- * send would overwrite. False: a part gave up (blit_lost set); CS is left
- * asserted for the caller to release. */
+ * wall time at this ISR load -- so a window cost ~1.8 ms: a third of a
+ * 512 B piece's 5.4 ms, and most of the battery outline's 9.6 ms for a few
+ * dozen pixels (the display probe and sub 10, 10-24). Each part is a polled
+ * send, which waits out BUSY before returning, so DC changes only between
+ * whole bytes. The DMA arm keeps lcd_window(): lcd_blit_flash() has cleared
+ * blit_done for its own transfer by then, so a polled send's entry check
+ * would refuse (codex, 10-24). False: a part gave up (blit_lost set); CS is
+ * left asserted for the caller to release. */
 static bool lcd_window_polled(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
     x0 += LCD_OFF_X; x1 += LCD_OFF_X; y0 += LCD_OFF_Y; y1 += LCD_OFF_Y;
     const uint8_t caset = 0x2A, raset = 0x2B, ramwr = 0x2C;

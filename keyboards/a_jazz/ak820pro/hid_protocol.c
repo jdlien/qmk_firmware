@@ -560,9 +560,11 @@ enum {
      * the next n (<= 3) blits (lcd_bus.c) -- proves the lost-completion
      * recovery and the display's repaint of a blit given up for good. */
     HC_BLITFAULT   = 0x77,
-    /* Test-only: [.., .., HC_POLLFAULT, n, mode] makes the next n (<= 3)
-     * polled SPI0 sends give up, mode 0 halfway through, mode 1 at the BUSY
-     * tail (lcd_bus.c) -- proves a give-up's loss, cleanup and repaint. */
+    /* Test-only: [.., .., HC_POLLFAULT, n, mode, skip] makes n (<= 3) polled
+     * SPI0 sends give up, after letting `skip` through first: mode 0 halfway
+     * through, mode 1 after every byte (lcd_bus.c). A fill's window is its
+     * first five sends, so skip 0-4 faults a window part and 5 its payload --
+     * proves a give-up's loss, cleanup and repaint. */
     HC_POLLFAULT   = 0x75,
 #endif
 #if defined(WDT_TEST_HOOKS) || defined(AK820_RAW_BOOTLOADER)
@@ -987,13 +989,15 @@ static void health_command(uint8_t *data, uint8_t length) {
             break;
         }
         case HC_POLLFAULT: {
-            extern volatile uint8_t lcd_test_poll_fault, lcd_test_poll_fault_mode;
-            if (length >= 5) {
+            extern volatile uint8_t lcd_test_poll_fault, lcd_test_poll_fault_mode, lcd_test_poll_fault_skip;
+            if (length >= 6) {
                 lcd_test_poll_fault_mode = data[4] ? 1 : 0;
+                lcd_test_poll_fault_skip = data[5];
                 lcd_test_poll_fault      = data[3] > 3 ? 3 : data[3];
             }
             data[3] = lcd_test_poll_fault;
             data[4] = lcd_test_poll_fault_mode;
+            data[5] = lcd_test_poll_fault_skip;
             break;
         }
         case HC_FAULT: {
