@@ -23,8 +23,10 @@ static bool      stop_cancelled;  /* a pending stop disposed of by a retarget or
 
 /* C10's measures. */
 static bool      op_started;      /* the current op's first piece has been tried */
+static bool      op_untimed;      /* ...and a retarget cut it: it counts when it ends, untimed (revision 13) */
 static uint32_t  op_t0;
 static uint32_t  dma_piece_t0;    /* an in-flight glyph's piece: its start */
+static bool      dma_untimed;     /* ...and a retarget came while it flew */
 static uint32_t  last_op_ticks, op_max_ticks, piece_max_ticks, band_max_ticks, repaint_max_ticks;
 static bool      target_live;     /* a target exists to settle or be superseded */
 static bool      target_settled;  /* ...and it has settled */
@@ -42,7 +44,7 @@ void ms_init(void) {
     ops_inflight = false;
     stop_n = 0;
     stopped = stop_cancelled = false;
-    op_started = target_live = target_settled = false;
+    op_started = op_untimed = dma_untimed = target_live = target_settled = false;
     op_t0 = target_t0 = 0;
     last_op_ticks = 0;
     settled_count = superseded_count = committed_count = 0;
@@ -61,9 +63,12 @@ static void end_op_at(uint32_t end) {
     if (ops < 0xFFu) ops++;
     if (stop_n && ops >= stop_n && !mb_busy()) stopped = true;
     if (op_started) {
-        op_started    = false;
-        last_op_ticks = end - op_t0;
-        if (last_op_ticks > op_max_ticks) op_max_ticks = last_op_ticks;
+        op_started = false;
+        if (!op_untimed) {
+            last_op_ticks = end - op_t0;
+            if (last_op_ticks > op_max_ticks) op_max_ticks = last_op_ticks;
+        }
+        op_untimed = false;
     }
 }
 static void end_op(void) { end_op_at(mb_now_ticks()); }
@@ -75,7 +80,8 @@ static void settle_ops(void) {
     if (ops_inflight && !mb_busy()) {
         ops_inflight = false;
         uint32_t end = mb_dma_end_ticks();
-        if (end - dma_piece_t0 > piece_max_ticks) piece_max_ticks = end - dma_piece_t0;
+        if (!dma_untimed && end - dma_piece_t0 > piece_max_ticks) piece_max_ticks = end - dma_piece_t0;
+        dma_untimed = false;
         end_op_at(end);
     }
 }
@@ -90,10 +96,15 @@ static void new_target(void) {
     target_live    = true;
     target_settled = false;
     target_t0      = mb_now_ticks();
-    op_started     = false;   /* an op cut short by a retarget is abandoned, not timed */
+    /* An op in progress may resume (its slot's signature unchanged, revision
+     * 13): it still counts once when it ends, in the new target, but isn't
+     * timed -- the part before the retarget isn't this target's. A glyph
+     * still flying is kept, so its end is counted. If its slot restarts
+     * instead, the abandoned op never ends (ms_step). */
+    if (op_started) op_untimed = true;
+    if (ops_inflight) dma_untimed = op_untimed = true;
     tgen++;
-    ops          = 0;
-    ops_inflight = false;
+    ops = 0;
     if (stop_n && !stopped) {
         stop_n         = 0;
         stop_cancelled = true;
@@ -128,7 +139,7 @@ void ms_retarget(void) {
 
 void ms_invalidate_all(void) {
     settle_ops();   /* an op that ended latches its stop before the loss resets anything */
-    op_started = false;
+    op_started = op_untimed = false;
     if (!layout) return;
     for (uint8_t i = 0; i < layout->n; i++) slots[i].state = MS_INVALID;
     cursor = NO_CURSOR;
@@ -156,8 +167,9 @@ static void note_settled(void) {
  * waits for the owner's loss handler, which repaints (C4). */
 static ms_step_t paint_piece(void) {
     uint32_t t = mb_now_ticks();
-    if (!op_started) {
+    if (!op_started) {   /* a new op; a resumed one keeps its (untimed) start */
         op_started = true;
+        op_untimed = false;
         op_t0      = t;
     }
     ms_paint_t r = layout->paint(cursor, chunk, piece);
@@ -229,6 +241,7 @@ ms_step_t ms_step(void) {
         /* Its target changed, or a loss invalidated it: it restarts from its
          * first chunk and piece when it's next chosen. */
         if (s->state == MS_PARTIAL) s->state = MS_INVALID;
+        op_started = op_untimed = false;   /* its op is abandoned: it never ends */
         cursor = NO_CURSOR;
     }
 

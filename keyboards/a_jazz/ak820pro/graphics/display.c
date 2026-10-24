@@ -769,6 +769,7 @@ static char dbg_shown[DBG_ROWS][DBG_COLS + 1];
  * to read at 6px than a still one. Always fills the full width, so a staged
  * blit overwrites the previous row completely and short values cannot leave
  * stale characters behind. */
+static bool dbg_isr_rebase = true;   /* Health's ISR window starts afresh (page entry) */
 static bool dbg_text_changed;   /* C10: a Health row's composed text changed */
 static bool cam_text_changed;   /* ...a Camera line's */
 static void dbg_row(uint8_t row, const char *label, const char *value) {
@@ -1127,6 +1128,13 @@ static void dbg_compose(void) {
     uint32_t entries, ticks;
     uint16_t tmin, tmax;
     health_isr_stats(&entries, &ticks, &tmin, &tmax);
+    /* A fresh window on entering the page: Camera doesn't compose Health, so
+     * the last sample may be minutes old, or from before a health reset. "--"
+     * until the next whole second. */
+    if (dbg_isr_rebase) {
+        prev_ms        = 0;
+        dbg_isr_rebase = false;
+    }
     uint32_t now_ms = timer_read32();
     uint32_t d_ms   = now_ms - prev_ms;
     uint32_t d_ent  = entries - prev_entries;
@@ -1276,6 +1284,7 @@ static void debug_page_reset(bool camera) {
     dbg_dirty = 0;
     cam_reset();
     dbg_force_recompose = true;
+    dbg_isr_rebase      = true;
     DBG_GEN(dbg_composed = false; dbg_gen++; dbg_sec = 0xFFu);   /* C10: incomplete until its first composition is painted */
 }
 
