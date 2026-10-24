@@ -390,15 +390,9 @@
  * Modifier ORDERING is a separate problem and is handled properly by
  * process_modified_consumer() in ak820pro.c -- do not put that job back here. */
 #define ENCODER_MAP_KEY_DELAY 1
-
-/* At most one PACED detent per encoder task (quantum/encoder.c, a local
- * change): a backlog of volume detents drained in one call blocked the main
- * loop ~2 ms a detent in one pass; now the rest wait in the queue, a pass
- * each. Detents the menu swallows skip the waits
- * (encoder_map_delay_wanted_kb, menu/menu_glue.c) and drain unbounded.
- * The configuration menu's whole-pass target, plans/CONFIG-MENU-BUILD-PLAN.md
- * S1. */
-#define ENCODER_MAP_DELAYED_PER_TASK 1
+/* A detent the configuration menu swallows skips both waits: no report went
+ * to the host for them to pace (encoder_map_delay_wanted_kb in
+ * menu/menu_glue.c, a weak hook in quantum/encoder.c, a local change). */
 
 /* The encoder event queue defaults to MAX(4, NUM_ENCODERS_MAX_PER_SIDE + 1) = 4,
  * and it is a RING buffer, so the usable depth is 3. Events past that are DROPPED

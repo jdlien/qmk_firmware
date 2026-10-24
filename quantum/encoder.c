@@ -25,15 +25,6 @@ static bool             signal_queue_drain = false;
 __attribute__((weak)) bool encoder_map_delay_wanted_kb(void) {
     return true;
 }
-
-/* ENCODER_MAP_DELAYED_PER_TASK (unset: unbounded, upstream's behaviour) caps
- * the detents a task may spend the delay on. A paced detent blocks the main
- * loop for both waits, so a backlog drained in one call made one long pass;
- * the rest wait in the queue for the next task. Detents that skip the delay
- * don't count. */
-#    if defined(ENCODER_MAP_DELAYED_PER_TASK) && ENCODER_MAP_KEY_DELAY > 0
-#        define ENCODER_MAP_BOUNDED
-#    endif
 #endif
 
 void encoder_init(void) {
@@ -50,32 +41,18 @@ static bool encoder_handle_queue(void) {
     bool    changed = false;
     uint8_t index;
     bool    clockwise;
-#ifdef ENCODER_MAP_BOUNDED
-    uint8_t delayed = 0;
-    while (delayed < ENCODER_MAP_DELAYED_PER_TASK && encoder_dequeue_event(&index, &clockwise)) {
-#else
     while (encoder_dequeue_event(&index, &clockwise)) {
-#endif
 #ifdef ENCODER_MAP_ENABLE
 
         // The delays below cater for Windows and its wonderful requirements.
         action_exec(clockwise ? MAKE_ENCODER_CW_EVENT(index, true) : MAKE_ENCODER_CCW_EVENT(index, true));
 #    if ENCODER_MAP_KEY_DELAY > 0
-        bool paced = encoder_map_delay_wanted_kb();
-        if (paced) wait_ms(ENCODER_MAP_KEY_DELAY);
+        if (encoder_map_delay_wanted_kb()) wait_ms(ENCODER_MAP_KEY_DELAY);
 #    endif // ENCODER_MAP_KEY_DELAY > 0
 
         action_exec(clockwise ? MAKE_ENCODER_CW_EVENT(index, false) : MAKE_ENCODER_CCW_EVENT(index, false));
 #    if ENCODER_MAP_KEY_DELAY > 0
-        if (encoder_map_delay_wanted_kb()) {
-            wait_ms(ENCODER_MAP_KEY_DELAY);
-            paced = true;
-        }
-#        ifdef ENCODER_MAP_BOUNDED
-        if (paced) delayed++;
-#        else
-        (void)paced;
-#        endif
+        if (encoder_map_delay_wanted_kb()) wait_ms(ENCODER_MAP_KEY_DELAY);
 #    endif // ENCODER_MAP_KEY_DELAY > 0
 
 #else // ENCODER_MAP_ENABLE
