@@ -240,6 +240,12 @@ static bool pass_deferred = false;
  * once every second (history/ge10-per-second-20261022/). So the pump waits
  * for the next pass, ~5 ms later. Cleared at the pass's end. */
 static bool clock_ticked_this_pass = false;
+/* The same for the debug page: it composed this pass (draw_debug_page, from
+ * housekeeping or the second edge, both before the pump). Composition is 5-9
+ * ms, a glyph's DMA arm ~3, and the two in one pass, with QMK's core, were
+ * the 14-19 ms passes on the Fn+D and Camera pages (HC_ACCT, the S1 gate,
+ * 10-24). The pump waits for the next pass. Cleared at the pass's end. */
+static bool dbg_composed_this_pass = false;
 
 /* ISR context, called from pwm_tick_cb() in ak820pro.c -- the CT16B3/GPTD4 20 kHz
  * tick, which ak820pro.c owns because the indicator LEDs share it. Full and zero
@@ -875,6 +881,7 @@ static void draw_debug_page(void) {
     if (sec == last_sec && !dbg_force_recompose) return;
     last_sec = sec;
     dbg_force_recompose = false;
+    dbg_composed_this_pass = true;
 
     compose_now_ok = rtc_get_time(&compose_now);
     dbg_text_changed = cam_text_changed = false;
@@ -3194,6 +3201,7 @@ void display_blit_pump(void) {
 
     if (pass_deferred) return;   /* a deep sleep's recovery used the PCF this pass */
     if (clock_ticked_this_pass) return;   /* the second's clock diff ran this pass */
+    if (dbg_composed_this_pass) return;   /* the debug page composed this pass */
 
     /* A blit given up for good left pixels unpainted that a shadow claims are
      * there (codex review, 2026-09-23, finding 13). */
@@ -3643,6 +3651,7 @@ void display_pass_end(void) {
     batt_painted_this_pass = false;
     pass_deferred          = false;
     clock_ticked_this_pass = false;
+    dbg_composed_this_pass = false;
 }
 
 void display_second_edge_task(void) {
