@@ -968,9 +968,30 @@ bool lcd_blit_flash(uint32_t src, uint16_t x, uint16_t y, uint16_t w, uint16_t h
     // caller's job and the ordering was load-bearing but invisible (it only
     // worked because flash_assets_init() happened to run first). Cheap: a bool.
     lcd_flash_init();
+    uint32_t bytes = (uint32_t)w * (uint32_t)h * 2u;
+    // SPI0 (sink) into DMA config + counts; SPI1 (source) recorded for Step 2.
+    // SPI0 stays 8-bit so the command phase (window) can go out first.
+    spiSN32FlashDmaPrepare(&SPID0, &SPID1, bytes);
+    SN_SPI1->CTRL0_b.FRESET = 0b11;                 // flash side (bare-metal, ours)
+    /* The window, polled (revision 15). Prepare() reconfigures SPI0 (CTRL0
+     * rewritten, SPIEN toggled) with the panel's CS high; the window then
+     * asserts CS, and the window and the pixels follow with no further
+     * reconfiguration. It goes before blit_done falls: the polled send's
+     * entry check wants no transfer of ours in flight, and none is until
+     * Fire(). Prepare() leaves IE as the FIFO's; Fire() sets the DMA's. Only
+     * the main thread arms, so nothing else starts in between. */
+    if (!lcd_window_polled(x, y, x + w - 1, y + h - 1)) {
+        cs(1);
+        dma_unprepare();
+        /* Given up: blit_lost repaints. The endpoint is now, after the
+         * cleanup, so an op whose retry ends here is timed to the end (C10). */
+        blit_end_tick16 = (uint16_t)st_lld_get_counter();
+        return false;
+    }
+    /* Counted, and the transfer recorded, only once it will be fired (codex,
+     * 10-24): a refused window is no issued DMA. */
     blit_count++;
     if (blits_issued != UINT32_MAX) blits_issued++;
-    uint32_t bytes = (uint32_t)w * (uint32_t)h * 2u;
 #ifdef CONSOLE_ENABLE
     arm_prev_src   = blit_src;
     arm_prev_bytes = blit_len_words + 1u;
@@ -980,23 +1001,8 @@ bool lcd_blit_flash(uint32_t src, uint16_t x, uint16_t y, uint16_t w, uint16_t h
     size_arms[arm_size_slot]++;
     arm_rescues    = spiSN32FlashDmaRescues();
 #endif
-    blit_len_words = bytes - 1;      // what Prepare() loads into DMACNT
+    blit_len_words = bytes - 1;      // what Prepare() loaded into DMACNT
     blit_src = src; blit_x = x; blit_y = y; blit_w = w; blit_h = h;
-    // SPI0 (sink) into DMA config + counts; SPI1 (source) recorded for Step 2.
-    // SPI0 stays 8-bit so the command phase (window) can go out first.
-    spiSN32FlashDmaPrepare(&SPID0, &SPID1, bytes);
-    SN_SPI1->CTRL0_b.FRESET = 0b11;                 // flash side (bare-metal, ours)
-    /* The window, polled (revision 15), AFTER Prepare() -- which rewrites
-     * SPI0's CTRL0 and toggles SPIEN, so nothing may go out between it and
-     * the pixels with CS low -- and BEFORE blit_done falls: the polled send's
-     * entry check wants no transfer of ours in flight, and none is until
-     * Fire(). Prepare() leaves IE as the FIFO's; Fire() sets the DMA's. Only
-     * the main thread arms, so nothing else starts in between. */
-    if (!lcd_window_polled(x, y, x + w - 1, y + h - 1)) {
-        cs(1);
-        dma_unprepare();
-        return false;   /* given up: blit_lost repaints */
-    }
     blit_done = false;
 #ifdef CONSOLE_ENABLE
     systime_t arm_t0 = chVTGetSystemTimeX();
