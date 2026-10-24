@@ -569,6 +569,7 @@ static void blit_stat_task(void) {
 void housekeeping_task_kb(void) {
     WDT_SCOPE(WDT_SITE_HOUSEKEEPING);
     health_loop_tick();    // worst-gap max-hold; one timer read per pass
+    menu_pass_begin();     // C10's pass timing, at the same boundary
 #ifdef LOOPGAP_INSTRUMENT
     loop_gap_task();
 #endif

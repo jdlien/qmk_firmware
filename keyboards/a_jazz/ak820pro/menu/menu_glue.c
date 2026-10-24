@@ -82,11 +82,13 @@ bool menu_pre_process(uint16_t keycode, keyrecord_t *record) {
     return menu_physical(c, e->pressed, fn, timer_read32());
 }
 
-void menu_task(void) {
-    uint32_t now = timer_read32();
-    meas_pass(now);   /* C10's pass timing, and the tick's extension: every pass */
-    menu_ops_task(now);
-}
+/* C10's pass timing, and the tick's extension: first thing in every pass,
+ * beside health's own gap, so an interval is one whole pass (codex, 10-24:
+ * from menu_task() it spanned the previous pass's pump and this one's second
+ * edge). */
+void menu_pass_begin(void) { meas_pass(timer_read32()); }
+
+void menu_task(void) { menu_ops_task(timer_read32()); }
 
 #ifdef AK820_DEV_HOOKS
 bool menu_op27(uint8_t *data) { return menu_ops_op27(data, timer_read32()); }

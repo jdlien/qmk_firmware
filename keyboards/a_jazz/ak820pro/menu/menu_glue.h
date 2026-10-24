@@ -12,6 +12,7 @@
 
 /* ak820pro.c */
 bool menu_pre_process(uint16_t keycode, keyrecord_t *record);   /* false: captured */
+void menu_pass_begin(void);                                      /* first in each pass: C10's pass timing */
 void menu_task(void);                                            /* each pass, before the pump */
 
 /* graphics/display.c: an event's actions, applied. */
