@@ -26,7 +26,7 @@ bool anim_active(void);
 // through the pipelined bulk writer -- fast (~wire speed) but blocking.
 
 // DMA, non-blocking: flash tile -> panel rect. Poll lcd_blit_busy() for completion.
-void lcd_blit_flash(uint32_t src, uint16_t x, uint16_t y, uint16_t w, uint16_t h);
+bool lcd_blit_flash(uint32_t src, uint16_t x, uint16_t y, uint16_t w, uint16_t h);   /* false: its window gave up, nothing armed (blit_lost set) */
 bool lcd_blit_busy(void);
 uint16_t lcd_blit_end_tick16(void);   /* the 16-bit system tick at the last blit's end (C10) */
 /* Bounded wait that recovers a stuck blit rather than spinning forever.

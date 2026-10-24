@@ -285,26 +285,16 @@ static void reset_panel(void) {
     gpio_write_pin(PANEL_RST, 1); wait_ms(200);
 }
 
-// Address window + RAMWR (leaves CS asserted, DC=data). Used by the DMA blit.
-static void lcd_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
-    x0 += LCD_OFF_X; x1 += LCD_OFF_X; y0 += LCD_OFF_Y; y1 += LCD_OFF_Y;
-    cs(0);
-    dc(0); tx8(0x2A); dc(1); tx8(x0>>8); tx8(x0); tx8(x1>>8); tx8(x1);
-    dc(0); tx8(0x2B); dc(1); tx8(y0>>8); tx8(y0); tx8(y1>>8); tx8(y1);
-    dc(0); tx8(0x2C); dc(1);
-}
-
-/* The same window, polled (C4, revision 14), for the polled bulk sends only:
- * fills, RAM blits and the stream. Through tx8() each of its 11 bytes is a
- * whole spiSend() -- an interrupt, a thread sleep and a wake, ~0.2 ms of
- * wall time at this ISR load -- so a window cost ~1.8 ms: a third of a
- * 512 B piece's 5.4 ms, and most of the battery outline's 9.6 ms for a few
- * dozen pixels (the display probe and sub 10, 10-24). Each part is a polled
- * send, which waits out BUSY before returning, so DC changes only between
- * whole bytes. The DMA arm keeps lcd_window(): lcd_blit_flash() has cleared
- * blit_done for its own transfer by then, so a polled send's entry check
- * would refuse (codex, 10-24). False: a part gave up (blit_lost set); CS is
- * left asserted for the caller to release. */
+/* The address window + RAMWR, polled (C4, revisions 14 and 15); leaves CS
+ * asserted and DC=data. Every painter's window, the DMA arm's included since
+ * revision 15. Through tx8() each of its 11 bytes was a whole spiSend() --
+ * an interrupt, a thread sleep and a wake, ~0.2 ms of wall time at this ISR
+ * load -- so a window cost ~1.8 ms: a third of a 512 B piece's 5.4 ms, most
+ * of the battery outline's 9.6 ms for a few dozen pixels, and about half of
+ * each glyph's DMA arm (the display probe and sub 10, 10-24). Each part is a
+ * polled send, which waits out BUSY before returning, so DC changes only
+ * between whole bytes. False: a part gave up (blit_lost set); CS is left
+ * asserted for the caller to release. */
 static bool lcd_window_polled(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
     x0 += LCD_OFF_X; x1 += LCD_OFF_X; y0 += LCD_OFF_Y; y1 += LCD_OFF_Y;
     const uint8_t caset = 0x2A, raset = 0x2B, ramwr = 0x2C;
@@ -361,7 +351,8 @@ void lcd_fill_rect(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t 
  * quiesces the bus, then sets the inclusive window; bytes sends synchronously;
  * end deasserts CS. A stream never stays open across main-loop passes, so no
  * other painter can move the window under it. bus_quiesce() stays out of
- * lcd_window(): the DMA arm calls that after marking its own transfer busy. */
+ * lcd_window_polled(): the DMA arm sends its window between Prepare() and
+ * Fire(), with the bus already quiesced. */
 static uint32_t stream_left;
 static bool     stream_broken;   /* a polled send gave up: the rest is dropped, blit_lost repaints */
 #ifdef AK820_DEV_HOOKS
@@ -424,7 +415,7 @@ void lcd_stream_end(void) {
 bool lcd_clear_rect_ok(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
     if (!w || !h) return true;
     if ((uint32_t)w * h * 2u > 0x8000u) return false;   // larger than the black frame
-    lcd_blit_flash(FLASH_BLACK_FRAME, x, y, w, h);
+    if (!lcd_blit_flash(FLASH_BLACK_FRAME, x, y, w, h)) return false;   /* its window gave up */
     return lcd_blit_wait();
 }
 
@@ -908,9 +899,9 @@ uint16_t lcd_blit_retries(void) { return blit_retries; }
  * normally well under a millisecond. Counted: each is an overlap that could
  * have hung before this existed (not necessarily one that would have).
  *
- * NOT in lcd_window(): lcd_blit_flash() calls it AFTER clearing blit_done for
- * its own transfer, and would wait on itself. Only main-loop code arms a DMA,
- * so a transaction that starts quiesced stays quiesced to its end. */
+ * NOT in lcd_window_polled(): lcd_blit_flash() quiesces once, at its start,
+ * and then sends its window inside its own arm sequence. Only main-loop code
+ * arms a DMA, so a transaction that starts quiesced stays quiesced to its end. */
 static void bus_quiesce(void) {
     if (blit_done) return;
     if (blit_busy_waits < 0xFFFFu) blit_busy_waits++;
@@ -942,9 +933,19 @@ static void blit_done_cb(void) {
 // Vector58 signals completion via blit_done. Animation frames are just the full-frame case.
 // NOTE: the panel's MADCTL orientation is the caller's business -- flash art authored for
 // the animation orientation (MADCTL_ANIM) will not match the dashboard's (MADCTL_DASH).
-void lcd_blit_flash(uint32_t src, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
+/* Prepare() disabled SPID1's vector for the DMA window. A window that gave
+ * up before Fire() hands it back as spiSN32FlashDmaAbort() would -- which
+ * itself returns at once before Fire() (sn32_dma_busy false). */
+static void dma_unprepare(void) {
+    SN_SPI1->CTRL0_b.FRESET = 0b11;
+    SN_SPI1->IC = 0x3F;
+    nvicClearPending(SN32_SPI1_NUMBER);
+    nvicEnableVector(SN32_SPI1_NUMBER, SN32_SPI_SPI1_IRQ_PRIORITY);
+}
+
+bool lcd_blit_flash(uint32_t src, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
     WDT_SCOPE(WDT_SITE_LCD_TRANSFER);
-    if (!w || !h) return;
+    if (!w || !h) return true;
     /* NEVER RE-ARM UNDER A TRANSFER STILL IN FLIGHT. The glyph pump arms a DMA
      * and returns (lcd_draw_flash_glyph_try), and on the LAST glyph it resets
      * the queue -- so gq_pending() reads false while that transfer is still
@@ -981,12 +982,22 @@ void lcd_blit_flash(uint32_t src, uint16_t x, uint16_t y, uint16_t w, uint16_t h
 #endif
     blit_len_words = bytes - 1;      // what Prepare() loads into DMACNT
     blit_src = src; blit_x = x; blit_y = y; blit_w = w; blit_h = h;
-    blit_done = false;
     // SPI0 (sink) into DMA config + counts; SPI1 (source) recorded for Step 2.
     // SPI0 stays 8-bit so the command phase (window) can go out first.
     spiSN32FlashDmaPrepare(&SPID0, &SPID1, bytes);
     SN_SPI1->CTRL0_b.FRESET = 0b11;                 // flash side (bare-metal, ours)
-    lcd_window(x, y, x + w - 1, y + h - 1);         // via spiSend (SPI0 still 8-bit)
+    /* The window, polled (revision 15), AFTER Prepare() -- which rewrites
+     * SPI0's CTRL0 and toggles SPIEN, so nothing may go out between it and
+     * the pixels with CS low -- and BEFORE blit_done falls: the polled send's
+     * entry check wants no transfer of ours in flight, and none is until
+     * Fire(). Prepare() leaves IE as the FIFO's; Fire() sets the DMA's. Only
+     * the main thread arms, so nothing else starts in between. */
+    if (!lcd_window_polled(x, y, x + w - 1, y + h - 1)) {
+        cs(1);
+        dma_unprepare();
+        return false;   /* given up: blit_lost repaints */
+    }
+    blit_done = false;
 #ifdef CONSOLE_ENABLE
     systime_t arm_t0 = chVTGetSystemTimeX();
 #endif
@@ -1023,6 +1034,7 @@ void lcd_blit_flash(uint32_t src, uint16_t x, uint16_t y, uint16_t w, uint16_t h
     if (arm_cmd_ticks  > ARM_SLOW_TICKS) arms_slow_cmd++;
     if (arm_fire_ticks > ARM_SLOW_TICKS) arms_slow_fire++;
 #endif
+    return true;
 }
 
 #ifdef CONSOLE_ENABLE
@@ -1233,8 +1245,7 @@ bool lcd_blit_wait(void) {
     if (!blit_retrying && blit_w && blit_h) {
         if (blit_retries < 0xFFFFu) blit_retries++;   /* attempts, before the outcome */
         blit_retrying = true;
-        lcd_blit_flash(blit_src, blit_x, blit_y, blit_w, blit_h);
-        bool ok = lcd_blit_wait();
+        bool ok = lcd_blit_flash(blit_src, blit_x, blit_y, blit_w, blit_h) && lcd_blit_wait();
         blit_retrying = false;
         if (ok && blit_retry_successes < 0xFFFFu) blit_retry_successes++;
         return ok;
