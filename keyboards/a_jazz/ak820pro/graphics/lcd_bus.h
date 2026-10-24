@@ -141,4 +141,5 @@ void lcd_stream_bytes(const uint8_t *panel_order, uint32_t n);
 void lcd_stream_end(void);
 #ifdef AK820_DEV_HOOKS
 uint16_t lcd_scratch_overlaps(void);   // a second acquire of the shared scratch: must stay 0
+uint16_t lcd_spi0_poll_giveups(void);  // a polled bulk send that gave up on a stuck shift: must stay 0
 #endif

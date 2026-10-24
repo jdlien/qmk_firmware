@@ -128,14 +128,56 @@ static void bus_quiesce(void);
 
 static void tx8(uint8_t b) { spiSend(&SPID0, 1, &b); }
 
+/* A bulk send polled from the main thread, with SPI0's FIFO interrupt masked
+ * (plans/CONFIG-MENU-BUILD-PLAN.md, "Open" 4). Through spiSend, a fill takes
+ * that interrupt every ~3 us (8 bytes at 24 MHz), at priority 3 beside the RGB
+ * row ISR, whose every late start is a longer dark gap for each row: the
+ * fixture's repaints cost the LEDs ~19% of their refreshes (measured 10-23).
+ * Polled, the row ISR preempts the loop whenever it's due, and SCLK just
+ * pauses while it runs, CS held.
+ *   - Callers have quiesced the bus: no DMA is in flight or can start, so the
+ *     masked vector has no completion to deliver.
+ *   - At most a FIFO's worth outstanding, as spi_fifo_fill() keeps it, so
+ *     the RX FIFO can't overflow.
+ *   - Before the interrupt comes back, RX is drained and its threshold flag
+ *     cleared: a set flag would run the idle driver's completion code.
+ *   - Bounded. A stuck shift gives up, resets the FIFOs and counts. */
+#define SPI0_POLL_SPIN_PER_BYTE 64u
+static uint16_t spi0_poll_giveups;
+#ifdef AK820_DEV_HOOKS
+uint16_t lcd_spi0_poll_giveups(void) { return spi0_poll_giveups; }
+#    define POLL_FAIL() po_note_fail(PO_FAIL_SPI0_POLL)
+#else
+#    define POLL_FAIL() ((void)0)
+#endif
+static void spi0_poll_send(const uint8_t *buf, uint32_t n) {
+    SN_SPI0->IE = 0;                                     /* RXFIFOTHIE off */
+    uint32_t tx = 0, rx = 0, spin = 0;
+    const uint32_t limit = n * SPI0_POLL_SPIN_PER_BYTE + 1000u;
+    while (rx < n) {
+        while (tx < n && (tx - rx) < 8u && !SN_SPI0->STAT_b.TX_FULL) SN_SPI0->DATA = buf[tx++];
+        while (!SN_SPI0->STAT_b.RX_EMPTY) { (void)SN_SPI0->DATA; rx++; }
+        if (++spin > limit) {
+            SN_SPI0->CTRL0_b.FRESET = 0b11;
+            if (spi0_poll_giveups < 0xFFFFu) spi0_poll_giveups++;
+            POLL_FAIL();
+            break;
+        }
+    }
+    while (SN_SPI0->STAT_b.BUSY) { if (++spin > limit + 1000u) break; }
+    while (!SN_SPI0->STAT_b.RX_EMPTY) (void)SN_SPI0->DATA;
+    SN_SPI0->IC = 1u << 2;                               /* RXFIFOTHIC: a literal write, as the driver does */
+    SN_SPI0->IE = 0b0100;                                /* RXFIFOTHIE back */
+}
+
 /* One scratch buffer for every CPU push (plans/CONFIG-MENU-BUILD-PLAN.md, C4):
  * tx_pixels' and lcd_fill_rect's used to be separate, 512 B each.
  *   - Acquired, filled and released only on the main thread, never
  *     reentrantly, never from a callback or an ISR. Its users are the
  *     synchronous draws below; the DMA completion callback and the backlight
  *     ISR paint nothing.
- *   - SPI0's FIFO ISR does READ it during spiSend() (hal_spi_v2_lld.c), so the
- *     caller holds it until spiSend() returns.
+ *   - spi0_poll_send() reads it from the main thread; the caller holds it
+ *     until the send returns.
  *   - No pointer to it is kept.
  * Dev builds count a second acquire (scratch_overlaps); it must stay 0. */
 static uint8_t lcd_scratch[512];
@@ -175,7 +217,7 @@ static void tx_pixels(const uint16_t *px, uint32_t n) {
             lcd_scratch[2*i]   = (uint8_t)(px[i] >> 8);
             lcd_scratch[2*i+1] = (uint8_t)(px[i] & 0xFF);
         }
-        spiSend(&SPID0, c * 2u, lcd_scratch);
+        spi0_poll_send(lcd_scratch, c * 2u);
         px += c; n -= c;
     }
     scratch_release();
@@ -221,7 +263,7 @@ void lcd_fill_rect(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t 
     for (uint32_t i = 0; i < 256u; i++) { lcd_scratch[2*i] = color >> 8; lcd_scratch[2*i+1] = color & 0xFF; }
     while (px) {
         uint32_t c = px < 256u ? px : 256u;
-        spiSend(&SPID0, c * 2u, lcd_scratch);
+        spi0_poll_send(lcd_scratch, c * 2u);
         px -= c;
     }
     scratch_release();
@@ -259,7 +301,7 @@ void lcd_stream_bytes(const uint8_t *panel_order, uint32_t n) {
         n = stream_left;
     }
     if (!n) return;
-    spiSend(&SPID0, n, panel_order);
+    spi0_poll_send(panel_order, n);
     stream_left -= n;
 }
 void lcd_stream_end(void) {

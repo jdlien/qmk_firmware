@@ -117,6 +117,7 @@ enum {
     PO_FAIL_WAKE_OPEN    = 1u << 2,
     PO_FAIL_SCRATCH      = 1u << 3,   /* lcd_bus.c, dev builds: the shared scratch's rules broken */
     PO_FAIL_STREAM       = 1u << 4,   /* a nested, overlong or short panel-order stream */
+    PO_FAIL_SPI0_POLL    = 1u << 5,   /* lcd_bus.c, dev builds: a polled bulk send gave up */
 };
 uint16_t po_invariant_fail(void);
 void     po_note_fail(uint16_t bit);
