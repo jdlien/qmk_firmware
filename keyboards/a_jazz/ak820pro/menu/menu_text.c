@@ -18,37 +18,49 @@ static const uint8_t *glyph(uint8_t code) {
 
 uint16_t mt_width(const mt_line_t *l) { return (uint16_t)(l->lead + l->cells * MT_CELL_W + l->trail); }
 
-/* The cell and glyph column advance a column at a time: one division before
- * the loop, none in it (the M0 has no divider: each is a library call, and
- * two a column were most of a piece's composing, codex 10-24). */
+/* Set columns [a, b) of the band (band-relative, already clipped) in every row. */
+static void ink_cols(uint8_t *bits, uint8_t stride, uint8_t rows, uint16_t a, uint16_t b) {
+    for (uint16_t i = a; i < b; i++)
+        for (uint8_t r = 0; r < rows; r++) bits[(uint16_t)r * stride + (i >> 3)] |= (uint8_t)(0x80u >> (i & 7u));
+}
+
+/* A cell at a time, not a column at a time: each glyph row's six bits are
+ * shifted into place with two byte ORs. Per column, the M0 under the row
+ * ISR's load spent ~4 ms of a 488 B piece composing and expanding (op 27
+ * sub 10, 10-24), against ~4.3 ms for a whole fill piece. */
 void mt_bits(const mt_line_t *l, uint16_t c0, uint16_t w, uint8_t r0, uint8_t rows, uint8_t *bits, uint8_t stride) {
     memset(bits, 0, (size_t)stride * rows);
-    const size_t   len  = strlen(l->s);
-    const uint16_t text = (uint16_t)(l->cells * MT_CELL_W);
-    uint8_t        cell = 0, gcol = 0;   /* under the first text column this band reaches */
-    if (c0 > l->lead) {
-        uint16_t t = (uint16_t)(c0 - l->lead);
-        cell       = (uint8_t)(t / MT_CELL_W);
-        gcol       = (uint8_t)(t % MT_CELL_W);
-    }
-    const uint8_t *g = NULL;
-    for (uint16_t i = 0; i < w; i++) {
-        const uint16_t c    = (uint16_t)(c0 + i);
-        const uint8_t  mask = (uint8_t)(0x80u >> (i & 7u));
-        uint8_t       *col  = bits + (i >> 3);
-        if (c < l->lead || c >= l->lead + text) {   /* an edge pixel */
-            if (c < l->lead ? l->lead_ink : l->trail_ink)
-                for (uint8_t r = 0; r < rows; r++) col[(uint16_t)r * stride] |= mask;
-            continue;
-        }
-        if (!g) g = glyph(cell < len ? (uint8_t)l->s[cell] : (uint8_t)' ');
-        const uint8_t gbit = (uint8_t)(0x80u >> gcol);
-        for (uint8_t r = 0; r < rows; r++)
-            if (g[r0 + r] & gbit) col[(uint16_t)r * stride] |= mask;
-        if (++gcol == MT_CELL_W) {
-            gcol = 0;
-            cell++;
-            g = NULL;
+    const uint16_t end  = (uint16_t)(c0 + w);                    /* line columns [c0, end) */
+    const uint16_t text = (uint16_t)(l->lead + l->cells * MT_CELL_W);
+    /* The edges, ink only (background is the zeroed bits). */
+    if (l->lead_ink && c0 < l->lead) ink_cols(bits, stride, rows, 0, (uint16_t)((end < l->lead ? end : l->lead) - c0));
+    if (l->trail_ink && end > text) ink_cols(bits, stride, rows, (uint16_t)((c0 > text ? c0 : text) - c0), w);
+    /* The cells the band reaches, each clipped to it. */
+    if (end <= l->lead || c0 >= text) return;
+    const size_t len   = strlen(l->s);
+    uint8_t      first = c0 > l->lead ? (uint8_t)((c0 - l->lead) / MT_CELL_W) : 0;
+    uint8_t      last  = (uint8_t)((end - l->lead + MT_CELL_W - 1) / MT_CELL_W);   /* one past */
+    if (last > l->cells) last = l->cells;
+    int16_t x = (int16_t)(l->lead + first * MT_CELL_W - c0);   /* the cell's column 0, band-relative; < 0 if cut */
+    for (uint8_t cell = first; cell < last; cell++, x = (int16_t)(x + MT_CELL_W)) {
+        if (cell >= len) break;   /* spaces: background */
+        const uint8_t *g = glyph((uint8_t)l->s[cell]) + r0;
+        /* Clipped to the band. A cell cut on the left: shifted left by the
+         * cut, so its first visible column sits at band column 0 and the cut
+         * ones fall off the byte. On the right: no bit at or past w. The cell
+         * starts inside the band (x < w), so `room` is at least 1. */
+        const uint8_t  lshift = x < 0 ? (uint8_t)-x : 0;
+        const uint16_t base   = x < 0 ? 0 : (uint16_t)x;
+        const uint16_t room   = (uint16_t)(w - base);
+        const uint8_t  rmask  = room >= 8u ? 0xFFu : (uint8_t)(0xFFu << (8u - room));
+        const uint8_t  byte = (uint8_t)(base >> 3), sh = (uint8_t)(base & 7u);
+        for (uint8_t r = 0; r < rows; r++) {
+            const uint8_t gb = (uint8_t)(((g[r] & 0xFCu) << lshift) & rmask);   /* six columns, bits 7..2 */
+            if (!gb) continue;
+            const uint16_t v   = (uint16_t)((uint16_t)gb << 8 >> sh);
+            uint8_t       *row = bits + (uint16_t)r * stride + byte;
+            row[0] |= (uint8_t)(v >> 8);
+            if ((v & 0xFFu) && byte + 1u < stride) row[1] |= (uint8_t)v;
         }
     }
 }

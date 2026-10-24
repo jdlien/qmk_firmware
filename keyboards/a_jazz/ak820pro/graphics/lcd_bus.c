@@ -235,7 +235,11 @@ static bool spi0_poll_send(const uint8_t *buf, uint32_t n) {
  *     until the send returns.
  *   - No pointer to it is kept.
  * Dev builds count a second acquire (scratch_overlaps); it must stay 0. */
-static uint8_t lcd_scratch[512];
+static union {
+    uint8_t  b[512];
+    uint16_t h[256];   /* lcd_blit_mono's halfword stores, a pixel each, already in panel order */
+} scratch_buf;
+#define lcd_scratch scratch_buf.b
 #ifdef AK820_DEV_HOOKS
 /* Dev builds check the rules: a second acquire, or a release without one,
  * counts and sets op 27's sticky PO_FAIL_SCRATCH (menu/panel_owner.h). */
@@ -396,27 +400,42 @@ void lcd_stream_end(void) {
  * 7, w x h of them. Expanded row by row in raster order into the scratch,
  * already in panel order (hi byte first), and streamed: every pixel sent,
  * foreground and background alike. The stream quiesces the bus before its
- * window. False: a polled send gave up (blit_lost set), or a bad rect. */
+ * window. False: a polled send gave up (blit_lost set), or a bad rect.
+ *
+ * One halfword store a pixel from a two-entry table, eight to a source byte,
+ * and whole rows to the scratch (a row is at most FRAME_W, 128 px: 256 B, so
+ * one always fits an empty scratch). A bit test and two byte stores a pixel
+ * cost the M0, under the row ISR's load, several ms of a 488 B piece. */
 bool lcd_blit_mono(const uint8_t *bits, uint8_t stride, uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t fg, uint16_t bg) {
     WDT_SCOPE(WDT_SITE_LCD_TRANSFER);
-    if (!lcd_stream_begin(x, y, w, h)) return false;
-    const uint8_t fh = (uint8_t)(fg >> 8), fl = (uint8_t)fg, bh = (uint8_t)(bg >> 8), bl = (uint8_t)bg;
-    uint32_t      n  = 0;
-    for (uint16_t r = 0; r < h && !stream_broken; r++) {
-        const uint8_t *row = bits + (uint32_t)r * stride;
-        for (uint16_t c = 0; c < w; c++) {
-            bool ink           = (row[c >> 3] >> (7u - (c & 7u))) & 1u;
-            lcd_scratch[n]     = ink ? fh : bh;
-            lcd_scratch[n + 1] = ink ? fl : bl;
-            n += 2;
-            if (n == sizeof lcd_scratch) {
-                lcd_stream_bytes(lcd_scratch, n);
-                n = 0;
-                if (stream_broken) break;   /* given up: expand no further */
-            }
+    _Static_assert(FRAME_W <= sizeof scratch_buf.h / sizeof scratch_buf.h[0], "a row fits the scratch");
+    if (!lcd_stream_begin(x, y, w, h)) return false;   /* x + w <= FRAME_W */
+    /* Each colour as the halfword whose bytes, little-endian, are its panel order. */
+    const uint16_t lut[2]  = {(uint16_t)((bg >> 8) | (bg << 8)), (uint16_t)((fg >> 8) | (fg << 8))};
+    uint16_t *const start = scratch_buf.h;
+    uint16_t       *p     = start;
+    for (uint16_t r = 0; r < h && !stream_broken; r++) {   /* a window given up: nothing to expand */
+        if ((uint16_t)(start + sizeof scratch_buf.h / sizeof scratch_buf.h[0] - p) < w) {
+            lcd_stream_bytes(lcd_scratch, (uint32_t)(p - start) * 2u);
+            p = start;
+            if (stream_broken) break;   /* given up: expand no further */
         }
+        const uint8_t *row = bits + (uint32_t)r * stride;
+        uint16_t       c   = w;
+        for (; c >= 8u; c -= 8u, p += 8) {
+            const uint8_t b = *row++;
+            p[0] = lut[b >> 7];
+            p[1] = lut[(b >> 6) & 1u];
+            p[2] = lut[(b >> 5) & 1u];
+            p[3] = lut[(b >> 4) & 1u];
+            p[4] = lut[(b >> 3) & 1u];
+            p[5] = lut[(b >> 2) & 1u];
+            p[6] = lut[(b >> 1) & 1u];
+            p[7] = lut[b & 1u];
+        }
+        for (uint8_t b = c ? *row : 0; c; c--, b = (uint8_t)(b << 1)) *p++ = lut[b >> 7];
     }
-    if (n && !stream_broken) lcd_stream_bytes(lcd_scratch, n);
+    if (p != start && !stream_broken) lcd_stream_bytes(lcd_scratch, (uint32_t)(p - start) * 2u);
     bool ok = !stream_broken;
     if (!ok) stream_left = 0;   /* given up: the rest is dropped, not a short stream */
     lcd_stream_end();
