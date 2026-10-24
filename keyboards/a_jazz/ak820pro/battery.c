@@ -1349,7 +1349,15 @@ uint8_t battery_flags(void) {
  * newest entry's end and the reply's age are all in log time, so the host's
  * dating (newest - k x period) holds across sleeps. Never the calendar: a host
  * sync would move the boundaries. */
-#define LOG_LEN       720u
+#ifdef AK820_DEVFAULT
+/* devfault only (build.sh): 8 entries fewer, 144 B and 178 h, for the
+ * configuration menu's RAM in the bench's fault build (the heap floor;
+ * plans/CONFIG-MENU-P1-DESIGN.md, "RAM"). Every other flavour keeps 720;
+ * the host reads the count the board reports. */
+#    define LOG_LEN   712u
+#else
+#    define LOG_LEN   720u
+#endif
 #define LOG_PERIOD_MS 900000u
 
 typedef struct __attribute__((packed)) {
