@@ -220,8 +220,9 @@ bool menu_ops_op27(uint8_t *d, uint32_t now) {
     switch (sub) {
         case 0: {   /* the fixture's paint */
             uint8_t p = d[5], n = d[6];
-            bool    f1 = OWNER_MENU_OPEN() && fx_screen() == FX_SCREEN_F1;
-            if (!OWNER_MENU_OPEN() || p > 3) { st = MI_BAD; break; }
+            bool    f1   = OWNER_MENU_OPEN() && fx_screen() == FX_SCREEN_F1;
+            bool    mono = p >= FX_MONO_FIRST && p < FX_MONO_FIRST + FX_MONO_STYLES;   /* S1: F3 */
+            if (!OWNER_MENU_OPEN() || (p > 3 && !mono)) { st = MI_BAD; break; }
             if (p != 2 && n != 0) { st = MI_BAD; break; }
             if ((p == 0 || p == 1) && !f1) { st = MI_BAD; break; }
             if (p == 2 && (!f1 || n < 1 || n >= FX_F1_OPS || fx_pattern() != 0 || !ms_settled())) { st = MI_BAD; break; }
@@ -229,6 +230,7 @@ bool menu_ops_op27(uint8_t *d, uint32_t now) {
             if (st != MI_OK) break;
             ms_stop_release();   /* a reached stop holds until the next sub 0 */
             if (p == 3) fx_other_layout();
+            else if (mono) fx_set_mono((uint8_t)(p - FX_MONO_FIRST));
             else fx_set_pattern(p == 0 ? 0 : 1);
             if (p == 2) ms_stop_after(n);
             else mi_finish(MI_ST_DONE);   /* the model has its new target */

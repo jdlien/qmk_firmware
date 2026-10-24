@@ -25,6 +25,9 @@ bool mb_fill(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t rgb565
 bool mb_glyph(char c, uint16_t x, uint16_t y) {
     return lcd_draw_flash_glyph_try(ASSET_IOSEVKA_MEDIUM_13, c, x, y);   /* FONT_SMALL: Cozette 6x14 */
 }
+bool mb_mono(const uint8_t *bits, uint8_t stride, uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t fg, uint16_t bg) {
+    return lcd_blit_mono(bits, stride, x, y, w, h, fg, bg);
+}
 bool mb_busy(void) { return lcd_blit_busy(); }
 bool mb_lost_pending(void) { return lcd_blit_lost_pending(); }
 uint32_t mb_now_ticks(void) { return meas_ticks(); }

@@ -7,6 +7,7 @@
 #include "menu_fixture.h"
 #include "menu_backend.h"
 #include "menu_slots.h"
+#include "menu_text.h"
 
 /* Neighbouring slots differ, A and B differ in every slot, and nothing is
  * black, so a slot left unpainted shows. */
@@ -115,6 +116,84 @@ static ms_paint_t f2_paint(uint8_t s, uint8_t c, uint8_t p) {
 }
 static const ms_layout_t f2 = {16, f2_sig, f2_chunks, f2_pieces, f2_paint};
 
+/* F3: the slots of F1, in text. A text slot is x 3-124: the inverted
+ * cursor's pad pixel at x 3, 20 cells from x 4, and x 124, which is ink
+ * (black) on the inverted row and background elsewhere. Half rows are two
+ * chunks, x 3-63 and x 64-124 (61 px: four pieces of 4, 4, 4 and 2 pixel
+ * rows, 488 B at most); full rows one (122 px: seven pieces of 2 rows, 488
+ * B). The title is a text slot too, white on black, chunked the same way. */
+const char *const fx_mono_rows[FX_ROWS] = {
+    MT_LSAQUO " Back",
+    "Lighting           >",
+    "Screen           75%",
+    "Connection       BT1",
+    "Power       Balanced",
+    "Glyphs " MT_LSAQUO MT_RSAQUO MT_BULLET MT_TRIANGLE MT_CHECK " gjpqy",
+    "Layout F2          >",
+    "Diagnostics        >",
+};
+const char *const fx_mono_titles[FX_MONO_STYLES] = {
+    "Lit text, half rows", "Lit text, full rows", "Inverted, half rows", "Inverted, full rows",
+};
+static uint8_t mono = 0;
+
+#define TEXT_W   (1 + 20 * MT_CELL_W + 1)   /* 122: x 3-124 */
+#define HALF_W   61                         /* x 3-63, then x 64-124 */
+#define BITS_MAX 64                         /* a piece's bits: 4 rows of 8 B, or 2 of 16 */
+_Static_assert(TEXT_W == ROW_X1 - ROW_X0 + 1 && HALF_W == ROW_XMID - ROW_X0 + 1, "C8's row slot");
+
+static bool f3_text_slot(uint8_t s) { return s == 0 || (s >= 2 && s < 2 + FX_ROWS); }
+static uint16_t f3_sig(uint8_t s) {
+    if (!f3_text_slot(s)) return (uint16_t)(0x3000u | ((uint16_t)s << 4));   /* the separator, the scrollbar */
+    uint16_t v = (uint16_t)(0x3000u | ((uint16_t)s << 4) | ((uint16_t)mono << 1));
+    if (s >= 2 && (uint8_t)(s - 2) == row) v |= 1u;
+    return v;
+}
+static uint8_t f3_chunks(uint8_t s) { return f3_text_slot(s) && !(mono & FX_MONO_FULL) ? 2 : 1; }
+static uint8_t f3_rows_per_piece(void) { return (uint8_t)(MB_PASS_BYTES / ((mono & FX_MONO_FULL ? TEXT_W : HALF_W) * 2u)); }
+static uint8_t f3_pieces(uint8_t s, uint8_t c) {
+    (void)c;
+    if (!f3_text_slot(s)) return 1;
+    uint8_t r = f3_rows_per_piece();
+    return (uint8_t)((MT_CELL_H + r - 1) / r);
+}
+_Static_assert(MB_PASS_BYTES / (TEXT_W * 2u) >= 1 && MB_PASS_BYTES / (TEXT_W * 2u) <= MT_CELL_H &&
+                   (MB_PASS_BYTES / (HALF_W * 2u)) * ((HALF_W + 7u) / 8u) <= BITS_MAX &&
+                   (MB_PASS_BYTES / (TEXT_W * 2u)) * ((TEXT_W + 7u) / 8u) <= BITS_MAX,
+               "a piece is one to 14 pixel rows, and its bits fit");
+static ms_paint_t f3_paint(uint8_t s, uint8_t c, uint8_t p) {
+    if (s == 1) return mb_fill(4, SEP_Y, 123, SEP_Y, FX_MONO_GREY) ? MS_PAINT_DONE : MS_PAINT_FAILED;
+    if (s == 2 + FX_ROWS) {
+        if (!mb_fill(BAR_X, BAR_Y0, BAR_X, BAR_Y1, FX_MONO_TRACK)) return MS_PAINT_FAILED;
+        return mb_fill(BAR_X, BAR_Y0, BAR_X, BAR_Y0 + FX_THUMB_H - 1, FX_MONO_WHITE) ? MS_PAINT_DONE : MS_PAINT_FAILED;
+    }
+    const bool inv = (mono & FX_MONO_INV) != 0;
+    const bool sel = s >= 2 && (uint8_t)(s - 2) == row;
+    uint16_t   fg = FX_MONO_WHITE, bg = FX_MONO_BLACK, y0 = 0;
+    mt_line_t  l  = {fx_mono_titles[mono], 20, 1, 1, false, false};
+    if (s >= 2) {
+        l.s  = fx_mono_rows[s - 2];
+        y0   = (uint16_t)(ROW_Y0 + (s - 2) * ROW_H);
+        if (inv && sel) {
+            fg          = FX_MONO_BLACK;
+            bg          = FX_MONO_WHITE;
+            l.trail_ink = true;   /* x 124 stays black */
+        } else if (!inv) {
+            fg = sel ? FX_MONO_LIT : FX_MONO_DIM;
+        }
+    }
+    const uint8_t  rpp  = f3_rows_per_piece();
+    const uint8_t  r0   = (uint8_t)(p * rpp);
+    const uint8_t  rows = (uint8_t)(r0 + rpp > MT_CELL_H ? MT_CELL_H - r0 : rpp);
+    const uint16_t c0   = (mono & FX_MONO_FULL) ? 0 : (uint16_t)(c * HALF_W);
+    const uint16_t w    = (mono & FX_MONO_FULL) ? TEXT_W : HALF_W;
+    const uint8_t  st   = (uint8_t)((w + 7u) / 8u);
+    uint8_t        bits[BITS_MAX];
+    mt_bits(&l, c0, w, r0, rows, bits, st);
+    return mb_mono(bits, st, (uint16_t)(ROW_X0 + c0), (uint16_t)(y0 + r0), w, rows, fg, bg) ? MS_PAINT_DONE : MS_PAINT_FAILED;
+}
+static const ms_layout_t f3 = {(uint8_t)(2 + FX_ROWS + 1), f3_sig, f3_chunks, f3_pieces, f3_paint};
+
 void fx_open(void) {
     screen  = FX_SCREEN_F1;
     pattern = 0;
@@ -131,7 +210,7 @@ void fx_return_from_diag(void) {
 void fx_invalidate(void) { ms_invalidate_all(); }
 
 void fx_other_layout(void) {
-    if (screen == FX_SCREEN_F1) {
+    if (screen != FX_SCREEN_F2) {   /* F1, or F3's "Layout F2" row */
         screen = FX_SCREEN_F2;
         ms_set_layout(&f2, false);
     } else {
@@ -148,9 +227,21 @@ bool fx_set_pattern(uint8_t p) {
     return true;
 }
 
+/* F3 in a style: from another layout a layout change (its clear); within F3,
+ * a retarget, as a style's repaint over the same slots. */
+void fx_set_mono(uint8_t style) {
+    mono = (uint8_t)(style % FX_MONO_STYLES);
+    if (screen == FX_SCREEN_F3) {
+        ms_retarget();
+        return;
+    }
+    screen = FX_SCREEN_F3;
+    ms_set_layout(&f3, false);
+}
+
 fx_result_t fx_input(int8_t turns, mi_latch_t latch) {
     if (latch == MI_LATCH_CLOSE || latch == MI_LATCH_BACK) return FX_CLOSE;
-    if (screen == FX_SCREEN_F1 && turns) {
+    if (screen != FX_SCREEN_F2 && turns) {
         int16_t r = (int16_t)((row + turns) % FX_ROWS);
         if (r < 0) r += FX_ROWS;
         row = (uint8_t)r;
@@ -166,10 +257,11 @@ fx_result_t fx_input(int8_t turns, mi_latch_t latch) {
         fx_other_layout();
         return FX_NONE;
     }
-    fx_set_pattern((uint8_t)(1u - pattern));
+    if (screen == FX_SCREEN_F3) fx_set_mono((uint8_t)(mono + 1u));   /* the next style */
+    else fx_set_pattern((uint8_t)(1u - pattern));
     return FX_NONE;
 }
 
 uint8_t fx_screen(void) { return screen; }
 uint8_t fx_cursor(void) { return row; }
-uint8_t fx_pattern(void) { return pattern; }
+uint8_t fx_pattern(void) { return screen == FX_SCREEN_F3 ? (uint8_t)(FX_MONO_FIRST + mono) : pattern; }

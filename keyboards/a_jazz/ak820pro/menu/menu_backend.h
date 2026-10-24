@@ -24,6 +24,10 @@
 bool mb_clear_band(uint8_t band);                                  /* false: its transfer was given up */
 bool mb_fill(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t rgb565);   /* synchronous, inclusive; false: given up, a loss latched */
 bool mb_glyph(char c, uint16_t x, uint16_t y);                     /* false: the bus is busy, try again */
+/* A 1-bit bitmap in two colours (rows of `stride` bytes, column 0 in bit 7),
+ * w x h at (x, y): synchronous, every pixel sent; false: given up, a loss
+ * latched. */
+bool mb_mono(const uint8_t *bits, uint8_t stride, uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t fg, uint16_t bg);
 bool mb_busy(void);                                                /* a DMA in flight */
 /* C10's clock: the system tick (MB_TICK_HZ, 5.33 us), extended to 32 bits.
  * Differences are taken modulo 2^32. */

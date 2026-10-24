@@ -392,6 +392,36 @@ void lcd_stream_end(void) {
     cs(1);
 }
 
+/* A 1-bit bitmap in two colours (C4): rows of `stride` bytes, column 0 in bit
+ * 7, w x h of them. Expanded row by row in raster order into the scratch,
+ * already in panel order (hi byte first), and streamed: every pixel sent,
+ * foreground and background alike. The stream quiesces the bus before its
+ * window. False: a polled send gave up (blit_lost set), or a bad rect. */
+bool lcd_blit_mono(const uint8_t *bits, uint8_t stride, uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t fg, uint16_t bg) {
+    WDT_SCOPE(WDT_SITE_LCD_TRANSFER);
+    if (!lcd_stream_begin(x, y, w, h)) return false;
+    const uint8_t fh = (uint8_t)(fg >> 8), fl = (uint8_t)fg, bh = (uint8_t)(bg >> 8), bl = (uint8_t)bg;
+    uint32_t      n  = 0;
+    for (uint16_t r = 0; r < h && !stream_broken; r++) {
+        const uint8_t *row = bits + (uint32_t)r * stride;
+        for (uint16_t c = 0; c < w; c++) {
+            bool ink           = (row[c >> 3] >> (7u - (c & 7u))) & 1u;
+            lcd_scratch[n]     = ink ? fh : bh;
+            lcd_scratch[n + 1] = ink ? fl : bl;
+            n += 2;
+            if (n == sizeof lcd_scratch) {
+                lcd_stream_bytes(lcd_scratch, n);
+                n = 0;
+            }
+        }
+    }
+    if (n && !stream_broken) lcd_stream_bytes(lcd_scratch, n);
+    bool ok = !stream_broken;
+    if (!ok) stream_left = 0;   /* given up: the rest is dropped, not a short stream */
+    lcd_stream_end();
+    return ok;
+}
+
 // Stage C: blit a w*h RGB565 tile from RAM (firmware array) to (x,y).
 // The SN32 DMA is SPI-to-SPI only -- its source is the other SPI's RX FIFO, with no
 // source-address register -- so RAM-resident art cannot be DMA'd and is CPU-pushed here

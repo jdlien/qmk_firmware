@@ -141,6 +141,9 @@ bool lcd_clear_rect_ok(uint16_t x, uint16_t y, uint16_t w, uint16_t h);
 bool lcd_stream_begin(uint16_t x, uint16_t y, uint16_t w, uint16_t h);
 void lcd_stream_bytes(const uint8_t *panel_order, uint32_t n);
 void lcd_stream_end(void);
+// A 1-bit bitmap (rows of `stride` bytes, column 0 in bit 7) in two colours,
+// through the stream. False: a polled send gave up (blit_lost set), or a bad rect.
+bool lcd_blit_mono(const uint8_t *bits, uint8_t stride, uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t fg, uint16_t bg);
 #ifdef AK820_DEV_HOOKS
 uint16_t lcd_scratch_overlaps(void);   // a second acquire of the shared scratch: must stay 0
 uint16_t lcd_spi0_poll_giveups(void);  // a polled bulk send that gave up on a stuck shift: must stay 0
