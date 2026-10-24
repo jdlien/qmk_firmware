@@ -264,7 +264,10 @@ bool ms_settled(void) {
     if (!layout || clear_band) return false;
     for (uint8_t i = 0; i < layout->n; i++)
         if (!settled(i)) return false;
-    if (mb_busy()) return false;
+    /* Nor while a loss waits for its consumer: the transfer that latched it
+     * may have been any slot's, and the invalidation hasn't run yet (codex,
+     * P1's design review). */
+    if (mb_busy() || mb_lost_pending()) return false;
     note_settled();
     return true;
 }

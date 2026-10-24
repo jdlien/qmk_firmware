@@ -326,7 +326,9 @@ void power_cycle_mode(void) {
     display_set_param_status(mode_names[mode]);
 }
 
-#ifdef AK820_DEV_HOOKS
+/* A mode without the key or the overlay: the configuration menu's Power
+ * (P1a; plans/CONFIG-MENU-BUILD-PLAN.md, "The settings": promoted from the
+ * bench's dev hooks, declaration and body only) and HC_DEVHOOK op 14. */
 void power_set_mode(power_mode_t m) {
     if (m >= POWER_MODE_COUNT) return;
     mode     = m;
@@ -334,6 +336,7 @@ void power_set_mode(power_mode_t m) {
     kb_eeconfig_set_power_mode((uint8_t)mode);
 }
 
+#ifdef AK820_DEV_HOOKS
 void power_force_stage(uint8_t s) {
     forced = (s <= POWER_STAGE_SCREEN_OFF) ? s : 0xFF;
 }

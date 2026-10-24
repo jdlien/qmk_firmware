@@ -65,10 +65,13 @@ bool power_lights_cut(void);
 /* The RGB is dark: a dark stage or the lights cut (the driver's scale 0). */
 bool power_rgb_dark(void);
 
-#ifdef AK820_DEV_HOOKS
-/* The bench's (HC_DEVHOOK op 14): a mode without the key or the overlay, and
- * a stage held whatever the idle time or the supply (0xFF releases it). */
+/* A mode without the key or the overlay: the menu's Power, and the bench's
+ * HC_DEVHOOK op 14. */
 void    power_set_mode(power_mode_t m);
+
+#ifdef AK820_DEV_HOOKS
+/* The bench's (HC_DEVHOOK op 14): a stage held whatever the idle time or the
+ * supply (0xFF releases it). */
 void    power_force_stage(uint8_t s);
 uint8_t power_forced_stage(void);
 /* A short sleep time for the bench (not persisted; 0 clears it; at least
