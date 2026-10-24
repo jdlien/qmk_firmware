@@ -113,6 +113,8 @@ void encoder_signal_queue_drain(void);
 #        define NUM_DIRECTIONS 2
 #        define ENCODER_CCW_CW(ccw, cw) {(cw), (ccw)}
 extern const uint16_t encoder_map[][NUM_ENCODERS][NUM_DIRECTIONS];
+// After each half of a mapped detent: false skips ENCODER_MAP_KEY_DELAY's wait
+bool encoder_map_delay_wanted_kb(void);
 #    endif // ENCODER_MAP_ENABLE
 
 // "Custom encoder lite" support

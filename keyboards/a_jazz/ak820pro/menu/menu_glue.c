@@ -69,6 +69,8 @@ bool     env_debug_done(void) { return display_debug_done(); }
  * isn't Fn. Runs from pre_process_record_kb, after QMK has cleared the weak
  * mods and done the layer lookup, before combos and tapping, which never see a
  * captured event. */
+static bool detent_swallowed;   /* the last encoder half this dropped */
+
 bool menu_pre_process(uint16_t keycode, keyrecord_t *record) {
     (void)keycode;
     const keyevent_t *e = &record->event;
@@ -78,9 +80,24 @@ bool menu_pre_process(uint16_t keycode, keyrecord_t *record) {
     else if (e->type == KEY_EVENT && e->key.row == KNOB_ROW && e->key.col == KNOB_COL) c = MI_KNOB;
     else return true;
 
-    bool fn = (layer_state & (((layer_state_t)1 << WINFN) | ((layer_state_t)1 << MACFN))) != 0;
-    return menu_physical(c, e->pressed, fn, timer_read32());
+    bool fn  = (layer_state & (((layer_state_t)1 << WINFN) | ((layer_state_t)1 << MACFN))) != 0;
+    bool fwd = menu_physical(c, e->pressed, fn, timer_read32());
+    if (c != MI_KNOB) detent_swallowed = !fwd;
+    return fwd;
 }
+
+#ifdef ENCODER_MAP_ENABLE
+/* quantum/encoder.c waits ENCODER_MAP_KEY_DELAY after each half of a detent,
+ * to pace the host's reports. A half the menu swallowed sent none, so a
+ * captured spin paid two 1 ms waits a detent of blocked main loop for
+ * nothing. Read once per half, right after its action_exec(), and cleared,
+ * so a half that never reached here keeps the wait. */
+bool encoder_map_delay_wanted_kb(void) {
+    bool swallowed   = detent_swallowed;
+    detent_swallowed = false;
+    return !swallowed;
+}
+#endif
 
 /* C10's pass timing, and the tick's extension: first thing in every pass,
  * beside health's own gap, so an interval is one whole pass (codex, 10-24:
