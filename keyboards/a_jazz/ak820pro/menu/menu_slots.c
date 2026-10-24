@@ -12,7 +12,8 @@ static const ms_layout_t *layout;
 static ms_slot_t slots[MS_MAX_SLOTS];
 static uint8_t   tgen;            /* the target's generation */
 static uint8_t   cursor;          /* the one slot that may be PARTIAL */
-static uint8_t   chunk;           /* its next chunk */
+static uint8_t   chunk;           /* its current chunk (a logical op) */
+static uint8_t   piece;           /* the chunk's next piece */
 static uint8_t   clear_band;      /* 1..MB_BANDS while clearing */
 static uint8_t   ops;             /* completed paint operations since the last target */
 static bool      ops_inflight;    /* the last operation's DMA, counted when it ends */
@@ -25,7 +26,7 @@ void ms_init(void) {
     for (uint8_t i = 0; i < MS_MAX_SLOTS; i++) slots[i] = (ms_slot_t){0, MS_EMPTY, 0};
     tgen = 0;
     cursor = NO_CURSOR;
-    chunk = 0;
+    chunk = piece = 0;
     clear_band = 0;
     ops = 0;
     ops_inflight = false;
@@ -33,21 +34,31 @@ void ms_init(void) {
     stopped = stop_cancelled = false;
 }
 
-/* An asynchronous operation counts when its transfer has ended (completed or
- * given up); a synchronous fill when it returns. */
+/* An op's end: counted once, and a stop it reaches latched in the same step
+ * (C4, revision 9). Before, a synchronous op counted at once but its stop
+ * latched only on the next ms_step(), so navigation in between could cancel
+ * a stop that had been reached. */
+static void end_op(void) {
+    if (ops < 0xFFu) ops++;
+    if (stop_n && ops >= stop_n && !mb_busy()) stopped = true;
+}
+
+/* An asynchronous op ends when its transfer has ended (completed or given
+ * up); a synchronous one when its last piece returns. */
 static void settle_ops(void) {
     if (ops_inflight && !mb_busy()) {
         ops_inflight = false;
-        if (ops < 0xFFu) ops++;
+        end_op();
     }
 }
 
 /* A pending stop's work is disposed of by a new target: its sequence ends
  * (ms_stop_cancelled_take). A stop already reached holds until
- * ms_stop_release(), the next op 27 sub 0. */
+ * ms_stop_release(), the next op 27 sub 0. The op that just ended is settled
+ * first, so a stop it reached is latched, not cancelled. */
 static void new_target(void) {
-    tgen++;
     settle_ops();
+    tgen++;
     ops          = 0;
     ops_inflight = false;
     if (stop_n && !stopped) {
@@ -78,6 +89,7 @@ void ms_set_layout(const ms_layout_t *l, bool fresh) {
 void ms_retarget(void) { new_target(); }
 
 void ms_invalidate_all(void) {
+    settle_ops();   /* an op that ended latches its stop before the loss resets anything */
     if (!layout) return;
     for (uint8_t i = 0; i < layout->n; i++) slots[i].state = MS_INVALID;
     cursor = NO_CURSOR;
@@ -87,11 +99,15 @@ static bool settled(uint8_t i) {
     return slots[i].state == MS_COMMITTED && slots[i].sig == layout->sig(i);
 }
 
-static ms_step_t paint_chunk(void) {
-    if (!layout->paint(cursor, chunk)) return MS_STEP_BUSY;   /* the same chunk next pass */
+/* One piece. The chunk's op ends with its last piece: at once for a fill,
+ * when its DMA ends for a glyph. */
+static ms_step_t paint_piece(void) {
+    if (!layout->paint(cursor, chunk, piece)) return MS_STEP_BUSY;   /* the same piece next pass */
+    if (++piece < layout->pieces(cursor, chunk)) return MS_STEP_PAINT;
+    piece = 0;
     chunk++;
-    if (mb_busy()) ops_inflight = true;   /* a DMA armed: counted when it ends */
-    else if (ops < 0xFFu) ops++;
+    if (mb_busy()) ops_inflight = true;   /* a DMA armed: the op ends when it does */
+    else end_op();
     return MS_STEP_PAINT;
 }
 
@@ -121,7 +137,7 @@ ms_step_t ms_step(void) {
     if (cursor != NO_CURSOR) {
         ms_slot_t *s = &slots[cursor];
         if (s->state == MS_PARTIAL && s->sig == layout->sig(cursor) && s->gen == tgen) {
-            if (chunk < layout->chunks(cursor)) return paint_chunk();
+            if (chunk < layout->chunks(cursor)) return paint_piece();
             /* Every chunk sent: committed only with the last transfer done and
              * no loss waiting to be taken. */
             if (mb_busy() || mb_lost_pending()) return MS_STEP_WAIT;
@@ -129,8 +145,8 @@ ms_step_t ms_step(void) {
             cursor   = NO_CURSOR;
             return MS_STEP_COMMIT;
         }
-        /* Its target changed, or a loss invalidated it: it restarts from chunk
-         * 0 when it's next chosen. */
+        /* Its target changed, or a loss invalidated it: it restarts from its
+         * first chunk and piece when it's next chosen. */
         if (s->state == MS_PARTIAL) s->state = MS_INVALID;
         cursor = NO_CURSOR;
     }
@@ -141,8 +157,8 @@ ms_step_t ms_step(void) {
         slots[i].sig   = layout->sig(i);
         slots[i].gen   = tgen;
         cursor         = i;
-        chunk          = 0;
-        return paint_chunk();
+        chunk = piece  = 0;
+        return paint_piece();
     }
     return MS_STEP_IDLE;
 }

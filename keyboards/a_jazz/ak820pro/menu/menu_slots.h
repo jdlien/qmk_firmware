@@ -21,21 +21,24 @@ typedef struct {
 _Static_assert(sizeof(ms_slot_t) == 4, "C3: 4 B a slot");
 
 /* A layout: its slots' count, and for each its current target's signature,
- * its chunk count and one chunk's paint (false: the bus was busy, retry).
- * Every chunk paints its whole share of the slot's footprint, background
- * included. */
+ * its chunk count, a chunk's piece count, and one piece's paint (false: the
+ * bus was busy, retry). A chunk is a logical op (C9 counts them); its pieces
+ * together paint the chunk's whole share of the slot's footprint, background
+ * included, and each piece sends at most MB_PASS_BYTES of CPU-fed pixels
+ * (C4). One piece is sent a pass. */
 typedef struct {
     uint8_t n;
     uint16_t (*sig)(uint8_t slot);
     uint8_t (*chunks)(uint8_t slot);
-    bool (*paint)(uint8_t slot, uint8_t chunk);
+    uint8_t (*pieces)(uint8_t slot, uint8_t chunk);
+    bool (*paint)(uint8_t slot, uint8_t chunk, uint8_t piece);
 } ms_layout_t;
 
 typedef enum {
     MS_STEP_IDLE = 0,   /* everything settled */
     MS_STEP_CLEAR,      /* a band of the clear (or its retry) */
-    MS_STEP_PAINT,      /* a chunk */
-    MS_STEP_BUSY,       /* the bus was busy: the same chunk next pass */
+    MS_STEP_PAINT,      /* a piece of a chunk */
+    MS_STEP_BUSY,       /* the bus was busy: the same piece next pass */
     MS_STEP_WAIT,       /* a slot's last transfer, or a loss, still to resolve */
     MS_STEP_COMMIT,     /* a slot committed */
     MS_STEP_STOPPED,    /* op 27's partial stop */

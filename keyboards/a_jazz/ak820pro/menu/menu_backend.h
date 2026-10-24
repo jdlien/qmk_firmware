@@ -15,6 +15,11 @@
 #define MB_BANDS  (MB_H / MB_BAND_H)
 #define MB_GLYPH_W 6                      /* FONT_SMALL's cell */
 #define MB_GLYPH_H 14
+/* C4's MENU_PASS_BYTES: the menu's CPU-fed pixel payload in one main-loop
+ * pass. A slot's op is sent in pieces of at most this, one piece a pass, so
+ * no pass sends more. 512 is S1's starting point, before the measurement
+ * (C10) sets it. */
+#define MB_PASS_BYTES 512u
 
 bool mb_clear_band(uint8_t band);                                  /* false: its transfer was given up */
 void mb_fill(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t rgb565);   /* synchronous, inclusive */
