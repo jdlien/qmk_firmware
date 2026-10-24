@@ -841,13 +841,18 @@ static bool dbg_force_recompose = false;
  * last one's, when the page is reset, and when a loss invalidates it: a
  * repair is a new generation. dbg_sec is the RTC second the composition
  * shows, from the same rtc_get_time() sample that composes Camera's clock. */
+#ifdef AK820_DEV_HOOKS
 static uint8_t    dbg_gen, dbg_done_gen;
 static uint8_t    dbg_sec = 0xFFu;
 static bool       dbg_composed;        /* a composition since the page was entered or reset */
 static uint16_t   dbg_sum;             /* the last composition's checksum */
-static rtc_time_t compose_now;         /* the sample this composition uses */
-static bool       compose_now_ok;
 static void       dbg_note_composed(void);   /* after the camera page's grids */
+#    define DBG_GEN(stmt) do { stmt; } while (0)
+#else
+#    define DBG_GEN(stmt) do { } while (0)
+#endif
+static rtc_time_t compose_now;         /* the sample this composition uses: Camera's clock */
+static bool       compose_now_ok;
 
 /* Recompose on the next tick regardless of the second edge, so hold-Fn+D shows
  * its zeros immediately instead of up to a second later. Composition is
@@ -869,7 +874,7 @@ static void draw_debug_page(void) {
         if (memcmp(dbg_text[r], dbg_shown[r], DBG_COLS) != 0)
             dbg_dirty |= (uint16_t)(1u << r);
 
-    dbg_note_composed();
+    DBG_GEN(dbg_note_composed());
 }
 
 /* One changed cell per call, non-blocking. Returns true if it owned this pass.
@@ -1050,6 +1055,7 @@ static void cam_compose(void) {
     cam_set(3, t);
 }
 
+#ifdef AK820_DEV_HOOKS
 /* C10: a new generation when the composition's text differs from the last
  * one's, both grids together; the second it shows. */
 static void dbg_note_composed(void) {
@@ -1063,6 +1069,7 @@ static void dbg_note_composed(void) {
     dbg_composed = true;
     dbg_sec      = compose_now_ok ? compose_now.seconds : 0xFFu;
 }
+#endif
 
 /* One changed cell per call, non-blocking, as debug_pump_glyph(). Returns true
  * if it owned this pass. */
@@ -1260,9 +1267,7 @@ static void debug_page_reset(bool camera) {
     dbg_dirty = 0;
     cam_reset();
     dbg_force_recompose = true;
-    dbg_composed        = false;   /* C10: incomplete until its first composition is painted */
-    dbg_gen++;
-    dbg_sec = 0xFFu;
+    DBG_GEN(dbg_composed = false; dbg_gen++; dbg_sec = 0xFFu);   /* C10: incomplete until its first composition is painted */
 }
 
 /* A loss under the debug page: only the page showing is invalidated, so every
@@ -1278,7 +1283,7 @@ static void debug_page_invalidate(void) {
         dbg_dirty = (uint16_t)((1u << DBG_ROWS) - 1u);
     }
     debug_clear_band = 1;
-    dbg_gen++;   /* C10: the repair is a new generation */
+    DBG_GEN(dbg_gen++);   /* C10: the repair is a new generation */
 }
 
 /* The DBG_PAGE key and op 1: dashboard -> Health -> Camera -> dashboard on
