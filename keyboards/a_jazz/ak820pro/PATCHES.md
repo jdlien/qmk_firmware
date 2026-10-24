@@ -41,6 +41,12 @@ tip. The branch carries:
       the drain's re-reads included) and `SN32_SERIAL_RXDROP_HOOK` (each byte
       the input queue refused);
     - entry and exit hooks on the USB and system-timer handlers.
+- one from 2026-10-24, **on branch `gremlin/s1-fifo-ie` only until S1
+  merges** (`plans/CONFIG-MENU-BUILD-PLAN.md`, C4): the SPI LLD's FIFO
+  dispatch respects IE and transfer ownership. With RXFIFOTHIE off, a board's
+  polled send (`lcd_bus.c`'s `spi0_poll_send`) owns the FIFO, and the handler
+  leaves it alone. With no transfer active, it drains RX and clears the flag
+  without running the completion code.
 
 `git submodule update` can no longer silently destroy them — it will detach
 to the pinned (patched) commit instead.
