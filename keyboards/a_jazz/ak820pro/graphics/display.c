@@ -3423,21 +3423,37 @@ static void retire_line(uint8_t slot) {
 }
 
 /* The housekeeping repaint, staged (C10's whole-pass target; GREMLIN-RESULTS
- * §19b): a track change from two lines to one cleared the old icon, drew the
- * new one, cleared the vacated cells and the retired line, and redrew the
+ * §19b-c): a track change from two lines to one cleared the old icon, drew
+ * the new one, cleared the vacated cells and the retired line, and redrew the
  * icon if a clear reached it -- 13.4 ms of one pass (the probe: the icon
- * 3.7 ms, each clear up to 2.7), and a 19.6 ms pass with the rest. Now one
- * HEAVY step a tick: a step that clears or draws nothing goes straight on to
- * the next. The order is the forced path's (icon first: see band_clear), the
- * layout is decided once at the start, and a text change during the sequence
- * leaves text_dirty set for the next one. The forced path (the restore's
- * text stage, after a whole-panel clear) still runs it all at once. */
-typedef enum { TS_IDLE = 0, TS_ICON_CLEAR, TS_ICON_DRAW, TS_LINE0, TS_LINE1, TS_ICON_FIX } ts_step_t;
+ * 3.7 ms, each clear up to 2.7), and a 19.6 ms pass with the rest.
+ *
+ * Now at most one HEAVY step (a clear, or an icon drawn) a main-loop PASS --
+ * ts_heavy_this_pass, cleared by display_pass_end(), since the RTC edge and
+ * the 10 Hz block can both call in one pass (codex) -- and a step that does
+ * neither goes straight on to the next. The icon first (see band_clear).
+ *
+ * ⚠️ THE LINES' ORDER IS ABOUT PIXELS, NOT CALLS. Staged, a line's glyphs
+ * can finish painting before the next step runs, so no later step may clear
+ * over a line already painted. The big face's line 0 (y 29-51) overlaps line
+ * 1's row (y 41-54): a sequence that retires line 1 (one line, the overlay,
+ * none) retires it FIRST, then paints line 0. Two lines keep 0 then 1: line
+ * 1's clears stay in its own row, below line 0's small one (y 27-40). Painting
+ * line 0 first and retiring line 1 after cut the new title's bottom off for
+ * good (codex, f78e1157). The forced path, all in one pass with line 0's
+ * glyphs still queued during line 1's clear, keeps its old order.
+ *
+ * The layout and the icon are decided at the start; the strings are read as
+ * each line is queued. A change mid-sequence leaves text_dirty set for the
+ * next one. The forced path (the restore's text stage, after a whole-panel
+ * clear) still runs it all at once and cancels a staged sequence. */
+typedef enum { TS_IDLE = 0, TS_ICON_CLEAR, TS_ICON_DRAW, TS_LINE_A, TS_LINE_B, TS_ICON_FIX } ts_step_t;
 typedef enum { TS_NONE = 0, TS_STATUS, TS_TWO, TS_ONE } ts_layout_t;
 static ts_step_t   ts_step = TS_IDLE;
 static ts_layout_t ts_layout;
 static uint8_t     ts_icon;
 static uint16_t    ts_icon_y;
+static bool        ts_heavy_this_pass = false;
 
 static void text_line_step(uint8_t line) {
     /* What the sequence started with, unless it has gone since (the text
@@ -3445,6 +3461,7 @@ static void text_line_step(uint8_t line) {
      * brings the next sequence. */
     ts_layout_t lay = ts_layout;
     if ((lay == TS_STATUS && !conn_status_str) || ((lay == TS_TWO || lay == TS_ONE) && !text_present)) lay = TS_NONE;
+    if (line == 0) band_mark_painted(lay == TS_STATUS ? conn_status_kind : lay == TS_NONE ? BAND_NONE : BAND_TEXT);
     if (lay == TS_STATUS) {
         if (line == 0) queue_line(0, FONT_STATUS, CONN_STATUS_X, TEXT_Y + TEXT_BIG_DY, conn_status_str);
         else retire_line(1);
@@ -3462,9 +3479,11 @@ static void text_line_step(uint8_t line) {
     }
 }
 
-/* One heavy step, or the rest of the sequence if nothing in it is heavy. */
+/* Steps until one is heavy, or this pass has had its heavy step. */
 static void text_slot_steps(void) {
-    while (ts_step != TS_IDLE) {
+    /* Two lines: 0 then 1. Otherwise line 1 retires first (the comment above). */
+    const uint8_t first = ts_layout == TS_TWO ? 0 : 1;
+    while (ts_step != TS_IDLE && !ts_heavy_this_pass) {
         bool     moved  = ts_icon != last_icon_drawn || ts_icon_y != last_icon_y;
         uint16_t clears = band_clears;
         bool     heavy  = false;
@@ -3486,16 +3505,15 @@ static void text_slot_steps(void) {
                     last_icon_y     = ts_icon_y;
                     icon_clobbered  = false;   /* just painted it; only LATER clears matter */
                 }
-                ts_step = TS_LINE0;
+                ts_step = TS_LINE_A;
                 break;
-            case TS_LINE0:
-                band_mark_painted(ts_layout == TS_STATUS ? conn_status_kind : ts_layout == TS_NONE ? BAND_NONE : BAND_TEXT);
-                text_line_step(0);
+            case TS_LINE_A:
+                text_line_step(first);
                 heavy   = band_clears != clears;
-                ts_step = TS_LINE1;
+                ts_step = TS_LINE_B;
                 break;
-            case TS_LINE1:
-                text_line_step(1);
+            case TS_LINE_B:
+                text_line_step((uint8_t)(1u - first));
                 heavy   = band_clears != clears;
                 ts_step = TS_ICON_FIX;
                 break;
@@ -3511,7 +3529,7 @@ static void text_slot_steps(void) {
                 ts_step = TS_IDLE;
                 break;
         }
-        if (heavy) return;
+        if (heavy) ts_heavy_this_pass = true;
     }
 }
 
@@ -3767,6 +3785,7 @@ bool display_wake_notice_take(void) {
 
 void display_pass_end(void) {
     batt_painted_this_pass = false;
+    ts_heavy_this_pass     = false;
     pass_deferred          = false;
     clock_ticked_this_pass = false;
     dbg_composed_this_pass = false;
