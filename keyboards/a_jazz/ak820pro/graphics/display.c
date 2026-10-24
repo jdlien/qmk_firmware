@@ -3051,8 +3051,10 @@ static bool rects_overlap(uint16_t ax, uint16_t ay, uint16_t aw, uint16_t ah,
  * ⚠️ DO NOT "FIX" THE ICON/OVERLAP BY DRAWING THE ICON AFTER THE TEXT. That
  * breaks the other direction: entering the overlay, the icon's clear erases the
  * overlay's first glyph at x=4. Icon-first is required. */
+static uint16_t band_clears;   /* every band_clear: the staged text slot's measure of a heavy step */
 static void band_clear(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
     DPROBE(DP_BAND_CLEAR, lcd_clear_rect(x, y, w, h));
+    band_clears++;
 
     if (last_icon_drawn != DISPLAY_ICON_NONE &&
         rects_overlap(x, y, w, h, 0, last_icon_y, TEXT_ICON_W, TEXT_ICON_H))
@@ -3420,6 +3422,99 @@ static void retire_line(uint8_t slot) {
     shadow[slot].valid = false;
 }
 
+/* The housekeeping repaint, staged (C10's whole-pass target; GREMLIN-RESULTS
+ * §19b): a track change from two lines to one cleared the old icon, drew the
+ * new one, cleared the vacated cells and the retired line, and redrew the
+ * icon if a clear reached it -- 13.4 ms of one pass (the probe: the icon
+ * 3.7 ms, each clear up to 2.7), and a 19.6 ms pass with the rest. Now one
+ * HEAVY step a tick: a step that clears or draws nothing goes straight on to
+ * the next. The order is the forced path's (icon first: see band_clear), the
+ * layout is decided once at the start, and a text change during the sequence
+ * leaves text_dirty set for the next one. The forced path (the restore's
+ * text stage, after a whole-panel clear) still runs it all at once. */
+typedef enum { TS_IDLE = 0, TS_ICON_CLEAR, TS_ICON_DRAW, TS_LINE0, TS_LINE1, TS_ICON_FIX } ts_step_t;
+typedef enum { TS_NONE = 0, TS_STATUS, TS_TWO, TS_ONE } ts_layout_t;
+static ts_step_t   ts_step = TS_IDLE;
+static ts_layout_t ts_layout;
+static uint8_t     ts_icon;
+static uint16_t    ts_icon_y;
+
+static void text_line_step(uint8_t line) {
+    /* What the sequence started with, unless it has gone since (the text
+     * expired, the overlay released): then the line retires, and text_dirty
+     * brings the next sequence. */
+    ts_layout_t lay = ts_layout;
+    if ((lay == TS_STATUS && !conn_status_str) || ((lay == TS_TWO || lay == TS_ONE) && !text_present)) lay = TS_NONE;
+    if (lay == TS_STATUS) {
+        if (line == 0) queue_line(0, FONT_STATUS, CONN_STATUS_X, TEXT_Y + TEXT_BIG_DY, conn_status_str);
+        else retire_line(1);
+    } else if (lay == TS_TWO) {
+        if (line == 0) queue_line(0, FONT_SMALL, TEXT_X, TEXT_Y, text_buf[0]);
+        else queue_line(1, FONT_SMALL, TEXT_X2, TEXT_Y + TEXT_LINE_H, text_buf[1]);
+    } else if (lay == TS_ONE) {
+        if (line == 0) {
+            bool big = strlen(text_buf[0]) <= TEXT_BIG_MAX;
+            queue_line(0, big ? FONT_STATUS : FONT_SMALL, TEXT_X,
+                       TEXT_Y + (big ? TEXT_BIG_DY : TEXT_FONT_DY), text_buf[0]);
+        } else retire_line(1);
+    } else {
+        retire_line(line);
+    }
+}
+
+/* One heavy step, or the rest of the sequence if nothing in it is heavy. */
+static void text_slot_steps(void) {
+    while (ts_step != TS_IDLE) {
+        bool     moved  = ts_icon != last_icon_drawn || ts_icon_y != last_icon_y;
+        uint16_t clears = band_clears;
+        bool     heavy  = false;
+        switch (ts_step) {
+            case TS_ICON_CLEAR:
+                if (moved && last_icon_drawn != DISPLAY_ICON_NONE) {
+                    band_clear(0, last_icon_y, TEXT_ICON_W, TEXT_ICON_H);
+                    heavy = true;
+                }
+                ts_step = TS_ICON_DRAW;
+                break;
+            case TS_ICON_DRAW:
+                if (moved) {
+                    if (ts_icon != DISPLAY_ICON_NONE) {
+                        draw_text_icon(0, ts_icon_y, ts_icon);
+                        heavy = true;
+                    }
+                    last_icon_drawn = ts_icon;
+                    last_icon_y     = ts_icon_y;
+                    icon_clobbered  = false;   /* just painted it; only LATER clears matter */
+                }
+                ts_step = TS_LINE0;
+                break;
+            case TS_LINE0:
+                band_mark_painted(ts_layout == TS_STATUS ? conn_status_kind : ts_layout == TS_NONE ? BAND_NONE : BAND_TEXT);
+                text_line_step(0);
+                heavy   = band_clears != clears;
+                ts_step = TS_LINE1;
+                break;
+            case TS_LINE1:
+                text_line_step(1);
+                heavy   = band_clears != clears;
+                ts_step = TS_ICON_FIX;
+                break;
+            case TS_ICON_FIX:
+                /* Repaint the icon if a text clear reached into it. */
+                if (icon_clobbered && ts_icon != DISPLAY_ICON_NONE && last_icon_drawn == ts_icon) {
+                    draw_text_icon(0, ts_icon_y, ts_icon);
+                    heavy = true;
+                }
+                ts_step = TS_IDLE;
+                break;
+            default:
+                ts_step = TS_IDLE;
+                break;
+        }
+        if (heavy) return;
+    }
+}
+
 static void draw_text_slot(bool force) {
     // Expire before drawing, so a stale slot blanks itself without the host
     // having to send anything; and a media key's guess at the icon likewise.
@@ -3429,6 +3524,10 @@ static void draw_text_slot(bool force) {
         playback_title_gone();
     }
     icon_guess_expire(timer_read32());
+    if (!force && ts_step != TS_IDLE) {   /* a staged repaint under way: its next step */
+        text_slot_steps();
+        return;
+    }
     if (!force && !text_dirty) return;
     /* A previous diff is still being pumped: computing a new one against a
      * half-painted panel would corrupt the shadows. Keep the dirty flag and
@@ -3437,6 +3536,7 @@ static void draw_text_slot(bool force) {
     if (!force && gq_pending()) return;
     text_dirty = false;
     icon_clobbered = false;
+    ts_step        = TS_IDLE;   /* forced: whatever was staged is repainted whole below */
 
     if (force) {
         /* A forced repaint follows a full-screen clear (the Fn+D restore's
@@ -3469,6 +3569,17 @@ static void draw_text_slot(bool force) {
         else if (strlen(text_buf[0]) <= TEXT_BIG_MAX)
                                                   icon_y = TEXT_Y + TEXT_BIG_DY + 5;
         else                                      icon_y = TEXT_Y + TEXT_FONT_DY;
+    }
+    if (!force) {   /* staged: this tick's first heavy step, the rest on later ticks */
+        ts_icon   = want_icon;
+        ts_icon_y = icon_y;
+        ts_layout = conn_status_str                ? TS_STATUS
+                  : text_present && text_buf[1][0] ? TS_TWO
+                  : text_present && text_buf[0][0] ? TS_ONE
+                                                   : TS_NONE;
+        ts_step   = TS_ICON_CLEAR;
+        text_slot_steps();
+        return;
     }
     if (want_icon != last_icon_drawn || icon_y != last_icon_y) {
         /* Clear only where the OLD icon actually was. This used to wipe the
