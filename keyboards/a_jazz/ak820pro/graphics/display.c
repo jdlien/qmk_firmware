@@ -428,6 +428,8 @@ static bool cam_pump_glyph(void);    // one changed camera-page cell, non-blocki
 static void debug_restore_step(void); // one step of the restore's CLEAR and STAGES (C1)
 static void draw_conn_row(void);      // three-transport strip, top row
 static void shadow_mark_all_blank(void);   // the restore's clear done: every line and the clock known blank
+static bool battery_outline_pending(void); // the battery's outline still has edges to paint
+static uint8_t restore_sub = 0;            // a restore stage split over passes: its next part
 #ifdef AK820_DEV_HOOKS
 static void debug_done_note(void);          // C10: the debug page's completed generation
 #endif
@@ -1096,6 +1098,17 @@ static bool cam_pump_glyph(void) {
 static void dbg_compose(void) {
     char v[24], *p;
 
+    /* The camera page draws none of the debug rows: its four lines are its
+     * own (cam_compose), and a debug cell left non-blank would paint over
+     * them. It composes only its own: composing all nine Health rows behind
+     * it, then blanking them, made Camera's passes 15-19 ms (HC_ACCT, the S1
+     * gate, 10-24). */
+    if (debug_big) {
+        for (uint8_t r = 0; r < DBG_ROWS; r++) dbg_row(r, "", "");
+        cam_compose();
+        return;
+    }
+
     /* Uptime -- the timebase for every since-boot counter below, and the thing
      * that says whether a reading is meaningful yet. */
     uint32_t up = timer_read32() / 1000u;
@@ -1236,13 +1249,6 @@ static void dbg_compose(void) {
             dbg_u32(p, mv);
         }
         dbg_row(8, "Batt", v);
-    }
-
-    /* The camera page draws none of the debug rows: its four lines are its
-     * own (cam_compose), and a debug cell left non-blank would paint over them. */
-    if (debug_big) {
-        for (uint8_t r = 0; r < DBG_ROWS; r++) dbg_row(r, "", "");
-        cam_compose();
     }
 }
 
@@ -1478,7 +1484,7 @@ static void debug_restore_step(void) {
 
     /* Anything queued belongs to the pre-clear frame; painting it afterwards
      * would scatter stale glyphs over the fresh dashboard. */
-    if (step == 1) { display_queue_discard(); locks_stage_first = true; }
+    if (step == 1) { display_queue_discard(); locks_stage_first = true; restore_sub = 0; }
 
     if (step <= DBG_CLEAR_BANDS) {
         /* A band whose transfer was given up is retried, the cursor not
@@ -1510,13 +1516,30 @@ static void debug_restore_step(void) {
             logo_os_stale = false;
             break;
         case 2:
-            draw_conn_row();
-            logo_conn_stale     = false;
+            /* The connection row (a 3.8 KB DMA) and the clock (its forced
+             * band clear) in two passes: together they were 8.7 ms of one
+             * (the display probe, 10-24). The stage holds until both. */
+            if (!restore_sub) {
+                draw_conn_row();
+                logo_conn_stale = false;
+                restore_sub     = 1;
+                return;
+            }
+            restore_sub         = 0;
             clock_force_repaint = true;   /* draw_clock queues; cheap here */
             draw_clock();
             break;
         case 3: draw_conn_number(true); break;
-        case 4: draw_battery(true);     break;
+        case 4:
+            /* The outline, one edge a pass: five fills, each with its window
+             * sent a byte at a time, were 9.6 ms of one pass. The stage holds
+             * until the outline is up; the bolt, text and bar follow on the
+             * housekeeping tick, as before. */
+            draw_battery(!restore_sub);
+            restore_sub = 1;
+            if (battery_outline_pending()) return;
+            restore_sub = 0;
+            break;
         case 5:
             /* Lock band, ONE component per pass. A label is up to four
              * synchronous glyphs (~10 ms), and one draw_locks(true) with
@@ -1871,7 +1894,9 @@ static void draw_bolt_slot(bool absent, bool chrg, uint8_t bulb) {
 #define BATT_DIRTY_BAR     0x08u
 #define BATT_DIRTY_ALL     0x0Fu
 static uint8_t batt_dirty = 0;
+static uint8_t outline_edge = 0;     /* the outline's next edge: 0-4 */
 static uint8_t txt_done   = 0;       /* glyphs of the current text painted */
+static bool battery_outline_pending(void) { return (batt_dirty & BATT_DIRTY_OUTLINE) != 0; }
 static bool    txt_placed = false;   /* its x is set and its vacated cells cleared */
 /* At most ONE component per main-loop pass. display_housekeeping_task() runs
  * from the RTC second edge AND the 10 Hz tick, and a forced repaint (the
@@ -1975,6 +2000,7 @@ static void draw_battery(bool force) {
          * nothing of ours is on it. */
         last_fw = 0; last_txt_x = PANEL_WIDTH; last_txt_w = 0;
         txt_done = 0; txt_placed = false;
+        outline_edge = 0;
         batt_dirty = BATT_DIRTY_ALL;
     }
     /* The bar the panel should show. Marked by the fill it would paint, not by
@@ -2019,18 +2045,26 @@ static void draw_battery(bool force) {
      * forced repaint's clear, and everything else clears exactly the pixels it
      * vacates. */
     if (batt_dirty & BATT_DIRTY_OUTLINE) {
-        batt_dirty &= (uint8_t)~BATT_DIRTY_OUTLINE;
         uint16_t outline = COL_FG;
         // Body outline: four 1px edges rather than a filled rect, so the
         // interior stays background and the fill below can be drawn
-        // independently.
-        lcd_fill_rect(BATT_X0, BATT_Y0, BATT_X1, BATT_Y0, outline);   // top
-        lcd_fill_rect(BATT_X0, BATT_Y1, BATT_X1, BATT_Y1, outline);   // bottom
-        lcd_fill_rect(BATT_X0, BATT_Y0, BATT_X0, BATT_Y1, outline);   // left
-        lcd_fill_rect(BATT_X1, BATT_Y0, BATT_X1, BATT_Y1, outline);   // right
-        // Terminal nub on the right.
-        lcd_fill_rect(BATT_X1 + 1, BATT_Y0 + BATT_NUB_INSET,
-                      BATT_X1 + BATT_NUB_W, BATT_Y1 - BATT_NUB_INSET, outline);
+        // independently. One edge a call: each fill's window goes a byte at
+        // a time, and the five together were 9.6 ms of one pass (the display
+        // probe, 10-24).
+        switch (outline_edge) {
+            case 0: lcd_fill_rect(BATT_X0, BATT_Y0, BATT_X1, BATT_Y0, outline); break;   // top
+            case 1: lcd_fill_rect(BATT_X0, BATT_Y1, BATT_X1, BATT_Y1, outline); break;   // bottom
+            case 2: lcd_fill_rect(BATT_X0, BATT_Y0, BATT_X0, BATT_Y1, outline); break;   // left
+            case 3: lcd_fill_rect(BATT_X1, BATT_Y0, BATT_X1, BATT_Y1, outline); break;   // right
+            default:   // terminal nub on the right
+                lcd_fill_rect(BATT_X1 + 1, BATT_Y0 + BATT_NUB_INSET,
+                              BATT_X1 + BATT_NUB_W, BATT_Y1 - BATT_NUB_INSET, outline);
+                break;
+        }
+        if (++outline_edge > 4) {
+            outline_edge = 0;
+            batt_dirty &= (uint8_t)~BATT_DIRTY_OUTLINE;
+        }
         return;
     }
 

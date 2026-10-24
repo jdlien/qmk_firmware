@@ -209,7 +209,13 @@ ms_step_t ms_step(void) {
 
     if (cursor != NO_CURSOR) {
         ms_slot_t *s = &slots[cursor];
-        if (s->state == MS_PARTIAL && s->sig == layout->sig(cursor) && s->gen == tgen) {
+        /* Resumed while its own signature is unchanged (revision 13): the
+         * signature is the slot's whole target, so the pieces already sent
+         * are still right. A retarget that only moved other slots no longer
+         * restarts it -- with ops of several pieces that starved a knob spin
+         * (the S1 gate, 10-24). A layout change or a loss invalidates every
+         * slot, and those restart. */
+        if (s->state == MS_PARTIAL && s->sig == layout->sig(cursor)) {
             if (chunk < layout->chunks(cursor)) return paint_piece();
             /* Every chunk sent: committed only with the last transfer done and
              * no loss waiting to be taken. */
