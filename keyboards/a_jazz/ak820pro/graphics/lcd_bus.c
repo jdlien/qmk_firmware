@@ -141,7 +141,12 @@ static void tx8(uint8_t b) { spiSend(&SPID0, 1, &b); }
  *     the RX FIFO can't overflow.
  *   - Before the interrupt comes back, RX is drained and its threshold flag
  *     cleared: a set flag would run the idle driver's completion code.
- *   - Bounded. A stuck shift gives up, resets the FIFOs and counts. */
+ *   - Bounded, counted in polling work (time in the row ISR costs none). A
+ *     stuck shift or a stuck BUSY gives up the same way: the FIFOs reset, the
+ *     give-up counted (PO_FAIL_SPI0_POLL on dev builds), and blit_lost set, so
+ *     the panel's owner repaints as it does after a DMA given up. The caller
+ *     stops the operation: the panel got only a prefix (codex, 10-24). */
+static volatile bool blit_lost;   /* defined with the blit state below */
 #define SPI0_POLL_SPIN_PER_BYTE 64u
 static uint16_t spi0_poll_giveups;
 #ifdef AK820_DEV_HOOKS
@@ -150,24 +155,29 @@ uint16_t lcd_spi0_poll_giveups(void) { return spi0_poll_giveups; }
 #else
 #    define POLL_FAIL() ((void)0)
 #endif
-static void spi0_poll_send(const uint8_t *buf, uint32_t n) {
+static bool spi0_poll_send(const uint8_t *buf, uint32_t n) {
     SN_SPI0->IE = 0;                                     /* RXFIFOTHIE off */
     uint32_t tx = 0, rx = 0, spin = 0;
     const uint32_t limit = n * SPI0_POLL_SPIN_PER_BYTE + 1000u;
+    bool ok = true;
     while (rx < n) {
         while (tx < n && (tx - rx) < 8u && !SN_SPI0->STAT_b.TX_FULL) SN_SPI0->DATA = buf[tx++];
         while (!SN_SPI0->STAT_b.RX_EMPTY) { (void)SN_SPI0->DATA; rx++; }
-        if (++spin > limit) {
-            SN_SPI0->CTRL0_b.FRESET = 0b11;
-            if (spi0_poll_giveups < 0xFFFFu) spi0_poll_giveups++;
-            POLL_FAIL();
-            break;
-        }
+        if (++spin > limit) { ok = false; break; }
     }
-    while (SN_SPI0->STAT_b.BUSY) { if (++spin > limit + 1000u) break; }
-    while (!SN_SPI0->STAT_b.RX_EMPTY) (void)SN_SPI0->DATA;
+    while (ok && SN_SPI0->STAT_b.BUSY) {
+        if (++spin > limit + 1000u) ok = false;
+    }
+    if (!ok) {
+        SN_SPI0->CTRL0_b.FRESET = 0b11;
+        if (spi0_poll_giveups < 0xFFFFu) spi0_poll_giveups++;
+        POLL_FAIL();
+        blit_lost = true;
+    }
+    for (uint32_t d = 0; d < 16u && !SN_SPI0->STAT_b.RX_EMPTY; d++) (void)SN_SPI0->DATA;
     SN_SPI0->IC = 1u << 2;                               /* RXFIFOTHIC: a literal write, as the driver does */
     SN_SPI0->IE = 0b0100;                                /* RXFIFOTHIE back */
+    return ok;
 }
 
 /* One scratch buffer for every CPU push (plans/CONFIG-MENU-BUILD-PLAN.md, C4):
@@ -217,7 +227,7 @@ static void tx_pixels(const uint16_t *px, uint32_t n) {
             lcd_scratch[2*i]   = (uint8_t)(px[i] >> 8);
             lcd_scratch[2*i+1] = (uint8_t)(px[i] & 0xFF);
         }
-        spi0_poll_send(lcd_scratch, c * 2u);
+        if (!spi0_poll_send(lcd_scratch, c * 2u)) break;   /* given up: blit_lost repaints */
         px += c; n -= c;
     }
     scratch_release();
@@ -263,7 +273,7 @@ void lcd_fill_rect(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t 
     for (uint32_t i = 0; i < 256u; i++) { lcd_scratch[2*i] = color >> 8; lcd_scratch[2*i+1] = color & 0xFF; }
     while (px) {
         uint32_t c = px < 256u ? px : 256u;
-        spi0_poll_send(lcd_scratch, c * 2u);
+        if (!spi0_poll_send(lcd_scratch, c * 2u)) break;   /* given up: blit_lost repaints */
         px -= c;
     }
     scratch_release();
@@ -277,6 +287,7 @@ void lcd_fill_rect(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t 
  * other painter can move the window under it. bus_quiesce() stays out of
  * lcd_window(): the DMA arm calls that after marking its own transfer busy. */
 static uint32_t stream_left;
+static bool     stream_broken;   /* a polled send gave up: the rest is dropped, blit_lost repaints */
 #ifdef AK820_DEV_HOOKS
 static bool stream_open;   /* dev builds: a nested, overlong or short stream is PO_FAIL_STREAM */
 #    define STREAM_FAIL() po_note_fail(PO_FAIL_STREAM)
@@ -292,7 +303,8 @@ bool lcd_stream_begin(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
     bus_quiesce();
     scratch_acquire();
     lcd_window(x, y, x + w - 1, y + h - 1);
-    stream_left = (uint32_t)w * h * 2u;
+    stream_left   = (uint32_t)w * h * 2u;
+    stream_broken = false;
     return true;
 }
 void lcd_stream_bytes(const uint8_t *panel_order, uint32_t n) {
@@ -301,7 +313,7 @@ void lcd_stream_bytes(const uint8_t *panel_order, uint32_t n) {
         n = stream_left;
     }
     if (!n) return;
-    spi0_poll_send(panel_order, n);
+    if (stream_broken || !spi0_poll_send(panel_order, n)) stream_broken = true;
     stream_left -= n;
 }
 void lcd_stream_end(void) {
