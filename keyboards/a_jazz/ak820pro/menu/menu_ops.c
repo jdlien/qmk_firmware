@@ -115,6 +115,16 @@ static void put16(uint8_t *p, uint16_t v) {
     p[1] = (uint8_t)(v >> 8);
 }
 
+/* MB_TICK_HZ ticks to whole us or ms, saturating at a u16. */
+static uint16_t ticks_to_us16(uint32_t t) {
+    uint64_t us = (uint64_t)t * 1000000u / MB_TICK_HZ;
+    return us > 0xFFFFu ? 0xFFFFu : (uint16_t)us;
+}
+static uint16_t ticks_to_ms16(uint32_t t) {
+    uint64_t ms = (uint64_t)t * 1000u / MB_TICK_HZ;
+    return ms > 0xFFFFu ? 0xFFFFu : (uint16_t)ms;
+}
+
 static void op27_read(uint8_t *d) {
     memset(&d[5], 0, 27);
     d[5]  = MI_OK;
@@ -145,9 +155,45 @@ static void op27_read(uint8_t *d) {
     d[22] = losses_seen;
     d[23] = mi_capture_bits();
     put16(&d[24], po_invariant_fail());
-    /* 26-27: the last paint's time (S1); 28: the pairing phase (P3) */
+    put16(&d[26], ticks_to_us16(ms_last_op_ticks()));   /* the last ended op's latency (C10) */
+    /* 28: the pairing phase (P3) */
     d[29] = ms_ops();
     d[30] = ms_stopped() ? 1u : 0u;
+    d[31] = env_debug_done() ? 1u : 0u;
+}
+
+/* Sub 10 (C10): timing and targets, read at once. arm 1 starts an interval
+ * after the reply: the maxima and counts zeroed, a new session token. */
+static void op27_meas(uint8_t *d) {
+    bool arm = d[5] != 0;
+    env_meas_t m;
+    env_meas(&m);
+    uint32_t band = ms_band_max_ticks() > m.band_max_ticks ? ms_band_max_ticks() : m.band_max_ticks;
+    memset(&d[5], 0, 27);
+    d[5] = MI_OK;
+    put16(&d[6], ticks_to_us16(ms_piece_max_ticks()));
+    put16(&d[8], ticks_to_us16(ms_op_max_ticks()));
+    put16(&d[10], ticks_to_us16(m.pass_max_ticks));
+    put16(&d[12], m.pass_over15);
+    put16(&d[14], ticks_to_ms16(ms_repaint_max_ticks()));
+    d[16] = ms_tgen();
+    d[17] = ms_settled_count();
+    d[18] = ms_superseded_count();
+    uint16_t bms = ticks_to_ms16(band);
+    d[19] = bms > 0xFFu ? 0xFFu : (uint8_t)bms;
+    d[20] = m.page;
+    d[21] = m.dbg_gen;
+    d[22] = m.dbg_done_gen;
+    d[23] = ms_committed_count();
+    put16(&d[24], m.passes);
+    put16(&d[26], m.token);
+    d[28] = m.health_gen;
+    d[29] = m.dbg_sec;
+    d[30] = m.rtc_sec;
+    if (arm) {   /* the reply above is the old interval's; the next sub 10 reads the new token */
+        ms_meas_reset();
+        (void)env_meas_arm();
+    }
 }
 
 /* A mutation the state can't take answers 2, one while another is
@@ -158,6 +204,15 @@ bool menu_ops_op27(uint8_t *d, uint32_t now) {
 
     if (sub == 5) {
         op27_read(d);
+        return true;
+    }
+    if (sub == 10) {
+        if (d[5] > 1) {
+            memset(&d[5], 0, 27);
+            d[5] = MI_BAD;
+            return true;
+        }
+        op27_meas(d);
         return true;
     }
     switch (sub) {

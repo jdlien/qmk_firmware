@@ -25,4 +25,8 @@ bool mb_clear_band(uint8_t band);                                  /* false: its
 bool mb_fill(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t rgb565);   /* synchronous, inclusive; false: given up, a loss latched */
 bool mb_glyph(char c, uint16_t x, uint16_t y);                     /* false: the bus is busy, try again */
 bool mb_busy(void);                                                /* a DMA in flight */
+/* C10's clock: the system tick (MB_TICK_HZ, 5.33 us), extended to 32 bits.
+ * Differences are taken modulo 2^32. */
+#define MB_TICK_HZ 187500u
+uint32_t mb_now_ticks(void);
 bool mb_lost_pending(void);                                        /* a loss latched, not yet taken */

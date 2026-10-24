@@ -26,6 +26,7 @@
 #include "health.h"        /* debug-page counters */
 #include "menu/panel_owner.h"   /* who owns the panel: plans/CONFIG-MENU-BUILD-PLAN.md, C1 */
 #include "menu/menu_glue.h"
+#include "menu/menu_meas.h"   /* C10: the clear bands' time */
 #include "param_overlay.h"
 
 #ifdef AK820_DEV_HOOKS
@@ -426,6 +427,10 @@ static bool debug_pump_glyph(void);  // one changed debug cell, non-blocking
 static bool cam_pump_glyph(void);    // one changed camera-page cell, non-blocking
 static void debug_restore_step(void); // one step of the restore's CLEAR and STAGES (C1)
 static void draw_conn_row(void);      // three-transport strip, top row
+static void shadow_mark_all_blank(void);   // the restore's clear done: every line and the clock known blank
+#ifdef AK820_DEV_HOOKS
+static void debug_done_note(void);          // C10: the debug page's completed generation
+#endif
 static void conn_status_update(void);   // the band's wireless status, before the restore's text stage
 
 /* ---- Playback position ----------------------------------------------------
@@ -830,6 +835,20 @@ static uint16_t dbg_dirty = 0;
  * only the digits that actually changed are repainted. No pass ever blocks. */
 static bool dbg_force_recompose = false;
 
+/* C10 (plans/CONFIG-MENU-BUILD-PLAN.md): which composition the page is on,
+ * and which it has finished painting, so a script can tie a tested update to
+ * its completion. dbg_gen moves when a composition's text differs from the
+ * last one's, when the page is reset, and when a loss invalidates it: a
+ * repair is a new generation. dbg_sec is the RTC second the composition
+ * shows, from the same rtc_get_time() sample that composes Camera's clock. */
+static uint8_t    dbg_gen, dbg_done_gen;
+static uint8_t    dbg_sec = 0xFFu;
+static bool       dbg_composed;        /* a composition since the page was entered or reset */
+static uint16_t   dbg_sum;             /* the last composition's checksum */
+static rtc_time_t compose_now;         /* the sample this composition uses */
+static bool       compose_now_ok;
+static void       dbg_note_composed(void);   /* after the camera page's grids */
+
 /* Recompose on the next tick regardless of the second edge, so hold-Fn+D shows
  * its zeros immediately instead of up to a second later. Composition is
  * RAM-only and painting stays incremental, so this costs nothing. */
@@ -844,10 +863,13 @@ static void draw_debug_page(void) {
     last_sec = sec;
     dbg_force_recompose = false;
 
+    compose_now_ok = rtc_get_time(&compose_now);
     dbg_compose();
     for (uint8_t r = 0; r < DBG_ROWS; r++)
         if (memcmp(dbg_text[r], dbg_shown[r], DBG_COLS) != 0)
             dbg_dirty |= (uint16_t)(1u << r);
+
+    dbg_note_composed();
 }
 
 /* One changed cell per call, non-blocking. Returns true if it owned this pass.
@@ -860,10 +882,11 @@ static bool debug_pump_glyph(void) {
     if (debug_clear_band) {
         /* A band whose transfer was given up is retried, the band not
          * advanced: a clear completes only when every band succeeded (C3). */
-        if (lcd_clear_rect_ok(0, (uint16_t)((debug_clear_band - 1) * DBG_CLEAR_BAND_H),
-                              PANEL_WIDTH, DBG_CLEAR_BAND_H) &&
-            ++debug_clear_band > DBG_CLEAR_BANDS)
-            debug_clear_band = 0;
+        uint32_t t  = meas_ticks();
+        bool     ok = lcd_clear_rect_ok(0, (uint16_t)((debug_clear_band - 1) * DBG_CLEAR_BAND_H),
+                                        PANEL_WIDTH, DBG_CLEAR_BAND_H);
+        meas_band(meas_ticks() - t);
+        if (ok && ++debug_clear_band > DBG_CLEAR_BANDS) debug_clear_band = 0;
         return true;
     }
     /* Exclusive: on the camera page, the Health grid is never painted, even
@@ -1004,9 +1027,9 @@ static void cam_compose(void) {
     }
 
     char clk[9] = "--:--:--";
-    rtc_time_t now;
-    if (rtc_get_time(&now)) {
-        const uint8_t f[3] = {now.hours, now.minutes, now.seconds};
+    if (compose_now_ok) {   /* draw_debug_page()'s sample: dbg_sec is this second */
+        const rtc_time_t now  = compose_now;
+        const uint8_t    f[3] = {now.hours, now.minutes, now.seconds};
         for (uint8_t i = 0; i < 3; i++) {
             clk[i * 3]     = (char)('0' + f[i] / 10u);
             clk[i * 3 + 1] = (char)('0' + f[i] % 10u);
@@ -1025,6 +1048,20 @@ static void cam_compose(void) {
         dbg_append(p, "--");
     }
     cam_set(3, t);
+}
+
+/* C10: a new generation when the composition's text differs from the last
+ * one's, both grids together; the second it shows. */
+static void dbg_note_composed(void) {
+    uint16_t sum = 0;
+    for (uint8_t r = 0; r < DBG_ROWS; r++)
+        for (uint8_t c = 0; c < DBG_COLS; c++) sum = (uint16_t)(sum * 31u + (uint8_t)dbg_text[r][c]);
+    for (uint8_t i = 0; i < CAM_LINES; i++)
+        for (uint8_t c = 0; c < CAM_MAX_COLS; c++) sum = (uint16_t)(sum * 31u + (uint8_t)cam_text[i][c]);
+    if (!dbg_composed || sum != dbg_sum) dbg_gen++;
+    dbg_sum      = sum;
+    dbg_composed = true;
+    dbg_sec      = compose_now_ok ? compose_now.seconds : 0xFFu;
 }
 
 /* One changed cell per call, non-blocking, as debug_pump_glyph(). Returns true
@@ -1223,6 +1260,9 @@ static void debug_page_reset(bool camera) {
     dbg_dirty = 0;
     cam_reset();
     dbg_force_recompose = true;
+    dbg_composed        = false;   /* C10: incomplete until its first composition is painted */
+    dbg_gen++;
+    dbg_sec = 0xFFu;
 }
 
 /* A loss under the debug page: only the page showing is invalidated, so every
@@ -1238,6 +1278,7 @@ static void debug_page_invalidate(void) {
         dbg_dirty = (uint16_t)((1u << DBG_ROWS) - 1u);
     }
     debug_clear_band = 1;
+    dbg_gen++;   /* C10: the repair is a new generation */
 }
 
 /* The DBG_PAGE key and op 1: dashboard -> Health -> Camera -> dashboard on
@@ -1434,9 +1475,23 @@ static void debug_restore_step(void) {
     if (step <= DBG_CLEAR_BANDS) {
         /* A band whose transfer was given up is retried, the cursor not
          * advanced: the clear completes only when every band succeeded. */
-        if (lcd_clear_rect_ok(0, (uint16_t)((step - 1) * DBG_CLEAR_BAND_H),
-                              PANEL_WIDTH, DBG_CLEAR_BAND_H))
+        uint32_t t  = meas_ticks();
+        bool     ok = lcd_clear_rect_ok(0, (uint16_t)((step - 1) * DBG_CLEAR_BAND_H),
+                                        PANEL_WIDTH, DBG_CLEAR_BAND_H);
+        meas_band(meas_ticks() - t);
+        if (ok) {
+            /* The last band: the whole panel is blank, so the text lines'
+             * and the clock's shadows are known blank, not unknown, and
+             * their first paint clears nothing. Their "unknown" full-width
+             * clears were ~3.8 ms each of black on black: most of the text
+             * slot stage's 16 ms and some of the clock stage's 8.5 (the
+             * display probe, 10-24). Nothing the stages paint before them
+             * lands in their rows: the logo and the connection row are
+             * y 0-24, the text band 27-55, the clock 56-78, the locks 82-104
+             * and the battery 105 down. */
+            if (step == DBG_CLEAR_BANDS) shadow_mark_all_blank();
             po_restore_advance();
+        }
         return;
     }
     switch (step - DBG_CLEAR_BANDS) {
@@ -2888,7 +2943,11 @@ static struct {
     char     s[GQ_LINE_MAX + 1];
     bool     valid;
     bool     dropped;   /* the last queue_line lost a glyph: some of it may be up */
+    bool     blank;     /* valid, and blank under ANY rect the slot could own (after a full clear) */
 } shadow[GQ_RUNS];
+/* Every shadow was marked blank by the restore's clear and nothing has
+ * forgotten them since: the restore's text slot stage can trust them. */
+static bool shadows_trusted = false;
 static bool gq_retry_clock = false;   /* housekeeping turns it into clock_force_repaint */
 
 static uint8_t last_icon_drawn = DISPLAY_ICON_NONE;
@@ -2952,7 +3011,8 @@ bool display_bus_idle(void) {
 }
 
 static void shadow_invalidate(void) {
-    for (uint8_t i = 0; i < GQ_RUNS; i++) shadow[i].valid = shadow[i].dropped = false;
+    for (uint8_t i = 0; i < GQ_RUNS; i++) shadow[i].valid = shadow[i].dropped = shadow[i].blank = false;
+    shadows_trusted = false;
     last_icon_drawn = DISPLAY_ICON_NONE;
     ampm.shown      = false;   /* the AM/PM glyph is its own shadow */
 }
@@ -3096,6 +3156,9 @@ void display_blit_pump(void) {
             if (lcd_blit_busy()) { pump_bus_busy(&blocked, &blocked_since); return; }
             blocked = false;
             DPROBE(DP_DBG_GLYPH, debug_pump_glyph());
+#ifdef AK820_DEV_HOOKS
+            debug_done_note();   /* C10: the completed generation catches up as it happens */
+#endif
             return;
         case PANEL_MENU:
             /* The menu's one bounded operation (C3), the same recovery. */
@@ -3187,8 +3250,8 @@ static void queue_line(uint8_t slot, uint16_t font, uint16_t x, uint16_t y,
      *              full-clear its own rect next paint, and the text-line
      *              rects don't mutually overlap. */
     bool unknown = !shadow[slot].valid;
-    bool moved   = !unknown && (shadow[slot].font != font ||
-                                shadow[slot].x != x || shadow[slot].y != y);
+    bool moved   = !unknown && !shadow[slot].blank &&
+                   (shadow[slot].font != font || shadow[slot].x != x || shadow[slot].y != y);
     uint8_t old_n = (moved || unknown) ? 0 : (uint8_t)strlen(shadow[slot].s);
 
     if (moved) {
@@ -3230,6 +3293,7 @@ static void queue_line(uint8_t slot, uint16_t font, uint16_t x, uint16_t y,
     shadow[slot].font = font; shadow[slot].x = x; shadow[slot].y = y;
     shadow[slot].valid   = !dropped;
     shadow[slot].dropped = dropped;
+    shadow[slot].blank   = false;
     /* A glyph that did not fit: the shadow is unknown, so the next paint
      * clears the row and draws it all, and the owner is asked again (the
      * clock through housekeeping: draw_clock clears clock_force_repaint
@@ -3244,8 +3308,24 @@ static void queue_line(uint8_t slot, uint16_t font, uint16_t x, uint16_t y,
  * whole band (every pixel the slot could own), so the next queue_line at
  * this font/x/y paints every cell WITHOUT the unknown-path full-width clear.
  * Only valid right after such a clear -- lying here is the stray-glyph bug. */
+/* The panel was just cleared whole (the restore's last band succeeded):
+ * every slot is blank wherever it lands, so its first paint clears nothing.
+ * Only true right after such a clear -- lying here is the stray-glyph bug. */
+static void shadow_mark_all_blank(void) {
+    for (uint8_t i = 0; i < GQ_RUNS; i++) {
+        shadow[i].s[0]    = '\0';
+        shadow[i].valid   = true;
+        shadow[i].dropped = false;
+        shadow[i].blank   = true;
+    }
+    last_icon_drawn = DISPLAY_ICON_NONE;
+    ampm.shown      = false;
+    shadows_trusted = true;
+}
+
 static void shadow_mark_empty(uint8_t slot, uint16_t font, uint16_t x, uint16_t y) {
     if (slot >= GQ_RUNS) return;
+    shadow[slot].blank = false;
     shadow[slot].font  = font;
     shadow[slot].x     = x;
     shadow[slot].y     = y;
@@ -3257,6 +3337,7 @@ static void shadow_mark_empty(uint8_t slot, uint16_t font, uint16_t x, uint16_t 
 /* Retire a line that is no longer shown, clearing only what it occupied. */
 static void retire_line(uint8_t slot) {
     if (slot >= GQ_RUNS) return;
+    if (shadow[slot].valid && shadow[slot].blank) return;   /* nothing of it is up */
     if (!shadow[slot].valid) {
         /* A line that lost a glyph may be partly up: clear its whole row. */
         uint16_t dh = lcd_font_height(shadow[slot].font);
@@ -3294,10 +3375,14 @@ static void draw_text_slot(bool force) {
         /* A forced repaint follows a full-screen clear (the Fn+D restore's
          * clear bands; display_redraw_dashboard's lcd_clear_rect), so the band
          * is already blank, and nothing the callers draw between lands in it.
-         * The shadows cannot be trusted, though: forget them, and each line's
-         * first paint clears its own row. A band clear here as well was ~8 ms
-         * of the page exit's 28 ms for nothing (flash 2d probe). */
-        shadow_invalidate();
+         * A band clear here as well was ~8 ms of the page exit's 28 ms for
+         * nothing (flash 2d probe). The restore marks the shadows blank when
+         * its clear completes (shadow_mark_all_blank), and those are kept:
+         * forgetting them made each line's first paint a full-width clear of
+         * black on black, most of this stage's 16 ms (the probe, 10-24).
+         * Anything else forgets them, and each line clears its own row. */
+        if (!shadows_trusted) shadow_invalidate();
+        shadows_trusted = false;
     }
 
     /* --- icon: only when it actually changes ------------------------------ */
@@ -3366,6 +3451,35 @@ static void draw_text_slot(bool force) {
 bool display_splash_done(void) { return splash_cleared; }
 
 #ifdef AK820_DEV_HOOKS
+/* C10 (op 27 sub 10 and sub 5 byte 31). The page counts as painted when its
+ * clear is done, its grid clean, no composition pending -- neither forced
+ * nor an RTC second not yet composed -- and no transfer or loss is waiting;
+ * then dbg_done_gen catches up with dbg_gen. */
+static bool debug_painted(void);
+static void debug_done_note(void) {
+    if (debug_painted()) dbg_done_gen = dbg_gen;
+}
+static bool debug_painted(void) {
+    if (!OWNER_IS(PANEL_DEBUG) || !dbg_composed || debug_clear_band || dbg_force_recompose) return false;
+    if (debug_big ? cam_dirty != 0 : dbg_dirty != 0) return false;
+    if (lcd_blit_busy() || lcd_blit_lost_pending()) return false;
+    rtc_time_t t;
+    uint8_t    now = rtc_get_time(&t) ? t.seconds : 0xFFu;
+    return now == dbg_sec;
+}
+void display_debug_meas(uint8_t *page, uint8_t *gen, uint8_t *done_gen, uint8_t *sec) {
+    if (debug_painted()) dbg_done_gen = dbg_gen;
+    *page     = OWNER_IS(PANEL_DEBUG) ? (debug_big ? 2u : 1u) : 0u;
+    *gen      = dbg_gen;
+    *done_gen = dbg_done_gen;
+    *sec      = dbg_sec;
+}
+bool display_debug_done(void) {
+    if (!debug_painted()) return false;
+    dbg_done_gen = dbg_gen;
+    return true;
+}
+
 /* HC_DEVHOOK op 2: probe page 0 or 1 as 14 u16 microsecond values. */
 void display_probe_fill(uint8_t page, uint8_t *out28) {
     memset(out28, 0, 28);

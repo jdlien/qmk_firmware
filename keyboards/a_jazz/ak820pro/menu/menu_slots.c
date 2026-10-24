@@ -21,6 +21,15 @@ static uint8_t   stop_n;          /* op 27's partial stop: pending while > 0 and
 static bool      stopped;
 static bool      stop_cancelled;  /* a pending stop disposed of by a retarget or layout change */
 
+/* C10's measures. */
+static bool      op_started;      /* the current op's first piece has been tried */
+static uint32_t  op_t0;
+static uint32_t  last_op_ticks, op_max_ticks, piece_max_ticks, band_max_ticks, repaint_max_ticks;
+static bool      target_live;     /* a target exists to settle or be superseded */
+static bool      target_settled;  /* ...and it has settled */
+static uint32_t  target_t0;
+static uint8_t   settled_count, superseded_count, committed_count;
+
 void ms_init(void) {
     layout = 0;
     for (uint8_t i = 0; i < MS_MAX_SLOTS; i++) slots[i] = (ms_slot_t){0, MS_EMPTY, 0};
@@ -32,6 +41,15 @@ void ms_init(void) {
     ops_inflight = false;
     stop_n = 0;
     stopped = stop_cancelled = false;
+    op_started = target_live = target_settled = false;
+    op_t0 = target_t0 = 0;
+    last_op_ticks = 0;
+    settled_count = superseded_count = committed_count = 0;
+    ms_meas_reset();
+}
+
+void ms_meas_reset(void) {
+    op_max_ticks = piece_max_ticks = band_max_ticks = repaint_max_ticks = 0;
 }
 
 /* An op's end: counted once, and a stop it reaches latched in the same step
@@ -41,6 +59,11 @@ void ms_init(void) {
 static void end_op(void) {
     if (ops < 0xFFu) ops++;
     if (stop_n && ops >= stop_n && !mb_busy()) stopped = true;
+    if (op_started) {
+        op_started    = false;
+        last_op_ticks = mb_now_ticks() - op_t0;
+        if (last_op_ticks > op_max_ticks) op_max_ticks = last_op_ticks;
+    }
 }
 
 /* An asynchronous op ends when its transfer has ended (completed or given
@@ -58,6 +81,11 @@ static void settle_ops(void) {
  * first, so a stop it reached is latched, not cancelled. */
 static void new_target(void) {
     settle_ops();
+    if (target_live && !target_settled) superseded_count++;
+    target_live    = true;
+    target_settled = false;
+    target_t0      = mb_now_ticks();
+    op_started     = false;   /* an op cut short by a retarget is abandoned, not timed */
     tgen++;
     ops          = 0;
     ops_inflight = false;
@@ -90,6 +118,7 @@ void ms_retarget(void) { new_target(); }
 
 void ms_invalidate_all(void) {
     settle_ops();   /* an op that ended latches its stop before the loss resets anything */
+    op_started = false;
     if (!layout) return;
     for (uint8_t i = 0; i < layout->n; i++) slots[i].state = MS_INVALID;
     cursor = NO_CURSOR;
@@ -99,13 +128,32 @@ static bool settled(uint8_t i) {
     return slots[i].state == MS_COMMITTED && slots[i].sig == layout->sig(i);
 }
 
+/* C10: a target settles when pixels_done first becomes true for it, which
+ * is the moment its last slot commits with no clear running. It's noted
+ * there, at IDLE, and whenever ms_settled() finds it so, whichever comes
+ * first. A loss's repaint of the same target doesn't settle it again. */
+static void note_settled(void) {
+    if (!target_live || target_settled) return;
+    target_settled = true;
+    settled_count++;
+    uint32_t dt = mb_now_ticks() - target_t0;
+    if (dt > repaint_max_ticks) repaint_max_ticks = dt;
+}
+
 /* One piece. The chunk's op ends with its last piece: at once for a fill,
  * when its DMA ends for a glyph. A failed piece ends the op there (counted,
  * its stop latched) and the slot sends nothing more: its PARTIAL state
  * waits for the owner's loss handler, which repaints (C4). */
 static ms_step_t paint_piece(void) {
+    uint32_t t = mb_now_ticks();
+    if (!op_started) {
+        op_started = true;
+        op_t0      = t;
+    }
     ms_paint_t r = layout->paint(cursor, chunk, piece);
     if (r == MS_PAINT_BUSY) return MS_STEP_BUSY;   /* the same piece next pass */
+    uint32_t dt = mb_now_ticks() - t;
+    if (dt > piece_max_ticks) piece_max_ticks = dt;
     if (r == MS_PAINT_FAILED) {
         piece = 0;
         chunk = layout->chunks(cursor);
@@ -130,9 +178,11 @@ ms_step_t ms_step(void) {
     /* A clear completes only when every band succeeded: a failed band is
      * retried, the cursor not advanced. */
     if (clear_band) {
-        if (mb_clear_band((uint8_t)(clear_band - 1u))) {
-            if (++clear_band > MB_BANDS) clear_band = 0;
-        }
+        uint32_t t  = mb_now_ticks();
+        bool     ok = mb_clear_band((uint8_t)(clear_band - 1u));
+        uint32_t dt = mb_now_ticks() - t;
+        if (dt > band_max_ticks) band_max_ticks = dt;
+        if (ok && ++clear_band > MB_BANDS) clear_band = 0;
         return MS_STEP_CLEAR;
     }
 
@@ -152,6 +202,8 @@ ms_step_t ms_step(void) {
             if (mb_busy() || mb_lost_pending()) return MS_STEP_WAIT;
             s->state = MS_COMMITTED;
             cursor   = NO_CURSOR;
+            committed_count++;
+            (void)ms_settled();   /* the last commit: its target settles now */
             return MS_STEP_COMMIT;
         }
         /* Its target changed, or a loss invalidated it: it restarts from its
@@ -169,6 +221,7 @@ ms_step_t ms_step(void) {
         chunk = piece  = 0;
         return paint_piece();
     }
+    note_settled();   /* nothing left for this target */
     return MS_STEP_IDLE;
 }
 
@@ -178,7 +231,9 @@ bool ms_settled(void) {
     if (!layout || clear_band) return false;
     for (uint8_t i = 0; i < layout->n; i++)
         if (!settled(i)) return false;
-    return !mb_busy();
+    if (mb_busy()) return false;
+    note_settled();
+    return true;
 }
 
 uint8_t ms_unsettled(void) {
@@ -209,3 +264,13 @@ bool ms_stop_cancelled_take(void) {
     return c;
 }
 const ms_slot_t *ms_slot(uint8_t i) { return i < MS_MAX_SLOTS ? &slots[i] : 0; }
+
+uint32_t ms_last_op_ticks(void)     { return last_op_ticks; }
+uint32_t ms_op_max_ticks(void)      { return op_max_ticks; }
+uint32_t ms_piece_max_ticks(void)   { return piece_max_ticks; }
+uint32_t ms_band_max_ticks(void)    { return band_max_ticks; }
+uint32_t ms_repaint_max_ticks(void) { return repaint_max_ticks; }
+uint8_t  ms_tgen(void)              { return tgen; }
+uint8_t  ms_settled_count(void)     { return settled_count; }
+uint8_t  ms_superseded_count(void)  { return superseded_count; }
+uint8_t  ms_committed_count(void)   { return committed_count; }

@@ -66,3 +66,15 @@ void      ms_stop_release(void);                 /* the next op 27 sub 0: a reac
 bool      ms_stopped(void);
 bool      ms_stop_cancelled_take(void);          /* a pending stop was disposed of by a new target */
 const ms_slot_t *ms_slot(uint8_t i);
+
+/* C10's measures (op 27 sub 5's bytes 26-27, sub 10). Ticks are MB_TICK_HZ. */
+uint32_t ms_last_op_ticks(void);    /* the last ENDED op's latency: its first piece's start to its end */
+uint32_t ms_op_max_ticks(void);     /* the largest, since ms_meas_reset() */
+uint32_t ms_piece_max_ticks(void);  /* the largest single piece's paint call */
+uint32_t ms_band_max_ticks(void);   /* the largest layout clear band */
+uint32_t ms_repaint_max_ticks(void);   /* a target's creation to its settling */
+uint8_t  ms_tgen(void);
+uint8_t  ms_settled_count(void);    /* wrapping: a target settled for the first time */
+uint8_t  ms_superseded_count(void); /* wrapping: a target replaced before it settled */
+uint8_t  ms_committed_count(void);  /* wrapping: slots committed */
+void     ms_meas_reset(void);       /* the maxima only (sub 10's arm) */

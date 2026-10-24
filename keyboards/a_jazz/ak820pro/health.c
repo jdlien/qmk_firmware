@@ -175,8 +175,12 @@ void health_note_flash_write(void) { flash_writes++; }
 void health_note_key_press(void)   { key_presses++; }
 uint16_t health_key_presses(void)  { return key_presses; }
 
+static uint8_t reset_generation;
+uint8_t health_reset_generation(void) { return reset_generation; }
+
 void health_reset(void) {
     /* Watchdog counters are boot facts and are NOT cleared -- see health.h. */
+    reset_generation++;
     chSysLock();
     loop_gap_max = 0; loop_gap_max_mark = LOOP_MARK_NONE;
     count_ge_10ms = 0; count_ge_25ms = 0; passes = 0;

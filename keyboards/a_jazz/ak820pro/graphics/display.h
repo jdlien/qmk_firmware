@@ -142,6 +142,10 @@ bool    display_batt_dirty(void);         /* op 27 sub 5's flags */
 bool    display_logo_stale(void);
 uint8_t display_queue_depths(void);       /* gq low nibble, lq high, each saturating at 15 */
 bool    display_probe_handoff(uint8_t *out4);   /* op 27 sub 9: queues filled, then handed to Fn+D */
+/* C10 (op 27 sub 10, sub 5 byte 31): the debug page's identity, composition
+ * generation, completed generation and the second its composition shows. */
+void    display_debug_meas(uint8_t *page, uint8_t *gen, uint8_t *done_gen, uint8_t *sec);
+bool    display_debug_done(void);
 #endif
 /* A message was first painted in the band (an overlay, an alert, a link state
  * with words, new host text, the pair gesture) within the last `ms`: power.c's

@@ -7,7 +7,10 @@
 #include "menu_glue.h"
 #include "menu_backend.h"
 #include "menu_env.h"
+#include "menu_meas.h"
 #include "ak820pro.h"
+#include "health.h"
+#include "rtc/rtc.h"
 #include "graphics/display.h"
 #include "graphics/lcd_bus.h"
 
@@ -24,6 +27,7 @@ bool mb_glyph(char c, uint16_t x, uint16_t y) {
 }
 bool mb_busy(void) { return lcd_blit_busy(); }
 bool mb_lost_pending(void) { return lcd_blit_lost_pending(); }
+uint32_t mb_now_ticks(void) { return meas_ticks(); }
 
 /* --- menu_env.h ---------------------------------------------------------------- */
 
@@ -36,6 +40,20 @@ bool    env_batt_dirty(void) { return display_batt_dirty(); }
 bool    env_logo_stale(void) { return display_logo_stale(); }
 uint8_t env_queue_depths(void) { return display_queue_depths(); }
 bool    env_probe_handoff(uint8_t *out4) { return display_probe_handoff(out4); }
+
+void env_meas(env_meas_t *m) {
+    m->pass_max_ticks = meas_pass_max_ticks();
+    m->pass_over15    = meas_pass_over15();
+    m->passes         = meas_passes();
+    m->band_max_ticks = meas_band_max_ticks();
+    m->token          = meas_token();
+    m->health_gen     = health_reset_generation();
+    display_debug_meas(&m->page, &m->dbg_gen, &m->dbg_done_gen, &m->dbg_sec);
+    rtc_time_t t;
+    m->rtc_sec = rtc_get_time(&t) ? t.seconds : 0xFFu;
+}
+uint16_t env_meas_arm(void) { return meas_arm(); }
+bool     env_debug_done(void) { return display_debug_done(); }
 #endif
 
 /* --- The knob -------------------------------------------------------------------- */
@@ -62,7 +80,10 @@ bool menu_pre_process(uint16_t keycode, keyrecord_t *record) {
     return menu_physical(c, e->pressed, fn, timer_read32());
 }
 
-void menu_task(void) { menu_ops_task(timer_read32()); }
+void menu_task(void) {
+    meas_pass();   /* C10's pass timing, and the tick's extension: every pass */
+    menu_ops_task(timer_read32());
+}
 
 #ifdef AK820_DEV_HOOKS
 bool menu_op27(uint8_t *data) { return menu_ops_op27(data, timer_read32()); }

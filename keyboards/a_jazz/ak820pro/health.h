@@ -54,6 +54,9 @@ uint8_t health_last_mark(void);
  * that the board reset itself. Without this every reading is contaminated by
  * boot and no experiment repeats. */
 void health_reset(void);
+/* Moves at every health_reset(), wrapping: a measured interval (the menu's
+ * C10) must see it unchanged, or a reset happened inside it. */
+uint8_t health_reset_generation(void);
 
 /* Fill a raw-HID reply payload (28 bytes) with the current snapshot.
  * Layout, little-endian:
