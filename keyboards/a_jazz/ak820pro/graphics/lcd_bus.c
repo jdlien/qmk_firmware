@@ -412,6 +412,7 @@ bool lcd_blit_mono(const uint8_t *bits, uint8_t stride, uint16_t x, uint16_t y, 
             if (n == sizeof lcd_scratch) {
                 lcd_stream_bytes(lcd_scratch, n);
                 n = 0;
+                if (stream_broken) break;   /* given up: expand no further */
             }
         }
     }

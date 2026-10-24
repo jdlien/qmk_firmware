@@ -18,10 +18,20 @@ static const uint8_t *glyph(uint8_t code) {
 
 uint16_t mt_width(const mt_line_t *l) { return (uint16_t)(l->lead + l->cells * MT_CELL_W + l->trail); }
 
+/* The cell and glyph column advance a column at a time: one division before
+ * the loop, none in it (the M0 has no divider: each is a library call, and
+ * two a column were most of a piece's composing, codex 10-24). */
 void mt_bits(const mt_line_t *l, uint16_t c0, uint16_t w, uint8_t r0, uint8_t rows, uint8_t *bits, uint8_t stride) {
     memset(bits, 0, (size_t)stride * rows);
     const size_t   len  = strlen(l->s);
     const uint16_t text = (uint16_t)(l->cells * MT_CELL_W);
+    uint8_t        cell = 0, gcol = 0;   /* under the first text column this band reaches */
+    if (c0 > l->lead) {
+        uint16_t t = (uint16_t)(c0 - l->lead);
+        cell       = (uint8_t)(t / MT_CELL_W);
+        gcol       = (uint8_t)(t % MT_CELL_W);
+    }
+    const uint8_t *g = NULL;
     for (uint16_t i = 0; i < w; i++) {
         const uint16_t c    = (uint16_t)(c0 + i);
         const uint8_t  mask = (uint8_t)(0x80u >> (i & 7u));
@@ -31,11 +41,14 @@ void mt_bits(const mt_line_t *l, uint16_t c0, uint16_t w, uint8_t r0, uint8_t ro
                 for (uint8_t r = 0; r < rows; r++) col[(uint16_t)r * stride] |= mask;
             continue;
         }
-        const uint16_t t    = (uint16_t)(c - l->lead);
-        const uint8_t  cell = (uint8_t)(t / MT_CELL_W);
-        const uint8_t  gbit = (uint8_t)(0x80u >> (t % MT_CELL_W));
-        const uint8_t *g    = glyph(cell < len ? (uint8_t)l->s[cell] : (uint8_t)' ');
+        if (!g) g = glyph(cell < len ? (uint8_t)l->s[cell] : (uint8_t)' ');
+        const uint8_t gbit = (uint8_t)(0x80u >> gcol);
         for (uint8_t r = 0; r < rows; r++)
             if (g[r0 + r] & gbit) col[(uint16_t)r * stride] |= mask;
+        if (++gcol == MT_CELL_W) {
+            gcol = 0;
+            cell++;
+            g = NULL;
+        }
     }
 }
