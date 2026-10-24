@@ -39,8 +39,8 @@ void mt_bits(const mt_line_t *l, uint16_t c0, uint16_t w, uint8_t r0, uint8_t ro
     if (end <= l->lead || c0 >= text) return;
     const size_t len   = strlen(l->s);
     uint8_t      first = c0 > l->lead ? (uint8_t)((c0 - l->lead) / MT_CELL_W) : 0;
-    uint8_t      last  = (uint8_t)((end - l->lead + MT_CELL_W - 1) / MT_CELL_W);   /* one past */
-    if (last > l->cells) last = l->cells;
+    uint16_t     past  = (uint16_t)((end - l->lead + MT_CELL_W - 1) / MT_CELL_W);   /* one past: clamped before it narrows (codex) */
+    uint8_t      last  = past > l->cells ? l->cells : (uint8_t)past;
     int16_t x = (int16_t)(l->lead + first * MT_CELL_W - c0);   /* the cell's column 0, band-relative; < 0 if cut */
     for (uint8_t cell = first; cell < last; cell++, x = (int16_t)(x + MT_CELL_W)) {
         if (cell >= len) break;   /* spaces: background */
