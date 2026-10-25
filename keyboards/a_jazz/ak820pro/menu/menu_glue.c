@@ -178,6 +178,9 @@ void env_bt_pair(uint8_t slot) {
 void env_bt_pair_stop(void) {
     if (!STANDIN_SET()) bt_ui_pair_stop();
 }
+void env_bt_pair_cancel(void) {
+    if (!STANDIN_SET()) bt_ui_pair_cancel();
+}
 uint8_t env_bt_pair_facts(void) {
 #ifdef AK820_DEV_HOOKS
     if (standin_link != 0xFFu) return standin_pf;

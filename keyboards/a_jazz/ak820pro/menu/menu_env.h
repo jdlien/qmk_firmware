@@ -81,6 +81,7 @@ uint8_t  env_link(void);
 void     env_bt_select(uint8_t slot);   /* bt_ui_select_slot(): the tap's select */
 void     env_bt_pair(uint8_t slot);     /* bt_ui_pair_slot() */
 void     env_bt_pair_stop(void);        /* bt_ui_pair_stop() */
+void     env_bt_pair_cancel(void);      /* bt_ui_pair_cancel(): a click that sends nothing still supersedes */
 /* bt_ui's pending pair; the driver's pair retry; a 5B 31 since the request;
  * the last select's retries ran out unanswered (ch582_select_state()). */
 enum { ENV_PF_WAITING = 1, ENV_PF_RETRYING = 2, ENV_PF_CONFIRMED = 4, ENV_PF_SEL_LOST = 8 };

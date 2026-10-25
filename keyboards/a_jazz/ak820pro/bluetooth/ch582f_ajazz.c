@@ -145,17 +145,30 @@ static volatile uint8_t connected_slot = 0;
 
 /* True while the module is advertising / waiting to bond (5B 31). */
 static volatile bool    is_pairing = false;
-/* A 5B 31 has arrived since the last pair request or select (the menu's
- * Pairing page, P3): conn_state goes to PAIRING optimistically when A6 51 is
- * sent and stays there if the module never answers, so it can't say this. */
+/* A 5B 31 has arrived, after the select's ACK, since the last pair request
+ * or select (the menu's Pairing page, P3): conn_state goes to PAIRING
+ * optimistically when A6 51 is sent and stays there if the module never
+ * answers, so it can't say this. */
 static volatile bool    pair_confirmed = false;
 /* The module has acted on the last select (a 5B 31-36, or the 5A promotion,
- * outside a bounce) since ch582_set_profile() or ch582_cancel_connect(). With
- * no select or bounce pending and this false, the select's retries ran out
+ * after the select's ACK) since ch582_set_profile() or ch582_cancel_connect().
+ * With nothing pending and this false, the select's retries ran out
  * unanswered: the module may be on another slot (the menu's P3; codex on its
  * design: a pair sent then pairs the wrong slot, and conn_state stays the
  * optimistic LINKING). */
 static volatile bool    select_acked = false;
+/* The last select (A6 <requested_profile>) is queued, or sent and not yet
+ * ACKed: a 5B or 5A before its ACK is the old slot's (or the bounce slot's),
+ * so it neither counts for select_acked or pair_confirmed nor retires the
+ * select's retry (codex on P3's code: at the bounce's end a buffered 5B 31 of
+ * the bounce slot read as the target's, and cleared PA_SELECT). Set by
+ * ch582_set_profile(); cleared by that frame's ACK, its give-up, or
+ * ch582_cancel_connect().
+ * ASSUMED, NOT MEASURED: the module ACKs a frame before it sends the 5B that
+ * frame causes (the ACK is its receipt). If not, the target's first answer is
+ * ignored here and the next one counts; the select may be resent once at
+ * 1.5 s. To check on the wire (the dev RX tap) with the slider on BT. */
+static volatile bool    select_unsent = false;
 /* Detailed connection state for the LCD indicator (superset of the two bools). */
 static volatile ch582_conn_state_t conn_state = CH582_CONN_IDLE;
 /* When conn_state last became CH582_CONN_LINKING, for the 5A promotion window
@@ -1263,6 +1276,12 @@ bool ch582_prof_fill(uint8_t page, uint8_t *out28) {
 
 static inline uint8_t tx_next(uint8_t i) { return (uint8_t)((i + 1) % CH582_TXQ_LEN); }
 
+/* The select's frame ACKed or given up: from here a 5B is the target slot's
+ * (select_unsent). */
+static inline void select_frame_done(const ch582_tx_frame_t *f) {
+    if (f->len >= 3 && f->data[0] == 0xA6 && f->data[1] == requested_profile) select_unsent = false;
+}
+
 /* Drop the head frame (ACKed or given up) and stop waiting on it. */
 static void ch582_tx_pop(void) {
     if (tx_head != tx_tail) tx_head = tx_next(tx_head);
@@ -1313,6 +1332,7 @@ static void ch582_tx_pump(void) {
         tx_stat_timeout++;
         if (++tx_retries > CH582_TX_MAX_RETRIES) {                          /* give up, move on */
             tx_stat_giveup++;
+            select_frame_done(&tx_q[tx_head]);
             ch582_tx_pop();
             return;
         }
@@ -1455,7 +1475,10 @@ static void ch582_tx_ack(void) {
 #ifdef AK820_DEV_HOOKS
     if (r91_ack_window && !tx_in_flight) r91_acks++;   /* the 91's, if it has one */
 #endif
-    if (tx_in_flight) ch582_tx_pop();
+    if (tx_in_flight) {
+        select_frame_done(&tx_q[tx_head]);
+        ch582_tx_pop();
+    }
 }
 
 void ch582_send_command(uint8_t cmd, const uint8_t *params, uint8_t param_len) {
@@ -1545,6 +1568,7 @@ void ch582_set_profile(ch582_profile_t profile) {
     pa.kind             = PA_NONE;  /* a new selection supersedes any pending action */
     pair_confirmed      = false;
     select_acked        = false;
+    select_unsent       = true;
     requested_profile   = param;
     connect_requested   = true;
     usb_mode            = false;
@@ -1597,6 +1621,10 @@ void ch582_set_profile(ch582_profile_t profile) {
  * wrong (0xA1 is the keystroke opcode). */
 #define CH582_PAIR_PARAM 0x51
 
+/* A 5B or 5A frame is the target slot's once the select is ACKed
+ * (select_unsent). */
+#define EVENT_IS_TARGET() (!select_unsent)
+
 void ch582_enter_pairing(void) {
     uint8_t param       = CH582_PAIR_PARAM;
     is_module_connected = false;
@@ -1628,6 +1656,7 @@ void ch582_cancel_connect(void) {
     usb_mode          = true;
     pair_confirmed    = false;
     select_acked      = false;
+    select_unsent     = false;
     conn_state        = CH582_CONN_IDLE;
     LOCKCHAN_LINK_LOST();
 }
@@ -1661,7 +1690,11 @@ bool ch582_pair_retrying(void) {
 }
 
 ch582_select_t ch582_select_state(void) {
-    if (pa.kind == PA_BOUNCE || pa.kind == PA_SELECT) return CH582_SEL_PENDING;
+    /* Still going out: a bounce, a select retry, the select unACKed, or the
+     * cold-boot retry (connect_requested && !module_alive, which resends on
+     * its own clock). */
+    if (pa.kind == PA_BOUNCE || pa.kind == PA_SELECT || select_unsent || (connect_requested && !module_alive))
+        return CH582_SEL_PENDING;
     return select_acked ? CH582_SEL_ACKED : CH582_SEL_LOST;
 }
 
@@ -1790,29 +1823,45 @@ void ch582_task(void) {
                 pa.last_send = timer_read();
                 uint8_t p = pa.target;
                 ch582_send_command(0xA6, &p, 1);
+                /* The bounce slot may have linked up meanwhile (its 5B 32 is
+                 * let through above); that link isn't the target's. Attempting,
+                 * as ch582_set_profile() leaves it, so a lost target select
+                 * reads linking, not the bounce slot's connected (codex on P3's
+                 * code). */
+                is_module_connected = false;
+                is_pairing          = false;
+                conn_state          = CH582_CONN_LINKING;
+                linking_since       = timer_read32();
+                connected_slot      = 0;
             }
             break;
         case PA_SELECT:
-            if (pa.tries >= CH582_SELECT_MAX_TRIES) {
-                pa.kind = PA_NONE;
-            } else if (timer_elapsed(pa.last_send) >= CH582_SELECT_CONFIRM_MS) {
-                pa.last_send = timer_read();
-                pa.tries++;
-                uint8_t param = requested_profile;
-                ch582_send_command(0xA6, &param, 1);
+            /* The last try gets its confirmation window too, before the select
+             * reads lost (codex on P3's code: it was retired the pass after). */
+            if (timer_elapsed(pa.last_send) >= CH582_SELECT_CONFIRM_MS) {
+                if (pa.tries >= CH582_SELECT_MAX_TRIES) {
+                    pa.kind = PA_NONE;
+                } else {
+                    pa.last_send = timer_read();
+                    pa.tries++;
+                    uint8_t param = requested_profile;
+                    ch582_send_command(0xA6, &param, 1);
+                }
             }
             break;
         case PA_PAIR:
             /* Resend A6 51 until the module confirms with 5B 31 -- it drops
              * the pair command while its own connect attempt is in flight.
              * Bounded so a module that never answers does not retry forever. */
-            if (pa.tries >= CH582_PAIR_MAX_TRIES) {
-                pa.kind = PA_NONE;
-            } else if (timer_elapsed(pa.last_send) >= CH582_PAIR_RETRY_MS) {
-                pa.last_send = timer_read();
-                pa.tries++;
-                uint8_t param = CH582_PAIR_PARAM;
-                ch582_send_command(0xA6, &param, 1);
+            if (timer_elapsed(pa.last_send) >= CH582_PAIR_RETRY_MS) {   /* the last try's window too */
+                if (pa.tries >= CH582_PAIR_MAX_TRIES) {
+                    pa.kind = PA_NONE;
+                } else {
+                    pa.last_send = timer_read();
+                    pa.tries++;
+                    uint8_t param = CH582_PAIR_PARAM;
+                    ch582_send_command(0xA6, &param, 1);
+                }
             }
             break;
         case PA_NONE:
@@ -2015,10 +2064,8 @@ void ch582_task(void) {
                          * Pending actions as `5B 32` leaves them: a select retry
                          * is retired, a bounce survives (codex, flash 2h verify 2:
                          * a retry left pending could reselect a live link). */
-                        if (pa.kind != PA_BOUNCE) {
-                            pa.kind      = PA_NONE;
-                            select_acked = true;
-                        }
+                        if (pa.kind != PA_BOUNCE && (pa.kind != PA_SELECT || EVENT_IS_TARGET())) pa.kind = PA_NONE;
+                        if (EVENT_IS_TARGET()) select_acked = true;
                         is_module_connected = true;
                         is_pairing          = false;
                         conn_state          = CH582_CONN_CONNECTED;
@@ -2034,10 +2081,8 @@ void ch582_task(void) {
                              * clearing it would strand the user on the wrong
                              * slot. (The triplet version's 5B 32 case never
                              * touched bounce_pending either.) */
-                            if (pa.kind != PA_BOUNCE) {
-                                pa.kind      = PA_NONE;
-                                select_acked = true;
-                            }
+                            if (pa.kind != PA_BOUNCE && (pa.kind != PA_SELECT || EVENT_IS_TARGET())) pa.kind = PA_NONE;
+                            if (EVENT_IS_TARGET()) select_acked = true;
                             is_module_connected = true;
                             is_pairing          = false;
                             conn_state          = CH582_CONN_CONNECTED;
@@ -2050,10 +2095,11 @@ void ch582_task(void) {
                             break;
                         case 0x31: /* advertising / pairing, waiting for a device */
                             /* PA_BOUNCE survives here too, same reason as 32. */
-                            /* Not the bounce slot's advertising: that slot isn't
-                             * the one the menu's page is waiting on. */
-                            if (pa.kind != PA_BOUNCE) {
-                                pa.kind        = PA_NONE;
+                            /* Before the select's ACK it's the old (or bounce)
+                             * slot's advertising, not the one the menu's page is
+                             * waiting on (select_unsent; a bounce is unsent too). */
+                            if (pa.kind != PA_BOUNCE && (pa.kind != PA_SELECT || EVENT_IS_TARGET())) pa.kind = PA_NONE;
+                            if (EVENT_IS_TARGET()) {
                                 pair_confirmed = true;
                                 select_acked   = true;
                             }
@@ -2071,8 +2117,8 @@ void ch582_task(void) {
                              * reconnect gets restarted and never completes. A
                              * pending PAIR survives -- the module ignores A6 51
                              * mid-attempt, which is why that retry exists. */
-                            if (pa.kind == PA_SELECT) pa.kind = PA_NONE;
-                            if (pa.kind != PA_BOUNCE) select_acked = true;
+                            if (pa.kind == PA_SELECT && EVENT_IS_TARGET()) pa.kind = PA_NONE;
+                            if (EVENT_IS_TARGET()) select_acked = true;
                             is_module_connected = false;
                             is_pairing          = false;
                             if (conn_state != CH582_CONN_LINKING) linking_since = timer_read32();
@@ -2091,7 +2137,11 @@ void ch582_task(void) {
                          * failed", NOT "not paired": a bonded but powered-off
                          * host would look identical. Do not label it as bonding. */
                         case 0x36:
-                            if (pa.kind != PA_BOUNCE) select_acked = true;
+                            /* The module acted on the select: its retry ends,
+                             * as on 33/34 (codex on P3's code: a 36 with no 33
+                             * before it left the select pending). */
+                            if (pa.kind == PA_SELECT && EVENT_IS_TARGET()) pa.kind = PA_NONE;
+                            if (EVENT_IS_TARGET()) select_acked = true;
                             is_module_connected = false;
                             is_pairing          = false;
                             conn_state          = CH582_CONN_REJECTED;

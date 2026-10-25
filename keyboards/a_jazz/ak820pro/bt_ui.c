@@ -221,14 +221,29 @@ static ch582_profile_t slot_profile(uint8_t slot) {
     return slot == 0 ? CH582_PROFILE_BT_1 : slot == 1 ? CH582_PROFILE_BT_2 : CH582_PROFILE_BT_3;
 }
 
+/* Every menu action supersedes what came before it: the menu's own pending
+ * pair, and a slot key's or Fn+P's hold still running, whose pair would
+ * otherwise fire at 2 s over the menu's select, pair or stop (codex on P3's
+ * code: it replaced a new bounce with PA_PAIR). */
+static void menu_supersedes(void) {
+    menu_pair_armed = false;
+    if (bt_pair_armed) {
+        bt_pair_armed = false;
+        display_set_pair_hint(-1);
+    }
+}
+
 void bt_ui_select_slot(uint8_t slot) {
     if (wireless_mode != WL_MODE_BT || slot > 2) return;
-    menu_pair_armed = false;
+    menu_supersedes();
     select_slot(slot_profile(slot));
 }
 
+void bt_ui_pair_cancel(void) { menu_supersedes(); }
+
 void bt_ui_pair_slot(uint8_t slot) {
     if (wireless_mode != WL_MODE_BT || slot > 2) return;
+    menu_supersedes();
     ch582_profile_t p = slot_profile(slot);
     /* Already advertising on it (the key's hold): pairable as it is. A
      * redundant A6 51 might go unanswered, and the page would read failed. */
@@ -241,7 +256,7 @@ void bt_ui_pair_slot(uint8_t slot) {
 }
 
 void bt_ui_pair_stop(void) {
-    menu_pair_armed = false;
+    menu_supersedes();
     if (wireless_mode != WL_MODE_BT) return;
     /* Advertising (optimistic or confirmed), or a pair still being resent:
      * the tap's select cancels it (ch582_set_profile()'s bounce, or a plain

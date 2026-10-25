@@ -1165,9 +1165,11 @@ static menu_result_t activate(uint32_t now) {
         case N_BT2: {   /* the tap's select; nothing for the current slot while linked, or linking on a live select */
             uint8_t slot = (uint8_t)(node - N_BT0), st = link_state();
             if (slot == link_slot() &&
-                (st == ENV_LINK_CONNECTED || (st == ENV_LINK_LINKING && !(model_pf & ENV_PF_SEL_LOST))))
+                (st == ENV_LINK_CONNECTED || (st == ENV_LINK_LINKING && !(model_pf & ENV_PF_SEL_LOST)))) {
+                env_bt_pair_cancel();   /* nothing sent, but a pending pair or a key's hold is superseded (codex) */
+                (void)sync_model();
                 flash((uint8_t)(T_ALREADY_BT1 + slot), now);
-            else {
+            } else {
                 env_bt_select(slot);
                 (void)sync_model();
                 flash((uint8_t)(T_NOW_BT1 + slot), now);
@@ -1378,6 +1380,7 @@ uint8_t menu_cursor(void) {
     frame_t *f = cur();
     if (is_topic(f->node)) return f->top;
     if (f->node == N_PAIRING) return (uint8_t)(f->cursor << 4 | pair_phase(f->cursor));   /* P3: the slot and the phase */
+    if (f->node == N_CONNINFO) return 0;   /* one page: not Reset's or Bootloader's confirm_page (codex) */
     if (is_confirm(f->node)) return confirm_page;
     if (is_editor(f->node)) return me_value();   /* P1b: an editor's value */
     return f->cursor;

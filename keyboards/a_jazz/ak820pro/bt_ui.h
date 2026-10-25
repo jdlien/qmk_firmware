@@ -32,4 +32,5 @@ void bt_pair_hold_task(void);
 void bt_ui_select_slot(uint8_t slot);   /* the slot key's tap, without its hold */
 void bt_ui_pair_slot(uint8_t slot);     /* select it unless current, then pair when the link isn't linking */
 void bt_ui_pair_stop(void);             /* the pending pair dropped; advertising cancelled by the tap's select */
+void bt_ui_pair_cancel(void);           /* the pending pair and a key's hold dropped; nothing sent */
 bool bt_ui_pair_waiting(void);          /* a menu pair armed, not yet sent */
