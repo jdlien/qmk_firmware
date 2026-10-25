@@ -1162,10 +1162,12 @@ static menu_result_t activate(uint32_t now) {
             return MENU_NONE;
         case N_BT0:
         case N_BT1:
-        case N_BT2: {   /* the tap's select; nothing for the current slot while linked, or linking on a live select */
+        case N_BT2: {   /* the tap's select; nothing for the current slot while linked or linking, on a live select */
             uint8_t slot = (uint8_t)(node - N_BT0), st = link_state();
-            if (slot == link_slot() &&
-                (st == ENV_LINK_CONNECTED || (st == ENV_LINK_LINKING && !(model_pf & ENV_PF_SEL_LOST)))) {
+            /* A lost select re-selects whatever the state reads: a stale
+             * CONNECTED can stand over one that never got through (codex). */
+            if (slot == link_slot() && !(model_pf & ENV_PF_SEL_LOST) &&
+                (st == ENV_LINK_CONNECTED || st == ENV_LINK_LINKING)) {
                 env_bt_pair_cancel();   /* nothing sent, but a pending pair or a key's hold is superseded (codex) */
                 (void)sync_model();
                 flash((uint8_t)(T_ALREADY_BT1 + slot), now);

@@ -160,9 +160,9 @@ static volatile bool    pair_confirmed = false;
  * design: a pair sent then pairs the wrong slot, and conn_state stays the
  * optimistic LINKING). */
 static volatile bool    select_acked = false;
-/* A select frame (A6 0x30-0x35) was given up unACKed or refused by a full
- * queue since ch582_set_profile(), and no frame of the requested slot has
- * been ACKed after it: the module may never have been told. The menu's pair
+/* Since ch582_set_profile(), the last select frame (A6 0x30-0x35) to resolve
+ * was given up unACKed, refused by a full queue, or ACKed for another slot:
+ * the module may not be on the requested one. The menu's pair
  * waits for every select frame to be out and fails closed on this (codex,
  * P3's second verify: a stale 5B 32 retires the select's retry, the target's
  * frame gives up, and A6 51 behind it pairs the old slot). Read-only for the
@@ -1474,10 +1474,12 @@ static void ch582_tx_ack(void) {
     if (r91_ack_window && !tx_in_flight) r91_acks++;   /* the 91's, if it has one */
 #endif
     if (tx_in_flight) {
-        /* The requested slot's select delivered: an earlier failure is
-         * behind it (frames resolve in order). */
-        if (is_select_frame(tx_q[tx_head].data, tx_q[tx_head].len) && tx_q[tx_head].data[1] == requested_profile)
-            select_tx_failed = false;
+        /* A select delivered: the module is now on that slot, so the target is
+         * told only if it's the requested one (frames resolve in order, and
+         * the last select through decides; codex's third verify: an older
+         * select of another slot ACKed after the target's must undo it). */
+        if (is_select_frame(tx_q[tx_head].data, tx_q[tx_head].len))
+            select_tx_failed = tx_q[tx_head].data[1] != requested_profile;
         ch582_tx_pop();
     }
 }
