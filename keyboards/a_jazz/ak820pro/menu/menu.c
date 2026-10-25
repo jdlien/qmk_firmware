@@ -89,11 +89,14 @@ static void batt_note(uint8_t line, char *buf, size_t n) {
     env_batt_facts(&b);
     buf[0] = '\0';
     if (batt_hours_ready(&b) || line > 2u) return;
+    /* On battery at the cut (Low) or with no level, the previews say so, and
+     * no wait will bring the hours (codex). */
+    if (b.on_battery && (b.pct == 0u || b.pct > 100u)) return;
     if (b.avg_minutes < 60u) {
         static const char *const warm[2] = {"Hours show after an", "hour on battery:"};
         if (line < 2u) snprintf(buf, n, "%s", warm[line]);
         else           snprintf(buf, n, "%u min to go.", (unsigned)(60u - b.avg_minutes));
-    } else if (line < 2u) {
+    } else if (!b.on_battery && line < 2u) {
         static const char *const off[2] = {"Hours show only", "on battery."};
         snprintf(buf, n, "%s", off[line]);
     }
