@@ -58,6 +58,7 @@ SRC += menu/menu_slots.c    # the damage model (C3)
 SRC += menu/menu_fixture.c  # S0's fixture (C9), and S1's mono text on it (F3)
 SRC += menu/menu_text.c     # S1: text in the 1-bit small face, a band at a time
 SRC += menu/menu.c          # P1a: the tree (plans/CONFIG-MENU-P1-DESIGN.md)
+SRC += menu/menu_edit.c     # P1b: the edit transaction (C6)
 SRC += menu/menu_ops.c      # the task each pass, op 27, the menu's side of an owner event
 SRC += menu/menu_glue.c     # the hook, the task, op 27
 SRC += menu/menu_meas.c     # C10: the tick, the pass times, the clear bands, the session token

@@ -27,6 +27,7 @@
 #include "menu/panel_owner.h"   /* who owns the panel: plans/CONFIG-MENU-BUILD-PLAN.md, C1 */
 #include "menu/menu_glue.h"
 #include "menu/menu_meas.h"   /* C10: the clear bands' time */
+#include "menu/menu.h"        /* P1b: MENU_LCD_MAX, checked against BKL_MAX_LEVEL */
 #include "param_overlay.h"
 
 #ifdef AK820_DEV_HOOKS
@@ -216,6 +217,7 @@ static const uint8_t bkl_duty[] = {
 };
 #define BKL_MAX_LEVEL ((uint8_t)(sizeof(bkl_duty) / sizeof(bkl_duty[0])) - 1)
 _Static_assert(sizeof(bkl_duty) == 24, "brightness UI documents 24 levels (0..23); resize deliberately");
+_Static_assert(BKL_MAX_LEVEL == MENU_LCD_MAX, "the menu's Screen editor: menu/menu.h's MENU_LCD_MAX");
 
 #ifndef DISPLAY_BRIGHTNESS_DEFAULT
 #    define DISPLAY_BRIGHTNESS_DEFAULT BKL_MAX_LEVEL

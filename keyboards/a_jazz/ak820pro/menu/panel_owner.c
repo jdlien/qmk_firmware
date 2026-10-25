@@ -4,6 +4,7 @@
  * plans/CONFIG-MENU-BUILD-PLAN.md, row for row. Every change of owner or
  * session goes through po_event(); nothing else writes them. */
 #include "panel_owner.h"
+#include "menu_edit.h"
 
 static panel_owner_t   owner;
 static menu_session_t  session;
@@ -90,7 +91,12 @@ static uint16_t do_open(void) {
                       PO_ACT_MENU_CLEAR | PO_ACT_INPUT_CLEAR);
 }
 
+/* P1b (C6): the two transitions that take the panel from the menu roll an
+ * open edit back FIRST, before the owner and the session change (their
+ * PO_ACT_EDIT_CANCEL is applied only afterwards, so it stays the record). The
+ * rollback restores values and nothing else; with no edit it does nothing. */
 static uint16_t do_close(void) {
+    menu_edit_rollback();
     uint16_t a = (uint16_t)(PO_ACT_EDIT_CANCEL | PO_ACT_INPUT_CLEAR | PO_ACT_OVERLAYS_REPRIME);
     a |= set_owner(PANEL_DASH);
     session          = SESSION_NONE;
@@ -105,6 +111,7 @@ static uint16_t cancel_pending(void) {
 }
 
 static uint16_t enter_debug(debug_page_t page, bool from_menu) {
+    menu_edit_rollback();   /* above: the debug page's handoff, dev op 1's included */
     uint16_t a = set_owner(PANEL_DEBUG);
     dpage      = page;
     to_diag    = from_menu;

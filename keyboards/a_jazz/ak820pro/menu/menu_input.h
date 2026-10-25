@@ -14,6 +14,7 @@
 #define MI_HOLD_MS     600u
 #define MI_TURNS_MAX   64
 #define MI_IDLE_MS     24000u
+#define MI_BACKSTOP_MS 180000u   /* P1b: while a previewing edit is open, the 3-minute backstop instead (C8) */
 
 /* The physical controls, by identity, never by keycode. */
 typedef enum { MI_KNOB = 0, MI_CW, MI_CCW, MI_CONTROLS } mi_control_t;

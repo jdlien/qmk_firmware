@@ -17,6 +17,7 @@
 #include "power.h"
 #include "kb_eeconfig.h"
 #include "bluetooth/ch582f_ajazz.h"
+#include "rgb_effects.h"
 
 /* --- menu_backend.h ------------------------------------------------------------ */
 
@@ -28,6 +29,12 @@ bool mb_fill(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t rgb565
 }
 bool mb_glyph(char c, uint16_t x, uint16_t y) {
     return lcd_draw_flash_glyph_try(ASSET_IOSEVKA_MEDIUM_13, c, x, y);   /* FONT_SMALL: Cozette 6x14 */
+}
+bool mb_glyph_big(char c, uint16_t x, uint16_t y) {
+    return lcd_draw_flash_glyph_try(ASSET_IOSEVKA_MEDIUM_20, c, x, y);   /* FONT_STATUS: 10x23 */
+}
+bool mb_pixels(uint16_t x, uint16_t y, uint16_t w, uint16_t h, mb_px_fn fn, const void *ctx) {
+    return lcd_blit_gen(x, y, w, h, fn, ctx);
 }
 bool mb_mono(const uint8_t *bits, uint8_t stride, uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t fg, uint16_t bg) {
     return lcd_blit_mono(bits, stride, x, y, w, h, fg, bg);
@@ -51,6 +58,43 @@ void    env_clock_set(uint8_t m) {
 void env_health_reset(void) {
     health_reset();
     display_debug_refresh();
+}
+
+/* P1b's primitives (menu_edit.c sequences them): one QMK or board call each. */
+void env_rgb_get(env_rgb_t *c) {
+    c->mode   = rgb_matrix_get_mode();
+    c->h      = rgb_matrix_get_hue();
+    c->s      = rgb_matrix_get_sat();
+    c->v      = rgb_matrix_get_val();
+    c->speed  = rgb_matrix_get_speed();
+    c->enable = rgb_matrix_is_enabled() ? 1u : 0u;
+    c->flags  = rgb_matrix_get_flags();
+}
+void env_rgb_mode(uint8_t mode, bool save) { save ? rgb_matrix_mode(mode) : rgb_matrix_mode_noeeprom(mode); }
+void env_rgb_hsv(uint8_t h, uint8_t s, uint8_t v, bool save) {
+    save ? rgb_matrix_sethsv(h, s, v) : rgb_matrix_sethsv_noeeprom(h, s, v);
+}
+void env_rgb_speed(uint8_t speed, bool save) { save ? rgb_matrix_set_speed(speed) : rgb_matrix_set_speed_noeeprom(speed); }
+void env_rgb_flags(uint8_t flags) { rgb_matrix_set_flags_noeeprom(flags); }
+void env_rgb_enable(bool on, bool save) {
+    if (on) save ? rgb_matrix_enable() : rgb_matrix_enable_noeeprom();
+    else save ? rgb_matrix_disable() : rgb_matrix_disable_noeeprom();
+}
+uint8_t env_lcd_level(void) { return display_get_brightness(); }
+void    env_lcd_set(uint8_t level, bool save) {
+    display_set_brightness(level);
+    if (save) kb_eeconfig_set_lcd_brightness(level);
+}
+uint8_t     env_effects(void) { return rgb_effects_n; }
+uint8_t     env_effect_mode(uint8_t i) { return i < rgb_effects_n ? rgb_effects[i].mode : 0; }
+const char *env_effect_name(uint8_t i) { return i < rgb_effects_n ? rgb_effects[i].name : ""; }
+bool        env_effect_two_tone(uint8_t mode) {
+#ifdef ENABLE_RGB_MATRIX_ALPHAS_MODS
+    return mode == RGB_MATRIX_ALPHAS_MODS;   /* alpha_mods_anim.h: hsv.h += speed */
+#else
+    (void)mode;
+    return false;
+#endif
 }
 
 /* About's snapshot (P1a): compact facts, frozen while the page shows. */

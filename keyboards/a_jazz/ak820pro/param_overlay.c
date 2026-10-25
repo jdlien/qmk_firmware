@@ -5,6 +5,7 @@
 #include "ak820pro.h"
 #include "graphics/display.h"
 #include "rgb_effects.h"
+#include "menu/menu_edit.h"
 
 /* ---- Hold-to-repeat for the adjust keys ----------------------------------
  *
@@ -43,6 +44,9 @@ static bool param_is_repeatable(uint16_t kc) {
 }
 
 static void param_repeat_step(uint16_t kc) {
+    /* P1b (C6): each step is a writer: an open edit of its domain rolls back
+     * first, so the step is computed from the restored value. */
+    menu_edit_external((kc == SCR_UP || kc == SCR_DN) ? ME_DOM_LCD : ME_DOM_RGB);
     switch (kc) {
         case RM_HUEU: rgb_matrix_increase_hue();   break;
         case RM_HUED: rgb_matrix_decrease_hue();   break;

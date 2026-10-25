@@ -10,6 +10,7 @@
 
 #include "menu.h"
 #include "menu_backend.h"
+#include "menu_edit.h"
 #include "menu_env.h"
 #include "menu_fixture.h"
 #include "menu_slots.h"
@@ -149,10 +150,13 @@ void menu_ops_task(uint32_t now) {
      * hint), each pass while it shows. */
     if (menu_kind == MK_MENU && po_owner() == PANEL_MENU) menu_tick(now, now - mi_last_input());
     /* 24 s with no knob input closes it (C7: hint repaints, host traffic and
-     * typing don't restart this). The fixture has no edit, so no backstop. */
+     * typing don't restart this); while a previewing edit is open (P1b), the
+     * 3-minute backstop instead, and the close rolls the edit back
+     * (panel_owner.c's do_close()). The fixture has no edit. */
     /* Signed: an input stamped a little after `now` (an event read its own
      * timer) is no idle at all, never a wrapped 49 days. */
-    if ((int32_t)(now - mi_last_input()) >= (int32_t)MI_IDLE_MS) (void)env_po_event(PO_EV_CLOSE);
+    uint32_t limit = me_active() ? MI_BACKSTOP_MS : MI_IDLE_MS;
+    if ((int32_t)(now - mi_last_input()) >= (int32_t)limit) (void)env_po_event(PO_EV_CLOSE);
 }
 
 /* --- Op 27 ------------------------------------------------------------------ */
@@ -277,6 +281,17 @@ bool menu_ops_op27(uint8_t *d, uint32_t now) {
         }
         memset(&d[5], 0, 27);
         d[5] = ok ? MI_OK : MI_BAD;
+        return true;
+    }
+    if (sub == 14) {   /* P1b's edit, read: [6] open, [7] its field (ME_*), [8] the live value, [9] the saved one,
+                        * [10..11] the external writes that cancelled an edit (the board's exit gates) */
+        memset(&d[5], 0, 27);
+        d[5] = MI_OK;
+        d[6] = me_active() ? 1u : 0u;
+        d[7] = me_field();
+        d[8] = me_active() ? me_value() : 0u;
+        d[9] = me_active() ? me_saved() : 0u;
+        put16(&d[10], me_external_count());
         return true;
     }
     switch (sub) {

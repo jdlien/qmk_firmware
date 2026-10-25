@@ -38,6 +38,7 @@ bool     menu_set_color(uint8_t i, uint16_t rgb565);   /* false: no such colour 
 
 /* For the host tests' expected frames. */
 #define MENU_ROWS      8
+#define MENU_LCD_MAX   23u       /* the Screen's top level (display.c checks it against BKL_MAX_LEVEL) */
 #define MENU_LIT       0xFF94u   /* the selected row, #FFF2A0 (JD, 10-24: lit text) */
 #define MENU_DIM       0xCE59u   /* the other rows, #C8C8C8 */
 #define MENU_LEAVE     0xFCD3u   /* "◀ Back" and Exit, not selected: light red, #FF9A9A (JD, 10-24: #E08080 too dim) */

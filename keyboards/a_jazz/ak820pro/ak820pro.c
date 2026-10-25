@@ -30,6 +30,7 @@
 #include "loop_acct.h"     /* D1: ACCT() around each board task */
 #include "flash_stats.h"   /* C1: flash write sessions by writer */
 #include "menu/menu_glue.h" /* the configuration menu: plans/CONFIG-MENU-BUILD-PLAN.md */
+#include "menu/menu_edit.h" /* P1b's edit transaction: its writers' hooks (C6) */
 #include "overrun_diag.h"  /* dev: the UART overruns' context */
 
 void early_hardware_init_post(void) {
@@ -354,6 +355,14 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
 #endif
     param_repeat_process_record(keycode, record);   // arm/disarm hold-to-repeat
 
+    /* P1b (C6): QMK's RGB keys are writers. RM_* act on release, UG_* on
+     * press; process_underglow() and process_rgb_matrix() run after this, so
+     * an open RGB edit rolls back first, then QMK applies the key. */
+    {
+        uint8_t dom = me_key_domain(keycode, record->event.pressed);
+        if (dom) menu_edit_external(dom);
+    }
+
     if (!process_modified_consumer(keycode, record)) return false;
 
 #ifdef USB_WAKEUP_ON_KEYPRESS
@@ -386,6 +395,7 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
         case SCR_UP:
         case SCR_DN:
             if (record->event.pressed) {
+                menu_edit_external(ME_DOM_LCD);   /* P1b (C6): before the step reads the level */
                 if (keycode == SCR_UP) display_brightness_up();
                 else                   display_brightness_down();
                 /* Shared with the hold-repeat step so a tap and a sweep produce
@@ -494,18 +504,19 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
             }
             return true;
 #ifdef RGB_MATRIX_ENABLE
-        // VIA-assignable RGB-matrix controls (see ak820pro.h). One step per press.
-        case RGBM_TOG:  if (record->event.pressed) rgb_matrix_toggle();         return false;
-        case RGBM_MOD:  if (record->event.pressed) rgb_matrix_step();           return false;
-        case RGBM_RMOD: if (record->event.pressed) rgb_matrix_step_reverse();   return false;
-        case RGBM_HUI:  if (record->event.pressed) rgb_matrix_increase_hue();   return false;
-        case RGBM_HUD:  if (record->event.pressed) rgb_matrix_decrease_hue();   return false;
-        case RGBM_SAI:  if (record->event.pressed) rgb_matrix_increase_sat();   return false;
-        case RGBM_SAD:  if (record->event.pressed) rgb_matrix_decrease_sat();   return false;
-        case RGBM_VAI:  if (record->event.pressed) rgb_matrix_increase_val();   return false;
-        case RGBM_VAD:  if (record->event.pressed) rgb_matrix_decrease_val();   return false;
-        case RGBM_SPI:  if (record->event.pressed) rgb_matrix_increase_speed(); return false;
-        case RGBM_SPD:  if (record->event.pressed) rgb_matrix_decrease_speed(); return false;
+        // VIA-assignable RGB-matrix controls (see ak820pro.h). One step per press,
+        // each a writer (P1b, C6): an open RGB edit rolls back first.
+        case RGBM_TOG:  if (record->event.pressed) { menu_edit_external(ME_DOM_RGB); rgb_matrix_toggle(); }         return false;
+        case RGBM_MOD:  if (record->event.pressed) { menu_edit_external(ME_DOM_RGB); rgb_matrix_step(); }           return false;
+        case RGBM_RMOD: if (record->event.pressed) { menu_edit_external(ME_DOM_RGB); rgb_matrix_step_reverse(); }   return false;
+        case RGBM_HUI:  if (record->event.pressed) { menu_edit_external(ME_DOM_RGB); rgb_matrix_increase_hue(); }   return false;
+        case RGBM_HUD:  if (record->event.pressed) { menu_edit_external(ME_DOM_RGB); rgb_matrix_decrease_hue(); }   return false;
+        case RGBM_SAI:  if (record->event.pressed) { menu_edit_external(ME_DOM_RGB); rgb_matrix_increase_sat(); }   return false;
+        case RGBM_SAD:  if (record->event.pressed) { menu_edit_external(ME_DOM_RGB); rgb_matrix_decrease_sat(); }   return false;
+        case RGBM_VAI:  if (record->event.pressed) { menu_edit_external(ME_DOM_RGB); rgb_matrix_increase_val(); }   return false;
+        case RGBM_VAD:  if (record->event.pressed) { menu_edit_external(ME_DOM_RGB); rgb_matrix_decrease_val(); }   return false;
+        case RGBM_SPI:  if (record->event.pressed) { menu_edit_external(ME_DOM_RGB); rgb_matrix_increase_speed(); } return false;
+        case RGBM_SPD:  if (record->event.pressed) { menu_edit_external(ME_DOM_RGB); rgb_matrix_decrease_speed(); } return false;
 #endif
         // BT slot / 2.4G / pair keys: tap-select + hold-to-pair, in bt_ui.c.
         case BT1:      // Fn+Q -> tap: select BT1 | hold: pair BT1
@@ -700,6 +711,18 @@ void backing_store_pre_write_hook(void) {
     lcd_blit_wait();
 }
 
+#ifdef COMMAND_ENABLE
+#    include "command.h"
+/* P1b (C6): the magic reset (both Shifts and Backspace) runs eeconfig_init(),
+ * which writes the RGB defaults and force-flushes them. command_proc() calls
+ * this before command_common() (command.c:71, 75), so an open RGB edit rolls
+ * back first; false lets the reset go on. */
+bool command_extra(uint8_t code) {
+    if (code == MAGIC_KC(MAGIC_KEY_EEPROM_CLEAR)) menu_edit_external(ME_DOM_RGB);
+    return false;
+}
+#endif
+
 bool rgb_matrix_eeprom_flush_allowed(void) {
     /* Two gates.
      *
@@ -732,6 +755,8 @@ bool rgb_matrix_eeprom_flush_allowed(void) {
      * to wake the board would otherwise flush here (codex, deep-sleep build
      * review 3). */
     if (lcd_blit_busy() || sleep_recovering()) return false;
+    /* P1b (C6): no previewed value reaches EEPROM while the menu edits one. */
+    if (menu_edit_rgb_open()) return false;
 
     static uint8_t  last_mode = 0, last_h = 0, last_s = 0, last_v = 0, last_sp = 0;
     static bool     last_on = false, primed = false;

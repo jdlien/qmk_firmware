@@ -26,6 +26,26 @@ void     env_power_set(uint8_t m);      /* power_set_mode() */
 uint8_t  env_clock_mode(void);          /* enum display_clock_mode: 0 24H, 1 12H, 2 OFF, 3 DATE */
 void     env_clock_set(uint8_t m);      /* display_set_clock_mode() + kb_eeconfig_set_clock_mode() */
 void     env_health_reset(void);        /* health_reset() + display_debug_refresh() */
+
+/* P1b's primitives (menu_edit.c's): each one QMK or board call in
+ * menu_glue.c; the host's fakes copy their semantics. QMK's mode and HSV
+ * setters return early while the lights are off (rgb_matrix.c:606, 658);
+ * speed's, flags' and enable's don't. `save`: the saving setter, which flags
+ * the config dirty; otherwise the _noeeprom one, which leaves the flag as it
+ * was. */
+typedef struct { uint8_t mode, h, s, v, speed, enable, flags; } env_rgb_t;
+void     env_rgb_get(env_rgb_t *c);
+void     env_rgb_mode(uint8_t mode, bool save);
+void     env_rgb_hsv(uint8_t h, uint8_t s, uint8_t v, bool save);
+void     env_rgb_speed(uint8_t speed, bool save);
+void     env_rgb_flags(uint8_t flags);              /* _noeeprom only: restores a snapshot */
+void     env_rgb_enable(bool on, bool save);        /* rgb_matrix_enable/disable, never a toggle */
+uint8_t  env_lcd_level(void);                       /* display_get_brightness(): the requested level */
+void     env_lcd_set(uint8_t level, bool save);     /* display_set_brightness(), and kb_eeconfig_set_lcd_brightness() to save */
+uint8_t  env_effects(void);                         /* rgb_effects_n */
+uint8_t  env_effect_mode(uint8_t i);
+const char *env_effect_name(uint8_t i);
+bool     env_effect_two_tone(uint8_t mode);         /* the mode uses speed as its second colour's hue offset (Alphas/Mods) */
 #define  ENV_UNKNOWN 0xFFFFu
 typedef struct {
     uint32_t uptime_s;

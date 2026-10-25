@@ -23,6 +23,7 @@
 #include "power.h"                    /* HC_DEVHOOK op 14 */
 #include "sleep.h"                    /* HC_DEVHOOK op 14, subs 3 and 4; op 24 */
 #include "overrun_diag.h"             /* HC_DEVHOOK ops 20-22 */
+#include "menu/menu_edit.h"           /* P1b: VIA and ops 4/5 as the edit's writers (C6) */
 #include "drivers/led/sn32f2xx.h"     /* scan-only, in sub 3's reply */
 #include "menu/menu_glue.h"           /* HC_DEVHOOK op 27 */
 
@@ -1048,8 +1049,8 @@ static void health_command(uint8_t *data, uint8_t length) {
                 case 1: display_debug_toggle(); break;
                 case 2: { uint8_t pg = data[4]; display_probe_fill(pg, &data[4]); break; }
                 case 3: display_probe_reset(); break;
-                case 4: display_set_brightness(data[4]); devhook_lcd_state(&data[4]); break;
-                case 5: display_set_power(data[4] != 0); devhook_lcd_state(&data[4]); break;
+                case 4: menu_edit_external(ME_DOM_LCD); display_set_brightness(data[4]); devhook_lcd_state(&data[4]); break;
+                case 5: menu_edit_external(ME_DOM_LCD); display_set_power(data[4] != 0); devhook_lcd_state(&data[4]); break;
                 case 6: devhook_lcd_state(&data[4]); break;
                 case 7:
                     if (length < 32) { data[0] = RTC_UNHANDLED; break; }
@@ -1387,6 +1388,21 @@ static void rtc_read_into(uint8_t *data) {
 }
 
 #if defined(VIA_ENABLE)
+
+/* P1b (C6): VIA as a writer of the RGB config. raw_hid_receive() calls this
+ * before it dispatches (via.c:296). Any custom command on the RGB-matrix
+ * channel, reads included (so a lighting backup can't capture a preview:
+ * flash.sh, ak820lighting.py), and the device indication (a toggle,
+ * via.c:167) roll an open RGB edit back first; false lets VIA's own
+ * processing and reply go on. */
+bool via_command_kb(uint8_t *data, uint8_t length) {
+    if (length >= 2 &&
+        (((data[0] == id_custom_set_value || data[0] == id_custom_get_value || data[0] == id_custom_save) &&
+          data[1] == id_qmk_rgb_matrix_channel) ||
+         (data[0] == id_set_keyboard_value && data[1] == id_device_indication)))
+        menu_edit_external(ME_DOM_RGB);
+    return false;
+}
 
 // VIA owns raw_hid_receive() and dispatches custom-value commands here. VIA echoes
 // the buffer back itself -- do NOT call raw_hid_send().
