@@ -104,7 +104,7 @@ static ms_paint_t f1_paint(uint8_t s, uint8_t c, uint8_t p) {
     if (!mb_fill(BAR_X, BAR_Y0, BAR_X, BAR_Y1, fx_track_colors[pattern])) return MS_PAINT_FAILED;
     return mb_fill(BAR_X, BAR_Y0, BAR_X, BAR_Y0 + FX_THUMB_H - 1, fx_thumb_colors[pattern]) ? MS_PAINT_DONE : MS_PAINT_FAILED;
 }
-static const ms_layout_t f1 = {(uint8_t)(2 + FX_ROWS + 1), f1_sig, f1_chunks, f1_pieces, f1_paint};
+static const ms_layout_t f1 = {(uint8_t)(2 + FX_ROWS + 1), f1_sig, f1_chunks, f1_pieces, f1_paint, 0, 0};
 
 static uint16_t f2_sig(uint8_t s) { return (uint16_t)(0x2000u | s); }
 static uint8_t  f2_chunks(uint8_t s) { (void)s; return 1; }
@@ -114,7 +114,7 @@ static ms_paint_t f2_paint(uint8_t s, uint8_t c, uint8_t p) {
     uint16_t x = (uint16_t)((s % 4u) * 32u), y = (uint16_t)((s / 4u) * 32u);
     return fill_piece(x, y, (uint16_t)(x + 31), (uint16_t)(y + 31), fx_tile_colors[s], p);
 }
-static const ms_layout_t f2 = {16, f2_sig, f2_chunks, f2_pieces, f2_paint};
+static const ms_layout_t f2 = {16, f2_sig, f2_chunks, f2_pieces, f2_paint, 0, 0};
 
 /* F3: the slots of F1, in text. A text slot is x 3-124: the inverted
  * cursor's pad pixel at x 3, 20 cells from x 4, and x 124, which is ink
@@ -192,7 +192,7 @@ static ms_paint_t f3_paint(uint8_t s, uint8_t c, uint8_t p) {
     mt_bits(&l, c0, w, r0, rows, bits, st);
     return mb_mono(bits, st, (uint16_t)(ROW_X0 + c0), (uint16_t)(y0 + r0), w, rows, fg, bg) ? MS_PAINT_DONE : MS_PAINT_FAILED;
 }
-static const ms_layout_t f3 = {(uint8_t)(2 + FX_ROWS + 1), f3_sig, f3_chunks, f3_pieces, f3_paint};
+static const ms_layout_t f3 = {(uint8_t)(2 + FX_ROWS + 1), f3_sig, f3_chunks, f3_pieces, f3_paint, 0, 0};
 
 void fx_open(void) {
     screen  = FX_SCREEN_F1;

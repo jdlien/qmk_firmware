@@ -394,6 +394,11 @@
  * to the host for them to pace (encoder_map_delay_wanted_kb in
  * menu/menu_glue.c, a weak hook in quantum/encoder.c, a local change). */
 
+/* The configuration menu: Fn plus a knob click opens it in every flavour from
+ * P1a (plans/CONFIG-MENU-P1-DESIGN.md). Before, only a dev build's op 27 arming
+ * did (C2, "S0's scope"). */
+#define MENU_ENABLE
+
 /* The encoder event queue defaults to MAX(4, NUM_ENCODERS_MAX_PER_SIDE + 1) = 4,
  * and it is a RING buffer, so the usable depth is 3. Events past that are DROPPED
  * OUTRIGHT, not delayed -- which is why a fast spin lost a lot of clicks while a

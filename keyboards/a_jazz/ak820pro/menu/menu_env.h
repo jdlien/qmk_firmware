@@ -20,6 +20,30 @@ bool     env_logo_stale(void);
 uint8_t  env_queue_depths(void);
 bool     env_probe_handoff(uint8_t *out4);   /* op 27 sub 9: false unless the dashboard is DONE */
 
+/* P1a's settings and facts (plans/CONFIG-MENU-P1-DESIGN.md). */
+uint8_t  env_power_mode(void);          /* 0 Always on, 1 Balanced, 2 Power saver, 3 Lights out */
+void     env_power_set(uint8_t m);      /* power_set_mode() */
+uint8_t  env_clock_mode(void);          /* enum display_clock_mode: 0 24H, 1 12H, 2 OFF, 3 DATE */
+void     env_clock_set(uint8_t m);      /* display_set_clock_mode() + kb_eeconfig_set_clock_mode() */
+void     env_health_reset(void);        /* health_reset() + display_debug_refresh() */
+#define  ENV_UNKNOWN 0xFFFFu
+typedef struct {
+    uint32_t uptime_s;
+    uint16_t batt_pm;     /* permille, ENV_UNKNOWN */
+    uint16_t pack_mv;     /* ENV_UNKNOWN (battery_pack_mv()'s 0 normalized) */
+    uint16_t left_min;    /* minutes of use left, ENV_UNKNOWN */
+    uint8_t  mode;        /* env_power_mode() */
+    uint8_t  link;        /* ENV_LINK_* packed: transport bits 1-0, slot bits 3-2 (BT 0-2), state bits 6-4 */
+} env_about_t;
+_Static_assert(sizeof(env_about_t) == 12, "About's snapshot: 12 B");
+enum { ENV_LINK_USB = 0, ENV_LINK_BT = 1, ENV_LINK_24G = 2 };
+enum { ENV_LINK_IDLE = 0, ENV_LINK_LINKING, ENV_LINK_PAIRING, ENV_LINK_CONNECTED, ENV_LINK_REJECTED };
+void     env_about(env_about_t *a);
+uint32_t env_build_hash(void);          /* AK820_BUILD_HASH: 8 hex digits */
+bool     env_build_dirty(void);
+uint32_t env_build_token(void);
+const char *env_build_flavour(void);    /* dev, daily, fpb, instr, fault: at most 5 characters */
+
 /* C10's measures that live outside the menu's scheduler (menu_meas.c and
  * display.c on the board). */
 typedef struct {

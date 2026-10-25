@@ -1,0 +1,40 @@
+// Copyright 2026 JD Lien
+// SPDX-License-Identifier: GPL-2.0-or-later
+//
+// The configuration menu's tree, P1a (plans/CONFIG-MENU-P1-DESIGN.md): the
+// lists, the committing choices, Help's topics, About, Reset counters and
+// Diagnostics' handoff, on the slot scheduler (C3) in lit text and half rows.
+// Pure: settings and facts come through menu_env.h, the panel through
+// menu_backend.h, so the host tests run it.
+#pragma once
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#include "menu_input.h"
+
+typedef enum {
+    MENU_NONE = 0,
+    MENU_DIAG_HEALTH,   /* hand off to the Health page (C1) */
+    MENU_DIAG_CAMERA,   /* hand off to the Camera page */
+    MENU_CLOSE,         /* Exit, or Back at the top */
+} menu_result_t;
+
+void          menu_open(uint32_t now);                    /* the top level, row 0, a fresh layout */
+void          menu_return_from_diag(uint8_t page, uint32_t now);   /* 0 Health, 1 Camera: Diagnostics, the page's row */
+void          menu_invalidate(void);                      /* a loss under the menu */
+menu_result_t menu_input(int8_t turns, mi_latch_t latch, uint32_t now);
+void          menu_tick(uint32_t now, uint32_t idle_ms);  /* each pass: the latched model and the title */
+uint8_t       menu_screen_id(void);                       /* op 27 sub 5, byte 14: 16 + the node showing */
+uint8_t       menu_cursor(void);                          /* byte 15: the cursor, a topic's top line, the confirm's page */
+
+/* For the host tests' expected frames. */
+#define MENU_ROWS      8
+#define MENU_LIT       0xFF94u   /* the selected row, #FFF2A0 (JD, 10-24: lit text) */
+#define MENU_DIM       0xCE59u   /* the other rows, #C8C8C8 */
+#define MENU_WHITE     0xFFFFu   /* titles, pages */
+#define MENU_GREY      0x632Cu   /* the separator, #646464 */
+#define MENU_TRACK     0x4228u   /* the scrollbar's track, #464646 */
+#define MENU_FLASH_MS  1300u
+#define MENU_HINT_FROM 4000u     /* the hint after 4 s idle, for 1 s in every 5 */
+#define MENU_HINT_EVERY 5000u

@@ -13,6 +13,10 @@
 #include "rtc/rtc.h"
 #include "graphics/display.h"
 #include "graphics/lcd_bus.h"
+#include "battery.h"
+#include "power.h"
+#include "kb_eeconfig.h"
+#include "bluetooth/ch582f_ajazz.h"
 
 /* --- menu_backend.h ------------------------------------------------------------ */
 
@@ -34,6 +38,60 @@ uint32_t mb_now_ticks(void) { return meas_ticks(); }
 uint32_t mb_dma_end_ticks(void) { return meas_ticks_at16(lcd_blit_end_tick16()); }
 
 /* --- menu_env.h ---------------------------------------------------------------- */
+
+/* P1a's settings: the same calls as the keys that change them (Fn+B's mode
+ * without its overlay, power_set_mode; Fn+C's pair for the clock). */
+uint8_t env_power_mode(void) { return (uint8_t)power_mode(); }
+void    env_power_set(uint8_t m) { power_set_mode((power_mode_t)m); }
+uint8_t env_clock_mode(void) { return display_get_clock_mode(); }
+void    env_clock_set(uint8_t m) {
+    display_set_clock_mode(m);
+    kb_eeconfig_set_clock_mode(m);
+}
+void env_health_reset(void) {
+    health_reset();
+    display_debug_refresh();
+}
+
+/* About's snapshot (P1a): compact facts, frozen while the page shows. */
+void env_about(env_about_t *a) {
+    a->uptime_s = timer_read32() / 1000u;
+    a->batt_pm  = battery_level_permille();   /* 0xFFFF unknown */
+    uint16_t mv = battery_pack_mv();
+    a->pack_mv  = mv ? mv : ENV_UNKNOWN;       /* its unknown is 0 */
+    a->left_min = battery_time_left_min();    /* 0xFFFF none */
+    a->mode     = (uint8_t)power_mode();
+    uint8_t tr  = ch582_is_usb() ? ENV_LINK_USB : ch582_is_24g() ? ENV_LINK_24G : ENV_LINK_BT;
+    uint8_t sl  = ch582_get_target_slot();     /* 1-3 BT, 0 none */
+    uint8_t st  = (uint8_t)ch582_get_conn_state();
+    a->link     = (uint8_t)(tr | ((sl ? (uint8_t)(sl - 1u) & 3u : 0u) << 2) | ((st & 7u) << 4));
+}
+
+#ifndef AK820_BUILD_HASH
+#    define AK820_BUILD_HASH 0u   /* a build without build.sh */
+#endif
+#ifndef AK820_BUILD_DIRTY
+#    define AK820_BUILD_DIRTY 1
+#endif
+#ifndef AK820_BUILD_TOKEN
+#    define AK820_BUILD_TOKEN 0u
+#endif
+uint32_t env_build_hash(void) { return AK820_BUILD_HASH; }
+bool     env_build_dirty(void) { return AK820_BUILD_DIRTY != 0; }
+uint32_t env_build_token(void) { return AK820_BUILD_TOKEN; }
+const char *env_build_flavour(void) {
+#if defined(AK820_DEVFAULT)
+    return "fault";
+#elif defined(LOOPGAP_INSTRUMENT)
+    return "instr";
+#elif defined(AK820_DEV_HOOKS)
+    return "dev";
+#elif defined(AK820PRO_LCD_VARIANT_FPB)
+    return "fpb";
+#else
+    return "daily";
+#endif
+}
 
 uint16_t env_po_event(po_event_t ev) { return display_po_event(ev); }
 bool     env_wake_notice_take(void) { return display_wake_notice_take(); }

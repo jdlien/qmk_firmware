@@ -38,6 +38,10 @@ typedef struct {
     uint8_t (*chunks)(uint8_t slot);
     uint8_t (*pieces)(uint8_t slot, uint8_t chunk);
     ms_paint_t (*paint)(uint8_t slot, uint8_t chunk, uint8_t piece);
+    /* Rows with a highlight (P1a, "one lit row at most"): slots row0 ..
+     * row0 + nrows - 1 (at most 8), whose signature's bit 0 means lit. 0 rows:
+     * no highlight policy (the fixture's layouts). */
+    uint8_t row0, nrows;
 } ms_layout_t;
 
 typedef enum {
@@ -55,6 +59,9 @@ void      ms_set_layout(const ms_layout_t *l, bool fresh);   /* a layout change:
                                                               * banded clear (a running one finishes, unless fresh) */
 void      ms_retarget(void);                     /* same layout, new targets: rule 2 restarts what changed */
 void      ms_invalidate_all(void);               /* a loss under this owner */
+void      ms_invalidate_rows(uint8_t first, uint8_t n);   /* those slots repaint whatever their signature
+                                                           * (a new About snapshot); no clear */
+uint8_t   ms_maybe_lit(void);                    /* the rows that may still show a highlight */
 ms_step_t ms_step(void);
 
 bool      ms_clearing(void);

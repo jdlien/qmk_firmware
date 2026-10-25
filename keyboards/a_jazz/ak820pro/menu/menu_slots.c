@@ -20,6 +20,12 @@ static bool      ops_inflight;    /* the last operation's DMA, counted when it e
 static uint8_t   stop_n;          /* op 27's partial stop: pending while > 0 and not stopped */
 static bool      stopped;
 static bool      stop_cancelled;  /* a pending stop disposed of by a retarget or layout change */
+/* One lit row at most (P1a; plans/CONFIG-MENU-P1-DESIGN.md): the rows that
+ * may show highlighted pixels. A bit is set before a lit target's first
+ * piece, so a partial highlight counts, and cleared only when an unlit
+ * repaint of that row commits whole, or a clear completes. A loss, an
+ * abandoned op or an invalidation keeps it. */
+static uint8_t   maybe_lit;
 
 /* C10's measures. */
 static bool      op_started;      /* the current op's first piece has been tried */
@@ -44,6 +50,7 @@ void ms_init(void) {
     ops_inflight = false;
     stop_n = 0;
     stopped = stop_cancelled = false;
+    maybe_lit = 0;
     op_started = op_untimed = dma_untimed = target_live = target_settled = false;
     op_t0 = target_t0 = 0;
     last_op_ticks = 0;
@@ -137,6 +144,24 @@ void ms_retarget(void) {
     (void)ms_settled();
 }
 
+/* A row slot of this layout, and its bit in maybe_lit. */
+static bool is_row(uint8_t i) { return layout && i >= layout->row0 && i < layout->row0 + layout->nrows; }
+static uint8_t row_bit(uint8_t i) { return (uint8_t)(1u << (i - layout->row0)); }
+
+void ms_invalidate_rows(uint8_t first, uint8_t n) {
+    settle_ops();
+    if (!layout) return;
+    for (uint8_t i = first; i < first + n && i < layout->n; i++) {
+        if (i == cursor) {   /* its op is abandoned: it never ends, as a changed target's */
+            op_started = op_untimed = false;
+            cursor     = NO_CURSOR;
+        }
+        slots[i].state = MS_INVALID;
+    }
+}
+
+uint8_t ms_maybe_lit(void) { return maybe_lit; }
+
 void ms_invalidate_all(void) {
     settle_ops();   /* an op that ended latches its stop before the loss resets anything */
     op_started = op_untimed = false;
@@ -208,7 +233,10 @@ ms_step_t ms_step(void) {
         bool     ok = mb_clear_band((uint8_t)(clear_band - 1u));
         uint32_t dt = mb_now_ticks() - t;
         if (dt > band_max_ticks) band_max_ticks = dt;
-        if (ok && ++clear_band > MB_BANDS) clear_band = 0;
+        if (ok && ++clear_band > MB_BANDS) {
+            clear_band = 0;
+            maybe_lit  = 0;   /* the whole panel is background */
+        }
         return MS_STEP_CLEAR;
     }
 
@@ -233,6 +261,7 @@ ms_step_t ms_step(void) {
              * no loss waiting to be taken. */
             if (mb_busy() || mb_lost_pending()) return MS_STEP_WAIT;
             s->state = MS_COMMITTED;
+            if (is_row(cursor) && !(s->sig & 1u)) maybe_lit &= (uint8_t)~row_bit(cursor);   /* grey, whole */
             cursor   = NO_CURSOR;
             committed_count++;
             (void)ms_settled();   /* the last commit: its target settles now */
@@ -245,13 +274,36 @@ ms_step_t ms_step(void) {
         cursor = NO_CURSOR;
     }
 
-    for (uint8_t i = 0; i < layout->n; i++) {
-        if (settled(i)) continue;
-        slots[i].state = MS_PARTIAL;
-        slots[i].sig   = layout->sig(i);
-        slots[i].gen   = tgen;
-        cursor         = i;
-        chunk = piece  = 0;
+    /* The next slot. A layout with rows takes, first, a row that may show a
+     * highlight whose target is unlit (lowest first); and a row whose target
+     * is lit waits while any other row may still show one, so the panel
+     * never shows two (P1a). The active PARTIAL slot above resumes before
+     * either: it can't be a second lit row (a lit row starts only when no
+     * other may be lit), so resuming it delays a cleanup by a few pieces and
+     * never adds a highlight, and rev 13's resume rule stays as it was. */
+    uint8_t pick = NO_CURSOR;
+    if (layout->nrows) {
+        for (uint8_t i = layout->row0; i < layout->row0 + layout->nrows; i++)
+            if ((maybe_lit & row_bit(i)) && !settled(i) && !(layout->sig(i) & 1u)) {
+                pick = i;
+                break;
+            }
+    }
+    if (pick == NO_CURSOR) {
+        for (uint8_t i = 0; i < layout->n; i++) {
+            if (settled(i)) continue;
+            if (is_row(i) && (layout->sig(i) & 1u) && (maybe_lit & (uint8_t)~row_bit(i))) continue;   /* waits */
+            pick = i;
+            break;
+        }
+    }
+    if (pick != NO_CURSOR) {
+        slots[pick].state = MS_PARTIAL;
+        slots[pick].sig   = layout->sig(pick);
+        slots[pick].gen   = tgen;
+        if (is_row(pick) && (slots[pick].sig & 1u)) maybe_lit |= row_bit(pick);   /* before its first piece */
+        cursor           = pick;
+        chunk = piece    = 0;
         return paint_piece();
     }
     note_settled();   /* nothing left for this target */

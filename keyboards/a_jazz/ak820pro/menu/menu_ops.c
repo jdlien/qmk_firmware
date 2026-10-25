@@ -8,6 +8,7 @@
 
 #include <string.h>
 
+#include "menu.h"
 #include "menu_backend.h"
 #include "menu_env.h"
 #include "menu_fixture.h"
@@ -17,6 +18,18 @@
 
 static bool    armed = false;   /* op 27 sub 6: off at boot, never persisted */
 static uint8_t losses_seen;
+
+/* The session's kind (P1a; plans/CONFIG-MENU-P1-DESIGN.md): installed when an
+ * opener starts a session from NONE, before the opening's callbacks run, kept
+ * through PENDING and DEBUG/OPEN, cleared once the session is NONE again (a
+ * close or a PENDING cancel). The physical opener opens the menu, or the
+ * fixture while op 27's arming is set (the S0/S1 scripts); op 27 sub 4 the
+ * fixture, sub 11 the menu. */
+enum { MK_NONE = 0, MK_FIXTURE, MK_MENU };
+static uint8_t menu_kind = MK_NONE;
+static void kind_for_new_session(uint8_t k) {
+    if (po_session() == SESSION_NONE) menu_kind = k;
+}
 
 bool menu_enabled(void) {
 #if defined(MENU_ENABLE)
@@ -29,15 +42,23 @@ bool menu_enabled(void) {
 bool menu_physical(mi_control_t c, bool pressed, bool fn, uint32_t now) {
     switch (mi_physical(c, pressed, fn, menu_enabled(), po_session(), now)) {
         case MI_FORWARD:  return true;
-        case MI_OPENER:   (void)env_po_event(PO_EV_OPENER); return false;
+        case MI_OPENER:
+            kind_for_new_session(armed ? MK_FIXTURE : MK_MENU);
+            (void)env_po_event(PO_EV_OPENER);
+            return false;
         case MI_CONSUMED: return false;
     }
     return true;
 }
 
 static void screen_open(bool from_debug, uint32_t now) {
-    if (from_debug) fx_return_from_diag();
-    else            fx_open();
+    if (menu_kind == MK_MENU) {
+        if (from_debug) menu_return_from_diag(po_debug_page() == DEBUG_PAGE_CAMERA ? 1 : 0, now);
+        else            menu_open(now);
+    } else {
+        if (from_debug) fx_return_from_diag();
+        else            fx_open();
+    }
     mi_note_input(now);   /* the idle timeout starts at the opening */
 }
 
@@ -48,7 +69,10 @@ void menu_ops_apply(uint16_t acts, bool loss_dropped, uint32_t now) {
     if (acts & PO_ACT_MENU_CLEAR) screen_open(po_return_to_diag(), now);
 }
 
-void menu_screen_invalidate(void) { fx_invalidate(); }
+void menu_screen_invalidate(void) {
+    if (menu_kind == MK_MENU) menu_invalidate();
+    else fx_invalidate();
+}
 
 void menu_note_loss(void) {
     if (losses_seen < 0xFFu) losses_seen++;
@@ -81,6 +105,7 @@ void menu_ops_task(uint32_t now) {
     if (env_wake_notice_take()) (void)env_po_event(PO_EV_WAKE_RELEASED);
     mi_tick(now);
     op27_poll();
+    if (po_session() == SESSION_NONE) menu_kind = MK_NONE;   /* closed, or a PENDING cancelled */
     if (po_session() != SESSION_OPEN) return;
 
     int8_t     turns;
@@ -95,12 +120,24 @@ void menu_ops_task(uint32_t now) {
             if (latch != MI_LATCH_NONE) (void)env_po_event(PO_EV_DEBUG_CLICK);
             return;
         }
-        switch (fx_input(turns, latch)) {
-            case FX_DIAG:  (void)env_po_event(PO_EV_DIAG_HEALTH); return;
-            case FX_CLOSE: (void)env_po_event(PO_EV_CLOSE); return;
-            case FX_NONE:  break;
+        if (menu_kind == MK_MENU) {
+            switch (menu_input(turns, latch, now)) {
+                case MENU_DIAG_HEALTH: (void)env_po_event(PO_EV_DIAG_HEALTH); return;
+                case MENU_DIAG_CAMERA: (void)env_po_event(PO_EV_DIAG_CAMERA); return;
+                case MENU_CLOSE:       (void)env_po_event(PO_EV_CLOSE); return;
+                case MENU_NONE:        break;
+            }
+        } else {
+            switch (fx_input(turns, latch)) {
+                case FX_DIAG:  (void)env_po_event(PO_EV_DIAG_HEALTH); return;
+                case FX_CLOSE: (void)env_po_event(PO_EV_CLOSE); return;
+                case FX_NONE:  break;
+            }
         }
     }
+    /* The menu's latched model (Fn+B, Fn+C) and its title (the flash, the
+     * hint), each pass while it shows. */
+    if (menu_kind == MK_MENU && po_owner() == PANEL_MENU) menu_tick(now, now - mi_last_input());
     /* 24 s with no knob input closes it (C7: hint repaints, host traffic and
      * typing don't restart this). The fixture has no edit, so no backstop. */
     /* Signed: an input stamped a little after `now` (an event read its own
@@ -136,8 +173,13 @@ static void op27_read(uint8_t *d) {
     put16(&d[10], po_gen());
     d[12] = (uint8_t)po_phase();
     d[13] = po_damaged();
-    d[14] = OWNER_MENU_OPEN() ? fx_screen() : 0;
-    d[15] = fx_cursor();
+    if (menu_kind == MK_MENU) {   /* 16 + the node showing; the cursor, a topic's top, the confirm's page */
+        d[14] = OWNER_MENU_OPEN() ? menu_screen_id() : 0;
+        d[15] = po_owner() == PANEL_MENU ? menu_cursor() : 0xFFu;
+    } else {
+        d[14] = OWNER_MENU_OPEN() ? fx_screen() : 0;
+        d[15] = fx_cursor();
+    }
     uint8_t f = 0;
     if (armed) f |= 1u << 0;
     /* bit 1, an edit open: none in S0 */
@@ -220,9 +262,10 @@ bool menu_ops_op27(uint8_t *d, uint32_t now) {
     switch (sub) {
         case 0: {   /* the fixture's paint */
             uint8_t p = d[5], n = d[6];
-            bool    f1   = OWNER_MENU_OPEN() && fx_screen() == FX_SCREEN_F1;
+            bool    fx   = OWNER_MENU_OPEN() && menu_kind == MK_FIXTURE;   /* the fixture's only (P1a) */
+            bool    f1   = fx && fx_screen() == FX_SCREEN_F1;
             bool    mono = p >= FX_MONO_FIRST && p < FX_MONO_FIRST + FX_MONO_STYLES;   /* S1: F3 */
-            if (!OWNER_MENU_OPEN() || (p > 3 && !mono)) { st = MI_BAD; break; }
+            if (!fx || (p > 3 && !mono)) { st = MI_BAD; break; }
             if (p != 2 && n != 0) { st = MI_BAD; break; }
             if ((p == 0 || p == 1) && !f1) { st = MI_BAD; break; }
             if (p == 2 && (!f1 || n < 1 || n >= FX_F1_OPS || fx_pattern() != 0 || !ms_settled())) { st = MI_BAD; break; }
@@ -264,9 +307,11 @@ bool menu_ops_op27(uint8_t *d, uint32_t now) {
             mi_note_input(now);
             break;
         }
-        case 4:     /* Fn plus a click: the opener, or the closer */
+        case 4:     /* Fn plus a click: the opener, or the closer -- the fixture */
+        case 11:    /* the same, the menu (P1a): sub 4 exactly but the kind */
             st = mi_begin(MI_KIND_OPENER, &seq);
             if (st != MI_OK) break;
+            kind_for_new_session(sub == 4 ? MK_FIXTURE : MK_MENU);
             mi_finish(env_po_event(po_session() == SESSION_OPEN ? PO_EV_CLOSE : PO_EV_OPENER) & PO_ACT_REFUSED
                           ? MI_ST_REFUSED : MI_ST_DONE);
             break;
