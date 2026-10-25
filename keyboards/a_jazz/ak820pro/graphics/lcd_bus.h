@@ -145,7 +145,8 @@ void lcd_stream_end(void);
 // through the stream. False: a polled send gave up (blit_lost set), or a bad rect.
 bool lcd_blit_mono(const uint8_t *bits, uint8_t stride, uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t fg, uint16_t bg);
 #ifdef AK820_DEV_HOOKS
-void lcd_mono_timing(uint16_t out[4], bool reset);   // a mono piece's window, expansion, sends, whole: max system ticks
+typedef uint16_t (*lcd_px_fn)(const void *ctx, uint16_t col, uint16_t row);   // a generated pixel's RGB565
+bool lcd_blit_gen(uint16_t x, uint16_t y, uint16_t w, uint16_t h, lcd_px_fn fn, const void *ctx);   // P1b: generated pixels, streamed as lcd_blit_mono's
 uint16_t lcd_scratch_overlaps(void);   // a second acquire of the shared scratch: must stay 0
 uint16_t lcd_spi0_poll_giveups(void);  // a polled bulk send that gave up on a stuck shift: must stay 0
 #endif

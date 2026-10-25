@@ -60,7 +60,4 @@ typedef struct {
 } env_meas_t;
 void     env_meas(env_meas_t *m);
 uint16_t env_meas_arm(void);         /* a new interval: the maxima and counts zeroed, a new token */
-/* A mono piece's window, expansion, sends and whole: max system ticks
- * (lcd_blit_mono, dev builds; op 27 sub 12). */
-void     env_mono_timing(uint16_t out4[4], bool reset);
 bool     env_debug_done(void);       /* sub 5 byte 31 bit 0 (C10) */

@@ -116,7 +116,6 @@ void env_meas(env_meas_t *m) {
     m->rtc_sec = rtc_get_time(&t) ? t.seconds : 0xFFu;
 }
 uint16_t env_meas_arm(void) { return meas_arm(); }
-void     env_mono_timing(uint16_t out4[4], bool reset) { lcd_mono_timing(out4, reset); }
 bool     env_debug_done(void) { return display_debug_done(); }
 #endif
 

@@ -4,6 +4,7 @@
 #include "param_overlay.h"
 #include "ak820pro.h"
 #include "graphics/display.h"
+#include "rgb_effects.h"
 
 /* ---- Hold-to-repeat for the adjust keys ----------------------------------
  *
@@ -125,55 +126,8 @@ void param_repeat_task(void) {
 }
 
 #ifdef PARAM_OVERLAY
-/* Short effect names for the 12-character band.
- *
- * NOT rgb_matrix_get_mode_name(): that is gated behind RGB_MATRIX_MODE_NAME_ENABLE,
- * costs flash for all ~40 effect names, and returns the raw enum spelling --
- * "RAINBOW_MOVING_CHEVRON" is 22 characters against a 12-character band. Only 10
- * animations are enabled here (keyboard.json), so a hand-written table is both
- * smaller and far more readable. Each case is #ifdef'd on the effect's own enable
- * so this still builds if the animation list changes; anything unlisted falls
- * through to the mode number. */
-static const char *rgb_mode_short(uint8_t mode) {
-    switch (mode) {
-        case RGB_MATRIX_NONE:                    return "Off";
-#ifdef ENABLE_RGB_MATRIX_SOLID_COLOR
-        case RGB_MATRIX_SOLID_COLOR:             return "Solid";
-#endif
-#ifdef ENABLE_RGB_MATRIX_ALPHAS_MODS
-        case RGB_MATRIX_ALPHAS_MODS:             return "Alphas/Mods";
-#endif
-#ifdef ENABLE_RGB_MATRIX_BREATHING
-        case RGB_MATRIX_BREATHING:               return "Breathing";
-#endif
-#if defined(RGB_MATRIX_CUSTOM_KB)
-        case RGB_MATRIX_CUSTOM_RAINFALL:         return "Rainfall";
-        case RGB_MATRIX_CUSTOM_DRIFT:            return "Drift";
-#endif
-#ifdef ENABLE_RGB_MATRIX_CYCLE_ALL
-        case RGB_MATRIX_CYCLE_ALL:               return "Cycle All";
-#endif
-#ifdef ENABLE_RGB_MATRIX_CYCLE_LEFT_RIGHT
-        case RGB_MATRIX_CYCLE_LEFT_RIGHT:        return "Cycle L-R";
-#endif
-#ifdef ENABLE_RGB_MATRIX_CYCLE_UP_DOWN
-        case RGB_MATRIX_CYCLE_UP_DOWN:           return "Cycle U-D";
-#endif
-#ifdef ENABLE_RGB_MATRIX_CYCLE_PINWHEEL
-        case RGB_MATRIX_CYCLE_PINWHEEL:          return "Pinwheel";
-#endif
-#ifdef ENABLE_RGB_MATRIX_RAINBOW_MOVING_CHEVRON
-        case RGB_MATRIX_RAINBOW_MOVING_CHEVRON:  return "Chevron";
-#endif
-#ifdef ENABLE_RGB_MATRIX_JELLYBEAN_RAINDROPS
-        case RGB_MATRIX_JELLYBEAN_RAINDROPS:     return "Jellybean";
-#endif
-#ifdef ENABLE_RGB_MATRIX_TYPING_HEATMAP
-        case RGB_MATRIX_TYPING_HEATMAP:          return "Heatmap";
-#endif
-        default:                                 return NULL;
-    }
-}
+/* The effects' short names: rgb_effects.c (one table with the menu's Effect
+ * choice, P1b). */
 
 /* Poll the adjustable state and surface any change in the info band.
  *
@@ -242,7 +196,7 @@ void param_status_task(void) {
          * the brightness keys appear to do nothing while it is off. */
         snprintf(buf, sizeof(buf), "RGB %s", on ? "On" : "Off");
     } else if (mode != last_mode) {
-        const char *name = rgb_mode_short(mode);
+        const char *name = rgb_effect_name(mode);
         if (name) snprintf(buf, sizeof(buf), "%s", name);
         else      snprintf(buf, sizeof(buf), "Mode %u", (unsigned)mode);
     } else if (v != last_v) {

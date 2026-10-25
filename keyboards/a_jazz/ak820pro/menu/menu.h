@@ -34,7 +34,6 @@ enum { MP_LIT = 0, MP_DIM, MP_LEAVE, MP_WHITE, MP_GREY, MP_TRACK, MP_CURSOR, MP_
 uint16_t menu_color(uint8_t i);
 #if defined(AK820_DEV_HOOKS) || defined(MENU_HOST_TEST)
 bool     menu_set_color(uint8_t i, uint16_t rgb565);   /* false: no such colour */
-uint32_t menu_compose_max_ticks(bool reset);           /* a text piece's composition (op 27 sub 12) */
 #endif
 
 /* For the host tests' expected frames. */

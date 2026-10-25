@@ -405,46 +405,20 @@ void lcd_stream_end(void) {
  * One halfword store a pixel from a two-entry table, eight to a source byte,
  * and whole rows to the scratch (a row is at most FRAME_W, 128 px: 256 B, so
  * one always fits an empty scratch). A bit test and two byte stores a pixel
- * cost the M0, under the row ISR's load, several ms of a 488 B piece. */
-#ifdef AK820_DEV_HOOKS
-/* Where a mono piece's time goes (P1a's timing; op 27 sub 12): the window,
- * the expansion, the sends, the whole, each a maximum in system ticks. */
-static uint16_t mono_t_win, mono_t_exp, mono_t_send, mono_t_all;
-#    define MONO_T() ((uint16_t)st_lld_get_counter())
-#    define MONO_MAX(v, d) do { uint16_t d_ = (uint16_t)(d); if (d_ > (v)) (v) = d_; } while (0)
-void lcd_mono_timing(uint16_t out[4], bool reset) {
-    out[0] = mono_t_win; out[1] = mono_t_exp; out[2] = mono_t_send; out[3] = mono_t_all;
-    if (reset) mono_t_win = mono_t_exp = mono_t_send = mono_t_all = 0;
-}
-static uint16_t mono_send_sum;
-static void mono_bytes(const uint8_t *b, uint32_t n) {
-    uint16_t t = MONO_T();
-    lcd_stream_bytes(b, n);
-    mono_send_sum = (uint16_t)(mono_send_sum + (uint16_t)(MONO_T() - t));
-}
-#else
-#    define mono_bytes lcd_stream_bytes
-#endif
-
+ * cost the M0, under the row ISR's load, several ms of a 488 B piece. (Where
+ * that piece's time went, P1a's op 27 sub 12, is GREMLIN-RESULTS §20b; its
+ * counters left with P1b for their RAM.) */
 bool lcd_blit_mono(const uint8_t *bits, uint8_t stride, uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t fg, uint16_t bg) {
     WDT_SCOPE(WDT_SITE_LCD_TRANSFER);
     _Static_assert(FRAME_W <= sizeof scratch_buf.h / sizeof scratch_buf.h[0], "a row fits the scratch");
-#ifdef AK820_DEV_HOOKS
-    uint16_t t0   = MONO_T();
-    mono_send_sum = 0;
-#endif
     if (!lcd_stream_begin(x, y, w, h)) return false;   /* x + w <= FRAME_W */
-#ifdef AK820_DEV_HOOKS
-    uint16_t t1 = MONO_T();
-    MONO_MAX(mono_t_win, t1 - t0);
-#endif
     /* Each colour as the halfword whose bytes, little-endian, are its panel order. */
     const uint16_t lut[2]  = {(uint16_t)((bg >> 8) | (bg << 8)), (uint16_t)((fg >> 8) | (fg << 8))};
     uint16_t *const start = scratch_buf.h;
     uint16_t       *p     = start;
     for (uint16_t r = 0; r < h && !stream_broken; r++) {   /* a window given up: nothing to expand */
         if ((uint16_t)(start + sizeof scratch_buf.h / sizeof scratch_buf.h[0] - p) < w) {
-            mono_bytes(lcd_scratch, (uint32_t)(p - start) * 2u);
+            lcd_stream_bytes(lcd_scratch, (uint32_t)(p - start) * 2u);
             p = start;
             if (stream_broken) break;   /* given up: expand no further */
         }
@@ -463,18 +437,37 @@ bool lcd_blit_mono(const uint8_t *bits, uint8_t stride, uint16_t x, uint16_t y, 
         }
         for (uint8_t b = c ? *row : 0; c; c--, b = (uint8_t)(b << 1)) *p++ = lut[b >> 7];
     }
-    if (p != start && !stream_broken) mono_bytes(lcd_scratch, (uint32_t)(p - start) * 2u);
+    if (p != start && !stream_broken) lcd_stream_bytes(lcd_scratch, (uint32_t)(p - start) * 2u);
     bool ok = !stream_broken;
-#ifdef AK820_DEV_HOOKS
-    uint16_t t2 = MONO_T();
-    MONO_MAX(mono_t_send, mono_send_sum);
-    MONO_MAX(mono_t_exp, (uint16_t)(t2 - t1) - mono_send_sum);
-#endif
     if (!ok) stream_left = 0;   /* given up: the rest is dropped, not a short stream */
     lcd_stream_end();
-#ifdef AK820_DEV_HOOKS
-    MONO_MAX(mono_t_all, MONO_T() - t0);
-#endif
+    return ok;
+}
+
+/* Generated pixels (P1b: the editors' bar and hue bands): fn(ctx, col, row)
+ * gives each pixel's RGB565, composed in raster order into the scratch,
+ * already in panel order, and streamed as lcd_blit_mono's are, whole rows to
+ * the scratch. False: a polled send gave up (blit_lost set), or a bad rect. */
+bool lcd_blit_gen(uint16_t x, uint16_t y, uint16_t w, uint16_t h, lcd_px_fn fn, const void *ctx) {
+    WDT_SCOPE(WDT_SITE_LCD_TRANSFER);
+    if (!lcd_stream_begin(x, y, w, h)) return false;   /* x + w <= FRAME_W: a row fits the scratch */
+    uint16_t *const start = scratch_buf.h;
+    uint16_t       *p     = start;
+    for (uint16_t r = 0; r < h && !stream_broken; r++) {   /* a window given up: nothing to compose */
+        if ((uint16_t)(start + sizeof scratch_buf.h / sizeof scratch_buf.h[0] - p) < w) {
+            lcd_stream_bytes(lcd_scratch, (uint32_t)(p - start) * 2u);
+            p = start;
+            if (stream_broken) break;   /* given up: compose no further */
+        }
+        for (uint16_t c = 0; c < w; c++) {
+            const uint16_t v = fn(ctx, c, r);
+            *p++             = (uint16_t)((v >> 8) | (v << 8));
+        }
+    }
+    if (p != start && !stream_broken) lcd_stream_bytes(lcd_scratch, (uint32_t)(p - start) * 2u);
+    bool ok = !stream_broken;
+    if (!ok) stream_left = 0;   /* given up: the rest is dropped, not a short stream */
+    lcd_stream_end();
     return ok;
 }
 

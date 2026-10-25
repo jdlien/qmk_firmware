@@ -88,18 +88,8 @@ bool menu_set_color(uint8_t i, uint16_t c) {
     pal[i] = c;
     return true;
 }
-static uint32_t compose_max;
-uint32_t menu_compose_max_ticks(bool reset) {
-    uint32_t m = compose_max;
-    if (reset) compose_max = 0;
-    return m;
-}
-#    define COMPOSE_T0() uint32_t ct0_ = mb_now_ticks()
-#    define COMPOSE_T1() do { uint32_t d_ = mb_now_ticks() - ct0_; if (d_ > compose_max) compose_max = d_; } while (0)
 #else
 static const uint16_t pal[MP_N] = {MENU_LIT, MENU_DIM, MENU_LEAVE, MENU_WHITE, MENU_GREY, MENU_TRACK, MENU_CURSOR};
-#    define COMPOSE_T0() ((void)0)
-#    define COMPOSE_T1() ((void)0)
 #endif
 uint16_t menu_color(uint8_t i) { return i < MP_N ? pal[i] : 0; }
 
@@ -388,7 +378,6 @@ _Static_assert(ROW_LEAD * MT_CELL_H * 2u <= MB_PASS_BYTES && ROW_LEAD <= 8u && M
  * `cursor_fg`; the title and the confirm's lines a 1 px one. */
 static ms_paint_t text_piece(const char *cells, uint16_t y, bool row, uint8_t cursor, uint16_t cursor_fg, uint8_t c,
                              uint8_t p, uint16_t fg) {
-    COMPOSE_T0();
     const uint8_t  lead = row ? ROW_LEAD : 1u;
     mt_line_t      l    = {cells, 20, lead, 1, false, false, cursor};
     const bool     lc   = row && c == 0;   /* the row's lead */
@@ -409,7 +398,6 @@ static ms_paint_t text_piece(const char *cells, uint16_t y, bool row, uint8_t cu
     const uint8_t  st   = (uint8_t)((w + 7u) / 8u);
     uint8_t        bits[BITS_MAX];
     mt_bits(&l, c0, w, r0, rows, bits, st);
-    COMPOSE_T1();
     return mb_mono(bits, st, (uint16_t)(TEXT_X - lead + c0), (uint16_t)(y + r0), w, rows, lc ? cursor_fg : fg, 0)
                ? MS_PAINT_DONE : MS_PAINT_FAILED;
 }

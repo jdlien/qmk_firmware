@@ -34,6 +34,8 @@
 #define MT_I_HELP       "\x90\x91"
 #define MT_I_ABOUT      "\x92\x93"
 #define MT_I_EXIT       "\x94"
+#define MT_I_LIGHT      "\x95"       /* P1b */
+#define MT_I_SCREEN     "\x96\x97"
 
 /* A line as a slot paints it: `lead` pixels, then `cells` glyph cells (the
  * string, padded with spaces, codes the face hasn't shown as '?'), then
