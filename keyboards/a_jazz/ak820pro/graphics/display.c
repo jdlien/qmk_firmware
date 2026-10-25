@@ -270,17 +270,9 @@ static inline uint8_t bkl_effective(void) {
 }
 
 void display_backlight_tick(void) {
-    uint16_t duty = ind_level_duty[bkl_effective()];
-
-    if (duty >= IND_FULL) {
-        gpio_write_pin(PANEL_BKL, 1);
-        return;
-    }
-    if (duty == 0) {
-        gpio_write_pin(PANEL_BKL, 0);
-        return;
-    }
-    gpio_write_pin(PANEL_BKL, ind_sd_step(&bkl_acc, duty));   /* P2b: the duty spread, as the indicators' */
+    /* P2b: the duty spread as the indicators' (indicator_levels.h); full and
+     * zero hold the pin. Written every tick, so a restart needs nothing. */
+    gpio_write_pin(PANEL_BKL, bkl_tick_pin(ind_level_duty[bkl_effective()], &bkl_acc));
 }
 
 uint8_t display_get_brightness_max(void) {
@@ -318,7 +310,7 @@ void display_backlight_pin_off(void) {
  * taken it (P2b: rounded from the fine duty, at most half a tick off, ~0.4 mW;
  * so battery.c and its host replays keep their scale). */
 uint8_t display_backlight_duty(void) {
-    return (uint8_t)((ind_level_duty[display_backlight_effective()] + 128u) >> 8);
+    return ind_duty_ticks(ind_level_duty[display_backlight_effective()]);
 }
 _Static_assert(IND_FULL == 256u * BKL_PWM_TICKS, "display_backlight_duty(): 1/256 ticks");
 

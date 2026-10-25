@@ -29,7 +29,7 @@ typedef enum {
 } battery_state_t;
 
 /* HC_BATTLOG reply format, and HC_CONN byte 31 (the battery fields' layout). */
-#define BATTERY_LOG_VERSION    7
+#define BATTERY_LOG_VERSION    8   /* 8: the entry's bkl byte is the 0-100 LCD level (the menu's P2b; 0-23 before) */
 #define BATTERY_LOG_ENTRY_SIZE 18
 /* HC_BATTLOG's version byte while a deep sleep's entries are not yet laid in:
  * the reply's age would date the old entries hours too recently, so the host
