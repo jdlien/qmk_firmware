@@ -34,6 +34,7 @@ enum { MP_LIT = 0, MP_DIM, MP_LEAVE, MP_WHITE, MP_GREY, MP_TRACK, MP_N };
 uint16_t menu_color(uint8_t i);
 #if defined(AK820_DEV_HOOKS) || defined(MENU_HOST_TEST)
 bool     menu_set_color(uint8_t i, uint16_t rgb565);   /* false: no such colour */
+bool     menu_set_check(uint8_t style);                /* sub 14: 0 the circled check, 1 the squared; false: neither */
 uint32_t menu_compose_max_ticks(bool reset);           /* a text piece's composition (op 27 sub 12) */
 #endif
 
@@ -41,7 +42,7 @@ uint32_t menu_compose_max_ticks(bool reset);           /* a text piece's composi
 #define MENU_ROWS      8
 #define MENU_LIT       0xFF94u   /* the selected row, #FFF2A0 (JD, 10-24: lit text) */
 #define MENU_DIM       0xCE59u   /* the other rows, #C8C8C8 */
-#define MENU_LEAVE     0xFCD3u   /* "‹ Back" and Exit, not selected: light red, #FF9A9A (JD, 10-24: #E08080 too dim) */
+#define MENU_LEAVE     0xFCD3u   /* "◀ Back" and Exit, not selected: light red, #FF9A9A (JD, 10-24: #E08080 too dim) */
 #define MENU_WHITE     0xFFFFu   /* titles, pages */
 #define MENU_GREY      0x632Cu   /* the separator, #646464 */
 #define MENU_TRACK     0x4228u   /* the scrollbar's track, #464646 */

@@ -7,7 +7,7 @@
 #include "../graphics/res/font_small_mono.h"
 
 _Static_assert(MT_CELL_W == FONT_MONO_W && MT_CELL_H == FONT_MONO_H, "menu_text.h's cell is the face's");
-_Static_assert(FONT_MONO_XFIRST == 0x80 && FONT_MONO_N - FONT_MONO_ASCII == 5, "menu_text.h's MT_LSAQUO..MT_CHECK");
+_Static_assert(FONT_MONO_XFIRST == 0x80 && FONT_MONO_N - FONT_MONO_ASCII == 23, "menu_text.h's MT_LSAQUO..MT_I_EXIT");
 
 static const uint8_t *glyph(uint8_t code) {
     if (code >= FONT_MONO_FIRST && code < FONT_MONO_FIRST + FONT_MONO_ASCII) return font_small_mono[code - FONT_MONO_FIRST];
@@ -32,8 +32,15 @@ void mt_bits(const mt_line_t *l, uint16_t c0, uint16_t w, uint8_t r0, uint8_t ro
     memset(bits, 0, (size_t)stride * rows);
     const uint16_t end  = (uint16_t)(c0 + w);                    /* line columns [c0, end) */
     const uint16_t text = (uint16_t)(l->lead + l->cells * MT_CELL_W);
-    /* The edges, ink only (background is the zeroed bits). */
-    if (l->lead_ink && c0 < l->lead) ink_cols(bits, stride, rows, 0, (uint16_t)((end < l->lead ? end : l->lead) - c0));
+    /* The edges, ink only (background is the zeroed bits). A lead glyph's
+     * columns land where they are, cut to the band: lead <= a cell. */
+    if (l->lead_glyph && c0 < l->lead) {
+        const uint8_t *g   = glyph(l->lead_glyph) + r0;
+        const uint16_t lim = end < l->lead ? end : l->lead;
+        for (uint16_t i = c0; i < lim; i++)
+            for (uint8_t r = 0; r < rows; r++)
+                if (g[r] & (0x80u >> i)) bits[(uint16_t)r * stride + ((i - c0) >> 3)] |= (uint8_t)(0x80u >> ((i - c0) & 7u));
+    } else if (l->lead_ink && c0 < l->lead) ink_cols(bits, stride, rows, 0, (uint16_t)((end < l->lead ? end : l->lead) - c0));
     if (l->trail_ink && end > text) ink_cols(bits, stride, rows, (uint16_t)((c0 > text ? c0 : text) - c0), w);
     /* The cells the band reaches, each clipped to it. */
     if (end <= l->lead || c0 >= text) return;

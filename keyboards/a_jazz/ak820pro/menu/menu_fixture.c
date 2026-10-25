@@ -170,7 +170,7 @@ static ms_paint_t f3_paint(uint8_t s, uint8_t c, uint8_t p) {
     const bool inv = (mono & FX_MONO_INV) != 0;
     const bool sel = s >= 2 && (uint8_t)(s - 2) == row;
     uint16_t   fg = FX_MONO_WHITE, bg = FX_MONO_BLACK, y0 = 0;
-    mt_line_t  l  = {fx_mono_titles[mono], 20, 1, 1, false, false};
+    mt_line_t  l  = {fx_mono_titles[mono], 20, 1, 1, false, false, 0};
     if (s >= 2) {
         l.s  = fx_mono_rows[s - 2];
         y0   = (uint16_t)(ROW_Y0 + (s - 2) * ROW_H);
