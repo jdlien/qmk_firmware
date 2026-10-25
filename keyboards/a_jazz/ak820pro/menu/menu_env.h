@@ -73,6 +73,19 @@ _Static_assert(sizeof(env_about_t) == 12, "About's snapshot: 12 B");
 enum { ENV_LINK_USB = 0, ENV_LINK_BT = 1, ENV_LINK_24G = 2 };
 enum { ENV_LINK_IDLE = 0, ENV_LINK_LINKING, ENV_LINK_PAIRING, ENV_LINK_CONNECTED, ENV_LINK_REJECTED };
 void     env_about(env_about_t *a);
+/* P3's Bluetooth: the link, packed as About's (live; on a dev build op 27
+ * sub 16's stand-in while set); the slot keys' calls in bt_ui.c, which do
+ * nothing off BT (slots 0-2), nor while the stand-in is set; and the Pairing
+ * page's facts. */
+uint8_t  env_link(void);
+void     env_bt_select(uint8_t slot);   /* bt_ui_select_slot(): the tap's select */
+void     env_bt_pair(uint8_t slot);     /* bt_ui_pair_slot() */
+void     env_bt_pair_stop(void);        /* bt_ui_pair_stop() */
+/* bt_ui's pending pair; the driver's pair retry; a 5B 31 since the request;
+ * the last select's retries ran out unanswered (ch582_select_state()). */
+enum { ENV_PF_WAITING = 1, ENV_PF_RETRYING = 2, ENV_PF_CONFIRMED = 4, ENV_PF_SEL_LOST = 8 };
+uint8_t  env_bt_pair_facts(void);
+void     env_bt_standin(uint8_t link, uint8_t facts);   /* op 27 sub 16 (dev): link 0xFF is the live one */
 uint32_t env_build_hash(void);          /* AK820_BUILD_HASH: 8 hex digits */
 bool     env_build_dirty(void);
 uint32_t env_build_token(void);

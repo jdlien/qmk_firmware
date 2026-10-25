@@ -145,6 +145,17 @@ static volatile uint8_t connected_slot = 0;
 
 /* True while the module is advertising / waiting to bond (5B 31). */
 static volatile bool    is_pairing = false;
+/* A 5B 31 has arrived since the last pair request or select (the menu's
+ * Pairing page, P3): conn_state goes to PAIRING optimistically when A6 51 is
+ * sent and stays there if the module never answers, so it can't say this. */
+static volatile bool    pair_confirmed = false;
+/* The module has acted on the last select (a 5B 31-36, or the 5A promotion,
+ * outside a bounce) since ch582_set_profile() or ch582_cancel_connect(). With
+ * no select or bounce pending and this false, the select's retries ran out
+ * unanswered: the module may be on another slot (the menu's P3; codex on its
+ * design: a pair sent then pairs the wrong slot, and conn_state stays the
+ * optimistic LINKING). */
+static volatile bool    select_acked = false;
 /* Detailed connection state for the LCD indicator (superset of the two bools). */
 static volatile ch582_conn_state_t conn_state = CH582_CONN_IDLE;
 /* When conn_state last became CH582_CONN_LINKING, for the 5A promotion window
@@ -1532,6 +1543,8 @@ void ch582_set_profile(ch582_profile_t profile) {
     bool    was_pairing  = (conn_state == CH582_CONN_PAIRING);
 
     pa.kind             = PA_NONE;  /* a new selection supersedes any pending action */
+    pair_confirmed      = false;
+    select_acked        = false;
     requested_profile   = param;
     connect_requested   = true;
     usb_mode            = false;
@@ -1589,6 +1602,7 @@ void ch582_enter_pairing(void) {
     is_module_connected = false;
     LOCKCHAN_LINK_LOST();
     is_pairing          = true;
+    pair_confirmed      = false;   /* until this request's 5B 31 */
     /* Optimistic: show pairing immediately for feedback, and let the retry below
      * make it true. Waiting for 5B 31 to update the display would leave the band
      * showing "Link failed" for seconds after the user did the right thing. */
@@ -1612,6 +1626,8 @@ void ch582_pair(ch582_profile_t profile) {
 void ch582_cancel_connect(void) {
     connect_requested = false;
     usb_mode          = true;
+    pair_confirmed    = false;
+    select_acked      = false;
     conn_state        = CH582_CONN_IDLE;
     LOCKCHAN_LINK_LOST();
 }
@@ -1634,6 +1650,19 @@ bool ch582_is_usb(void) {
 
 bool ch582_is_pairing(void) {
     return is_pairing;
+}
+
+bool ch582_pair_confirmed(void) {
+    return pair_confirmed;
+}
+
+bool ch582_pair_retrying(void) {
+    return pa.kind == PA_PAIR;
+}
+
+ch582_select_t ch582_select_state(void) {
+    if (pa.kind == PA_BOUNCE || pa.kind == PA_SELECT) return CH582_SEL_PENDING;
+    return select_acked ? CH582_SEL_ACKED : CH582_SEL_LOST;
 }
 
 uint8_t ch582_get_battery(void) {
@@ -1986,7 +2015,10 @@ void ch582_task(void) {
                          * Pending actions as `5B 32` leaves them: a select retry
                          * is retired, a bounce survives (codex, flash 2h verify 2:
                          * a retry left pending could reselect a live link). */
-                        if (pa.kind != PA_BOUNCE) pa.kind = PA_NONE;
+                        if (pa.kind != PA_BOUNCE) {
+                            pa.kind      = PA_NONE;
+                            select_acked = true;
+                        }
                         is_module_connected = true;
                         is_pairing          = false;
                         conn_state          = CH582_CONN_CONNECTED;
@@ -2002,7 +2034,10 @@ void ch582_task(void) {
                              * clearing it would strand the user on the wrong
                              * slot. (The triplet version's 5B 32 case never
                              * touched bounce_pending either.) */
-                            if (pa.kind != PA_BOUNCE) pa.kind = PA_NONE;
+                            if (pa.kind != PA_BOUNCE) {
+                                pa.kind      = PA_NONE;
+                                select_acked = true;
+                            }
                             is_module_connected = true;
                             is_pairing          = false;
                             conn_state          = CH582_CONN_CONNECTED;
@@ -2015,7 +2050,13 @@ void ch582_task(void) {
                             break;
                         case 0x31: /* advertising / pairing, waiting for a device */
                             /* PA_BOUNCE survives here too, same reason as 32. */
-                            if (pa.kind != PA_BOUNCE) pa.kind = PA_NONE;
+                            /* Not the bounce slot's advertising: that slot isn't
+                             * the one the menu's page is waiting on. */
+                            if (pa.kind != PA_BOUNCE) {
+                                pa.kind        = PA_NONE;
+                                pair_confirmed = true;
+                                select_acked   = true;
+                            }
                             is_pairing          = true;
                             is_module_connected = false;
                             conn_state          = CH582_CONN_PAIRING;
@@ -2031,6 +2072,7 @@ void ch582_task(void) {
                              * pending PAIR survives -- the module ignores A6 51
                              * mid-attempt, which is why that retry exists. */
                             if (pa.kind == PA_SELECT) pa.kind = PA_NONE;
+                            if (pa.kind != PA_BOUNCE) select_acked = true;
                             is_module_connected = false;
                             is_pairing          = false;
                             if (conn_state != CH582_CONN_LINKING) linking_since = timer_read32();
@@ -2049,6 +2091,7 @@ void ch582_task(void) {
                          * failed", NOT "not paired": a bonded but powered-off
                          * host would look identical. Do not label it as bonding. */
                         case 0x36:
+                            if (pa.kind != PA_BOUNCE) select_acked = true;
                             is_module_connected = false;
                             is_pairing          = false;
                             conn_state          = CH582_CONN_REJECTED;

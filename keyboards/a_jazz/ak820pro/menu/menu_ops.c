@@ -158,7 +158,8 @@ void menu_ops_task(uint32_t now) {
      * (panel_owner.c's do_close()). The fixture has no edit. */
     /* Signed: an input stamped a little after `now` (an event read its own
      * timer) is no idle at all, never a wrapped 49 days. */
-    uint32_t limit = me_active() ? MI_BACKSTOP_MS : MI_IDLE_MS;
+    /* P3: the Pairing page starting or advertising gets the backstop too. */
+    uint32_t limit = (me_active() || (menu_kind == MK_MENU && menu_long_wait())) ? MI_BACKSTOP_MS : MI_IDLE_MS;
     if ((int32_t)(now - mi_last_input()) >= (int32_t)limit) (void)env_po_event(PO_EV_CLOSE);
 }
 
@@ -288,7 +289,8 @@ bool menu_ops_op27(uint8_t *d, uint32_t now) {
     }
     if (sub == 14) {   /* P1b's edit, read: [6] open, [7] its field (ME_*), [8] the live value, [9] the saved one,
                         * [10..11] the external writes that cancelled an edit (the board's exit gates); P2a:
-                        * [12] the lock lights' live level, [13] the charging light's, [14] the force bits */
+                        * [12] the lock lights' live level, [13] the charging light's, [14] the force bits;
+                        * P3: [15] the link (env_link()), [16] the pairing facts */
         memset(&d[5], 0, 27);
         d[5] = MI_OK;
         d[6] = me_active() ? 1u : 0u;
@@ -299,6 +301,19 @@ bool menu_ops_op27(uint8_t *d, uint32_t now) {
         d[12] = env_ind_level(ENV_IND_LOCKS);
         d[13] = env_ind_level(ENV_IND_CHARGING);
         d[14] = env_ind_forced();
+        d[15] = env_link();
+        d[16] = env_bt_pair_facts();
+        return true;
+    }
+    if (sub == 16) {   /* P3's bench: [5] a link byte (ENV_LINK_* packed), or 0xFF for the live one; [6] the
+                        * pairing facts. The menu shows them; its calls still go to bt_ui.c, which does
+                        * nothing off BT, so on the cable no radio is touched. */
+        uint8_t link = d[5], pf = d[6];
+        memset(&d[5], 0, 27);
+        bool ok = link == 0xFFu || ((link & 3u) <= ENV_LINK_24G && ((link >> 2) & 3u) <= 2u &&
+                                    ((link >> 4) & 7u) <= ENV_LINK_REJECTED && !(link & 0x80u) && pf <= 15u);
+        if (ok) env_bt_standin(link, link == 0xFFu ? 0u : pf);
+        d[5] = ok ? MI_OK : MI_BAD;
         return true;
     }
     if (sub == 15) {   /* P2a's bench (codex on its design, point 2): [5] the force bits, [6] the lock lights'

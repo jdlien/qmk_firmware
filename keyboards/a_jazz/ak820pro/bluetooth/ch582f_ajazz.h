@@ -52,6 +52,14 @@ void ch582_battery_poll_release(void);
 bool ch582_send_releases(void);
 bool ch582_is_connected(void);
 bool ch582_is_pairing(void);
+/* The menu's Pairing page (P3): a 5B 31 since the last pair request or
+ * select; and a pair sent but not yet confirmed (still being resent). */
+bool ch582_pair_confirmed(void);
+bool ch582_pair_retrying(void);
+/* The last select: still being sent (a bounce or its retries), acted on by
+ * the module, or lost (its retries ran out unanswered, or there was none). */
+typedef enum { CH582_SEL_PENDING = 0, CH582_SEL_ACKED, CH582_SEL_LOST } ch582_select_t;
+ch582_select_t ch582_select_state(void);
 /* True when the selected profile is the 2.4GHz dongle (not a BT slot). */
 bool ch582_is_24g(void);
 /* True when the mode slider is in the USB position (wireless not in use). */

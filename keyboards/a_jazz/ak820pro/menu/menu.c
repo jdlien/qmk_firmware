@@ -33,6 +33,11 @@ enum {
     N_BOOT,                                                     /* 34: the bootloader item (JD, 10-24) */
     N_IND, N_CONN,                                              /* 35-36: P2a (JD, 10-25) */
     N_LOCKS, N_CHGL,                                            /* 37-38: Indicators' rows */
+    N_CONNINFO,                                                 /* 39: P3, Connection off BT */
+    N_BT0, N_BT1, N_BT2,                                        /* 40-42: Connection's slots */
+    N_PAIRLIST,                                                 /* 43: "Pair a device" */
+    N_PAIR0, N_PAIR1, N_PAIR2,                                  /* 44-46: its slots */
+    N_PAIRING,                                                  /* 47: the Pairing page, its slot in the frame's cursor */
     N_COUNT
 };
 _Static_assert(N_COUNT <= 63, "a row's node is 6 bits");
@@ -42,6 +47,8 @@ _Static_assert(MENU_HELP_TOPICS == 4, "Help's four topics");
 static const uint8_t top_rows[]   = {N_LIGHT, N_SCREEN, N_CONN, N_POWER, N_IND, N_CLOCK, N_DIAG, N_BOOT, N_HELP, N_ABOUT, N_EXIT};
 static const uint8_t light_rows[] = {N_BACK, N_EFFECT, N_BRIGHT, N_HUE, N_SAT, N_SPEED, N_LIGHTS};
 static const uint8_t ind_rows[]   = {N_BACK, N_LOCKS, N_CHGL};
+static const uint8_t conn_rows[]  = {N_BACK, N_BT0, N_BT1, N_BT2, N_PAIRLIST};   /* P3: on BT */
+static const uint8_t pair_rows[]  = {N_BACK, N_PAIR0, N_PAIR1, N_PAIR2};
 static const uint8_t diag_rows[]  = {N_BACK, N_HEALTH, N_CAMERA, N_RESET};
 static const uint8_t help_rows[]  = {N_BACK, N_TOPIC0, N_TOPIC1, N_TOPIC2, N_TOPIC3};
 static const uint8_t power_rows[] = {N_BACK, N_POW0, N_POW1, N_POW2, N_POW3};
@@ -54,6 +61,11 @@ static const char *const power_short[4] = {"Always on", "Balanced", "Saver", "Li
 static const char *const clock_full[4]  = {"24 hour", "12 hour", "Date", "Off"};
 static const uint8_t     clock_enum[4]  = {0, 1, 3, 2};
 static const char *const clock_short_by_enum[4] = {"24h", "12h", "Off", "Date"};
+/* P3: the top level's Connection value by link code (0 USB, 1 2.4G, 2-4 BT
+ * 1-3), and the current slot's link in six cells by ENV_LINK_* state. */
+static const char *const link_names[5] = {"USB", "2.4G", "BT 1", "BT 2", "BT 3"};
+static const char *const link_words[5] = {"", "Trying", "Pair", "Linked", "Failed"};
+static const char *const slot_names[3] = {"Bluetooth 1", "Bluetooth 2", "Bluetooth 3"};
 
 /* The live effect uses speed as its second colour (Alphas/Mods): Lighting's
  * row and editor are Second color then, not Speed (P1b). */
@@ -88,8 +100,11 @@ static const char *label_of(uint8_t node) {
         case N_CONN:   return "Connection";
         case N_LOCKS:  return "Lock lights";
         case N_CHGL:   return "Charging";   /* the mockup's row; its editor's title is "Charging light" */
+        case N_PAIRLIST: return "Pair a device";
         default: break;
     }
+    if (node >= N_BT0 && node <= N_BT2) return slot_names[node - N_BT0];
+    if (node >= N_PAIR0 && node <= N_PAIR2) return slot_names[node - N_PAIR0];
     if (node >= N_TOPIC0 && node <= N_TOPIC3) return menu_help_titles[node - N_TOPIC0];
     if (node >= N_POW0 && node <= N_POW3) return power_full[node - N_POW0];
     if (node >= N_CLK0 && node <= N_CLK3) return clock_full[node - N_CLK0];
@@ -142,8 +157,33 @@ static uint8_t  confirm_page;               /* Reset counters: 0 the question, 1
 static env_about_t snap;                    /* About's, frozen while it shows */
 static uint32_t ft_last;                    /* P1b: the editor's last turn, ms (32-bit: the backstop is 180 s) */
 static bool     ft_have;                    /* a turn in this editor yet */
+static uint8_t  model_link, model_pf;       /* P3: env_link() and env_bt_pair_facts(), latched as the model */
 
 static frame_t *cur(void) { return &stack[depth - 1]; }
+
+/* P3's link, from the latch. */
+static uint8_t link_slot(void) { return (uint8_t)((model_link >> 2) & 3u); }
+static uint8_t link_state(void) { return (uint8_t)((model_link >> 4) & 7u); }
+static bool    on_bt(void) { return (model_link & 3u) == ENV_LINK_BT; }
+static uint8_t link_code(void) {   /* the top level's value: link_names[] */
+    uint8_t tr = model_link & 3u;
+    return tr == ENV_LINK_BT ? (uint8_t)(2u + (link_slot() > 2u ? 2u : link_slot())) : tr == ENV_LINK_24G ? 1u : 0u;
+}
+/* The Pairing page's phase (the design's order): the latch and its slot.
+ * Unsure: advertising as far as the driver knows (its optimistic PAIRING),
+ * but the module never confirmed and nothing is being resent: a lost 5B 31
+ * looks the same as a module that never started (codex), so it can still be
+ * stopped. */
+enum { PP_START = 0, PP_OPEN, PP_DONE, PP_ENDED, PP_FAILED, PP_UNSURE };
+static uint8_t pair_phase(uint8_t slot) {
+    if (!on_bt() || link_slot() != slot) return PP_ENDED;
+    if (model_pf & ENV_PF_WAITING) return PP_START;
+    uint8_t st = link_state();
+    if (model_pf & ENV_PF_CONFIRMED) return st == ENV_LINK_PAIRING ? PP_OPEN : st == ENV_LINK_CONNECTED ? PP_DONE : PP_ENDED;
+    if (model_pf & ENV_PF_RETRYING) return PP_START;
+    return st == ENV_LINK_PAIRING ? PP_UNSURE : PP_FAILED;
+}
+static bool pair_stoppable(uint8_t phase) { return phase == PP_START || phase == PP_OPEN || phase == PP_UNSURE; }
 
 static const uint8_t *rows_of(uint8_t node, uint8_t *n) {
     switch (node) {
@@ -154,6 +194,8 @@ static const uint8_t *rows_of(uint8_t node, uint8_t *n) {
         case N_CLOCK: *n = sizeof clock_rows; return clock_rows;
         case N_LIGHT: *n = sizeof light_rows; return light_rows;
         case N_IND:   *n = sizeof ind_rows;   return ind_rows;
+        case N_CONN:  *n = sizeof conn_rows;  return conn_rows;
+        case N_PAIRLIST: *n = sizeof pair_rows; return pair_rows;
         default:      *n = 0;                 return 0;
     }
 }
@@ -188,12 +230,18 @@ static uint8_t row_index(uint8_t list, uint8_t node) {
     return 0;
 }
 static bool is_topic(uint8_t node) { return node >= N_TOPIC0 && node <= N_TOPIC3; }
-static bool is_list(uint8_t node) { return node == N_TOP || node == N_DIAG || node == N_HELP || node == N_LIGHT || node == N_IND; }
+static bool is_list(uint8_t node) {
+    return node == N_TOP || node == N_DIAG || node == N_HELP || node == N_LIGHT || node == N_IND || node == N_CONN ||
+           node == N_PAIRLIST;
+}
+static bool is_bt_screen(uint8_t node) { return node == N_CONN || node == N_PAIRLIST || node == N_PAIRING; }   /* P3: on BT only */
 static bool is_preview(uint8_t node) { return node == N_EFFECT || node == N_LIGHTS; }   /* P1b's previewing choices */
 static bool is_choice(uint8_t node) { return node == N_POWER || node == N_CLOCK || is_preview(node); }
 static bool is_ind_editor(uint8_t node) { return node == N_LOCKS || node == N_CHGL; }   /* P2a */
 static bool is_editor(uint8_t node) { return node == N_SCREEN || (node >= N_BRIGHT && node <= N_SPEED) || is_ind_editor(node); }
-static bool is_confirm(uint8_t node) { return node == N_RESET || node == N_BOOT || node == N_CONN; }   /* the confirm geometry's pages */
+static bool is_confirm(uint8_t node) {   /* the confirm geometry's pages */
+    return node == N_RESET || node == N_BOOT || node == N_CONNINFO || node == N_PAIRING;
+}
 static bool is_hue_editor(uint8_t node) { return node == N_HUE || (node == N_SPEED && two_tone()); }
 static uint8_t field_of(uint8_t node) {
     switch (node) {
@@ -237,7 +285,9 @@ enum { T_TOP = 1, T_POWER, T_CLOCK, T_DIAG, T_HELP, T_ABOUT, T_TOPIC0, T_RESET =
        T_SAVED = 16, T_CANCELLED, T_RESET_DONE, T_HINT, T_HINT_BACK,
        T_LIGHT, T_SCREEN, T_EFFECT, T_BRIGHT, T_HUE, T_SAT, T_SPEED, T_SECOND, T_LIGHTS,   /* 21-29: P1b */
        T_BOOT, T_BOOT_BUSY,                                                                 /* 30-31 */
-       T_IND, T_CONN, T_LOCKS, T_CHGL };                                                    /* 32-35: P2a */
+       T_IND, T_CONN, T_LOCKS, T_CHGL,                                                      /* 32-35: P2a */
+       T_PAIRLIST, T_PAIRING, T_NOW_BT1, T_NOW_BT2, T_NOW_BT3,                              /* 36-40: P3 */
+       T_ALREADY_BT1, T_ALREADY_BT2, T_ALREADY_BT3, T_PAIR_STOPPED };                       /* 41-44 */
 _Static_assert(T_RESET == 11, "the title ids: the design's table");
 
 static uint8_t screen_title(void) {
@@ -260,9 +310,12 @@ static uint8_t screen_title(void) {
         case N_LIGHTS: return T_LIGHTS;
         case N_BOOT:   return T_BOOT;
         case N_IND:    return T_IND;
-        case N_CONN:   return T_CONN;
+        case N_CONN:
+        case N_CONNINFO: return T_CONN;
         case N_LOCKS:  return T_LOCKS;
         case N_CHGL:   return T_CHGL;
+        case N_PAIRLIST: return T_PAIRLIST;
+        case N_PAIRING:  return T_PAIRING;
         default:      return is_topic(n) ? (uint8_t)(T_TOPIC0 + (n - N_TOPIC0)) : T_TOP;
     }
 }
@@ -295,6 +348,15 @@ static const char *title_text(uint8_t id) {
         case T_CONN:       return "Connection";
         case T_LOCKS:      return "Lock lights";
         case T_CHGL:       return "Charging light";
+        case T_PAIRLIST:   return "Pair a device";
+        case T_PAIRING:    return "Pairing";
+        case T_NOW_BT1:    return "Now on BT 1";
+        case T_NOW_BT2:    return "Now on BT 2";
+        case T_NOW_BT3:    return "Now on BT 3";
+        case T_ALREADY_BT1: return "Already on BT 1";
+        case T_ALREADY_BT2: return "Already on BT 2";
+        case T_ALREADY_BT3: return "Already on BT 3";
+        case T_PAIR_STOPPED: return "Pairing stopped";
         default: break;
     }
     if (id >= T_TOPIC0 && id < T_TOPIC0 + 4) return menu_help_titles[id - T_TOPIC0];
@@ -318,7 +380,9 @@ static const char *title_icon(uint8_t id) {
         case T_IND:
         case T_LOCKS:
         case T_CHGL:   return icon_of(N_IND);
-        case T_CONN:   return icon_of(N_CONN);
+        case T_CONN:
+        case T_PAIRLIST:
+        case T_PAIRING: return icon_of(N_CONN);
         default:      return id >= T_LIGHT && id <= T_LIGHTS ? icon_of(N_LIGHT) : "";
     }
 }
@@ -478,6 +542,11 @@ static row_t row_at(uint8_t r) {
     x.lit  = i == f->cursor;
     if (x.node == N_POWER) x.val = model_power & 3u;
     else if (x.node == N_CLOCK) x.val = model_clock & 3u;
+    else if (x.node == N_CONN) x.val = link_code();   /* P3: the link, link_names[] */
+    else if (x.node >= N_BT0 && x.node <= N_BT2) {   /* the current slot: its check, and its link's word */
+        x.bullet = on_bt() && x.node - N_BT0 == link_slot();
+        x.val    = x.bullet ? (uint8_t)(link_state() < 5u ? link_state() : 0u) : 0u;
+    }
     else if (x.node == N_EFFOPT || x.node == N_LTSOPT) x.val = val;
     else if (value_which(x.node) >= 0) {
         x.kind = RK_VALUE;
@@ -527,16 +596,19 @@ static void row_text(const row_t *x, char *out) {
     const char *value = "";
     if (x->node == N_POWER) value = power_short[x->val & 3u];
     else if (x->node == N_CLOCK) value = clock_short_by_enum[x->val & 3u];
+    else if (x->node == N_CONN) value = link_names[x->val % 5u];          /* P3 */
+    else if (x->node >= N_BT0 && x->node <= N_BT2) value = link_words[x->val % 5u];
     else if (x->node == N_DIAG || x->node == N_HELP || x->node == N_ABOUT || x->node == N_HEALTH ||
              x->node == N_CAMERA || x->node == N_RESET || is_topic(x->node) || x->node == N_LIGHT || x->node == N_BOOT ||
-             x->node == N_IND || x->node == N_CONN)
+             x->node == N_IND || x->node == N_PAIRLIST)
         value = MT_TRI_R;                            /* JD, 10-24: ▶ for > */
     size_t      at   = 0;
     const char *icon = icon_of(x->node);
     if (icon) {
         memcpy(out, icon, 2);
         at = 2;
-    } else if ((x->node >= N_POW0 && x->node <= N_CLK3) || x->node == N_EFFOPT || x->node == N_LTSOPT) {   /* an option: the saved one's check in cells 0-1 */
+    } else if ((x->node >= N_POW0 && x->node <= N_CLK3) || x->node == N_EFFOPT || x->node == N_LTSOPT ||
+               (x->node >= N_BT0 && x->node <= N_BT2)) {   /* an option: the saved one's check in cells 0-1 */
         if (x->bullet) memcpy(out, MT_CHECK_BOX, 2);       /* JD, 10-24: the square; the circle "doesn't look good" */
         at = 2;                                            /* in line with "◀ Back" */
     }
@@ -681,38 +753,52 @@ static const char *const boot_lines[2][4] = {
     {"For a firmware", "update over USB.", "Click: enter", "Hold: cancel"},
     {"Plug in first:", "the battery is low.", "Click: back", ""},
 };
-/* P2a's Connection stub (JD, 10-25; the words wait for his text pass): the
- * link as it was when the page opened (About's line, from the same
- * snapshot), and how to change it until the menu can. */
-static const char *const conn_lines[2][3] = {
-    {"Slots: coming soon", "Fn+Q/W/E: a slot", "Hold one 2 s: pair"},   /* on Bluetooth */
-    {"Slots: coming soon", "The slider picks", "BT, 2.4G or cable."},  /* off it: set by the slider */
+/* P3, Connection off BT (JD, 10-25: "a screen saying 'Switch to BT mode to
+ * change Bluetooth settings' or such"): fixed, its lines at y 22, 36, 50 and
+ * 86 so the sentence isn't split by the confirm pages' gap. */
+static const uint8_t     info_y[4]     = {22, 36, 50, 86};
+static const char *const info_lines[4] = {"Switch to BT mode to", "change Bluetooth", "settings.", "Click: back"};
+/* The Pairing page's lines by phase (PP_*); a NULL is the slot's line,
+ * written below. The words wait for JD's text pass (MENU-TEXT.md). */
+static const char *const pair_lines[6][3] = {
+    {NULL, "Getting ready...", "Click or hold: stop"},
+    {"On the computer, add", NULL, "Click or hold: stop"},   /* the band's exact advertised name */
+    {NULL, "connected.", "Click: back"},
+    {"Pairing ended.", "", "Click: back"},
+    {"Pairing didn't", "start. Try again.", "Click: back"},
+    {"The radio didn't", "confirm pairing.", "Click or hold: stop"},
 };
-static void conn_line(uint8_t i, char *out, size_t sz) {
-    if (i == 0) {
-        about_line(7, out, sz);
-        return;
-    }
-    snprintf(out, sz, "%s", conn_lines[(snap.link & 3u) == ENV_LINK_BT ? 0 : 1][i - 1u]);
+static void pair_line(uint8_t slot, uint8_t phase, uint8_t i, char *out, size_t sz) {
+    const char *s = i < 3 ? pair_lines[phase][i] : "";
+    if (s) snprintf(out, sz, "%s", s);
+    else if (phase == PP_OPEN) snprintf(out, sz, "AK820 5.1-%u", (unsigned)(slot + 1u));
+    else snprintf(out, sz, "Bluetooth %u%s", (unsigned)(slot + 1u), phase == PP_DONE ? " is" : "");
 }
 static uint16_t c_sig(uint8_t s) {
     if (s == 0) return title_id;
     if (s == 1) return 1;
-    if (cur()->node == N_CONN) return (uint16_t)(0x8000u | ((uint16_t)(snap.link & 0x7Fu) << 4) | (uint16_t)(s - 2u));
-    return (uint16_t)((cur()->node == N_BOOT ? 0x200u : 0x100u) | ((uint16_t)confirm_page << 4) | (uint16_t)(s - 2u));
+    uint8_t n = cur()->node;
+    if (n == N_CONNINFO) return (uint16_t)(0x8000u | (uint16_t)(s - 2u));
+    if (n == N_PAIRING) {
+        uint8_t slot = cur()->cursor;
+        return (uint16_t)(0xA000u | ((uint16_t)slot << 8) | ((uint16_t)pair_phase(slot) << 4) | (uint16_t)(s - 2u));
+    }
+    return (uint16_t)((n == N_BOOT ? 0x200u : 0x100u) | ((uint16_t)confirm_page << 4) | (uint16_t)(s - 2u));
 }
 static uint8_t c_chunks(uint8_t s) { return s == 1 ? 1 : 2; }
 static uint8_t c_pieces(uint8_t s, uint8_t c) { return l_pieces(s == 1 ? S_SEP : S_TITLE, c); }
 static ms_paint_t c_paint(uint8_t s, uint8_t c, uint8_t p) {
     if (s <= 1) return l_paint(s, c, p);
-    char cells[21], buf[24];
+    char    cells[21], buf[24];
+    uint8_t node = cur()->node, i = (uint8_t)(s - 2u);
     memset(cells, ' ', 20);
     cells[20] = '\0';
-    if (cur()->node == N_CONN) conn_line((uint8_t)(s - 2u), buf, sizeof buf);
-    else snprintf(buf, sizeof buf, "%s", (cur()->node == N_BOOT ? boot_lines : c_lines)[confirm_page & 1u][s - 2u]);
+    if (node == N_CONNINFO) snprintf(buf, sizeof buf, "%s", info_lines[i]);
+    else if (node == N_PAIRING) pair_line(cur()->cursor, pair_phase(cur()->cursor), i, buf, sizeof buf);
+    else snprintf(buf, sizeof buf, "%s", (node == N_BOOT ? boot_lines : c_lines)[confirm_page & 1u][i]);
     size_t n = strlen(buf);
     memcpy(cells, buf, n > 20 ? 20 : n);
-    return text_piece(cells, c_y[s - 2u], false, 0, 0, c, p, pal[MP_WHITE]);
+    return text_piece(cells, (node == N_CONNINFO ? info_y : c_y)[i], false, 0, 0, c, p, pal[MP_WHITE]);
 }
 static const ms_layout_t L_CONFIRM = {6, c_sig, c_chunks, c_pieces, c_paint, 0, 0};
 
@@ -893,6 +979,7 @@ _Static_assert(ENV_BW * (ENV_Y1 - ENV_Y0 + 1) * 2 <= MB_PASS_BYTES && BAR_BW * (
 /* --- Navigation -------------------------------------------------------------- */
 
 static void retitle(uint32_t now);
+static bool sync_model(void);
 static uint32_t last_idle;   /* menu_tick's latest idle time, for retitle() between ticks */
 
 static void push(uint8_t node, uint8_t cursor) {
@@ -911,6 +998,8 @@ void menu_open(uint32_t now) {
     confirm_page = 0;
     model_power  = env_power_mode();
     model_clock  = env_clock_mode();
+    model_link   = env_link();
+    model_pf     = env_bt_pair_facts();
     (void)me_take_pending();   /* changes from before the session aren't its targets */
     push(N_TOP, 0);
     title_id = T_TOP;
@@ -925,6 +1014,8 @@ void menu_return_from_diag(uint8_t page, uint32_t now) {
     confirm_page = 0;
     model_power  = env_power_mode();
     model_clock  = env_clock_mode();
+    model_link   = env_link();
+    model_pf     = env_bt_pair_facts();
     (void)me_take_pending();
     push(N_TOP, row_index(N_TOP, N_DIAG));   /* Diagnostics' row, wherever it is */
     push(N_DIAG, page ? 2 : 1);
@@ -1060,12 +1151,47 @@ static menu_result_t activate(uint32_t now) {
             push(node, 1);
             show(false, false, now);
             return MENU_NONE;
-        case N_CONN:   /* P2a's stub: the link, frozen now */
-            env_about(&snap);
-            confirm_page = 0;
-            push(node, 0);
-            show(true, false, now);
+        case N_CONN:   /* P3: the slots on BT, the cursor on the current one; off it, JD's page */
+            if (on_bt()) {
+                push(N_CONN, (uint8_t)(1u + (link_slot() > 2u ? 0u : link_slot())));
+                show(false, false, now);
+            } else {
+                push(N_CONNINFO, 0);
+                show(true, false, now);
+            }
             return MENU_NONE;
+        case N_BT0:
+        case N_BT1:
+        case N_BT2: {   /* the tap's select; nothing for the current slot while linked, or linking on a live select */
+            uint8_t slot = (uint8_t)(node - N_BT0), st = link_state();
+            if (slot == link_slot() &&
+                (st == ENV_LINK_CONNECTED || (st == ENV_LINK_LINKING && !(model_pf & ENV_PF_SEL_LOST))))
+                flash((uint8_t)(T_ALREADY_BT1 + slot), now);
+            else {
+                env_bt_select(slot);
+                (void)sync_model();
+                flash((uint8_t)(T_NOW_BT1 + slot), now);
+            }
+            retitle(now);
+            ms_retarget();
+            return MENU_NONE;
+        }
+        case N_PAIRLIST:
+            push(node, 1);
+            show(false, false, now);
+            return MENU_NONE;
+        case N_PAIR0:
+        case N_PAIR1:
+        case N_PAIR2: {   /* start it; the page replaces the list (three frames at most), Connection's cursor on the slot */
+            uint8_t slot = (uint8_t)(node - N_PAIR0);
+            env_bt_pair(slot);
+            (void)sync_model();
+            stack[depth - 2].cursor = (uint8_t)(1u + slot);
+            *f = (frame_t){N_PAIRING, slot, 0};
+            retitle(now);
+            ms_set_layout(&L_CONFIRM, false);
+            return MENU_NONE;
+        }
         case N_ABOUT:
             open_about(now);
             return MENU_NONE;
@@ -1089,13 +1215,27 @@ static menu_result_t activate(uint32_t now) {
     }
 }
 
-/* The latched model, read fresh (Fn+B, Fn+C). True: it changed. */
+/* The latched model, read fresh (Fn+B, Fn+C; P3: the link and the pairing
+ * facts). True: it changed. */
 static bool sync_model(void) {
-    uint8_t p = env_power_mode(), c = env_clock_mode();
-    if (p == model_power && c == model_clock) return false;
+    uint8_t p = env_power_mode(), c = env_clock_mode(), l = env_link(), f = env_bt_pair_facts();
+    if (p == model_power && c == model_clock && l == model_link && f == model_pf) return false;
     model_power = p;
     model_clock = c;
+    model_link  = l;
+    model_pf    = f;
     return true;
+}
+
+/* P3: leaving the Pairing page, a click or a hold: while it's starting,
+ * advertising or unsure, that stops it. */
+static menu_result_t pair_leave(uint32_t now) {
+    if (pair_stoppable(pair_phase(cur()->cursor))) {
+        env_bt_pair_stop();
+        (void)sync_model();
+        flash(T_PAIR_STOPPED, now);
+    }
+    return pop(now);
 }
 
 menu_result_t menu_input(int8_t turns, mi_latch_t latch, uint32_t now) {
@@ -1166,9 +1306,11 @@ menu_result_t menu_input(int8_t turns, mi_latch_t latch, uint32_t now) {
             }
             return pop(now);
         }
-        return pop(now);   /* a topic, About: back */
+        if (f->node == N_PAIRING) return pair_leave(now);
+        return pop(now);   /* a topic, About, Connection off BT: back */
     }
     if (latch == MI_LATCH_BACK) {   /* pop() cancels an editor's or a previewing choice's edit */
+        if (f->node == N_PAIRING) return pair_leave(now);   /* the same as a click (the mockup's "Click or hold: stop") */
         if (is_choice(f->node) || is_editor(f->node) || ((f->node == N_RESET || f->node == N_BOOT) && confirm_page == 0))
             flash(T_CANCELLED, now);
         return pop(now);
@@ -1202,6 +1344,19 @@ void menu_tick(uint32_t now, uint32_t idle_ms) {
         moved = false;
     } else if (pend)
         moved = true;
+    /* P3: the Connection screens follow the slider. Its BT screens off BT, or
+     * the off-BT page on BT: back to the top level, the cursor on Connection,
+     * whose value shows the new link. */
+    uint8_t n = cur()->node;
+    if ((is_bt_screen(n) && !on_bt()) || (n == N_CONNINFO && on_bt())) {
+        depth           = 1;
+        stack[0].cursor = row_index(N_TOP, N_CONN);
+        stack[0].top    = (uint8_t)(stack[0].cursor / MENU_ROWS * MENU_ROWS);
+        retitle(now);
+        if (is_confirm(n)) ms_set_layout(&L_LIST, false);
+        else ms_retarget();
+        moved = false;
+    }
     uint8_t t = want_title(now, idle_ms);
     if (t != title_id) {
         title_id = t;
@@ -1222,7 +1377,14 @@ uint8_t menu_cursor(void) {
     if (!depth) return 0xFF;
     frame_t *f = cur();
     if (is_topic(f->node)) return f->top;
+    if (f->node == N_PAIRING) return (uint8_t)(f->cursor << 4 | pair_phase(f->cursor));   /* P3: the slot and the phase */
     if (is_confirm(f->node)) return confirm_page;
     if (is_editor(f->node)) return me_value();   /* P1b: an editor's value */
     return f->cursor;
 }
+
+/* P3: the Pairing page holds the menu to the backstop, not the idle timeout:
+ * adding a device on a computer takes longer than 24 s, and the idle time
+ * dates from the last knob input, so a page that turned connected after that
+ * would close the moment it did (codex). A close leaves pairing running. */
+bool menu_long_wait(void) { return depth && cur()->node == N_PAIRING; }

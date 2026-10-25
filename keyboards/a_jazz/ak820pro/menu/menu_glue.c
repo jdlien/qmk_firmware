@@ -17,6 +17,7 @@
 #include "power.h"
 #include "kb_eeconfig.h"
 #include "bluetooth/ch582f_ajazz.h"
+#include "bt_ui.h"
 #include "rgb_effects.h"
 #include "indicators.h"
 #include "indicator_levels.h"
@@ -136,10 +137,54 @@ void env_about(env_about_t *a) {
     a->pack_mv  = mv ? mv : ENV_UNKNOWN;       /* its unknown is 0 */
     a->left_min = battery_time_left_min();    /* 0xFFFF none */
     a->mode     = (uint8_t)power_mode();
-    uint8_t tr  = ch582_is_usb() ? ENV_LINK_USB : ch582_is_24g() ? ENV_LINK_24G : ENV_LINK_BT;
-    uint8_t sl  = ch582_get_target_slot();     /* 1-3 BT, 0 none */
-    uint8_t st  = (uint8_t)ch582_get_conn_state();
-    a->link     = (uint8_t)(tr | ((sl ? (uint8_t)(sl - 1u) & 3u : 0u) << 2) | ((st & 7u) << 4));
+    a->link     = env_link();
+}
+
+/* P3's Bluetooth (bt_ui.c decides; these only call and read). */
+#ifdef AK820_DEV_HOOKS
+static uint8_t standin_link = 0xFFu, standin_pf;   /* op 27 sub 16 */
+void           env_bt_standin(uint8_t link, uint8_t facts) {
+    standin_link = link;
+    standin_pf   = facts;
+}
+#endif
+uint8_t env_link(void) {
+#ifdef AK820_DEV_HOOKS
+    if (standin_link != 0xFFu) return standin_link;
+#endif
+    uint8_t tr = ch582_is_usb() ? ENV_LINK_USB : ch582_is_24g() ? ENV_LINK_24G : ENV_LINK_BT;
+    uint8_t sl = ch582_get_target_slot();     /* 1-3 BT, 0 none */
+    uint8_t st = (uint8_t)ch582_get_conn_state();
+    return (uint8_t)(tr | ((sl ? (uint8_t)(sl - 1u) & 3u : 0u) << 2) | ((st & 7u) << 4));
+}
+_Static_assert((int)ENV_LINK_IDLE == (int)CH582_CONN_IDLE && (int)ENV_LINK_LINKING == (int)CH582_CONN_LINKING &&
+                   (int)ENV_LINK_PAIRING == (int)CH582_CONN_PAIRING &&
+                   (int)ENV_LINK_CONNECTED == (int)CH582_CONN_CONNECTED &&
+                   (int)ENV_LINK_REJECTED == (int)CH582_CONN_REJECTED,
+               "menu_env.h's link states are the driver's");
+/* While the stand-in is set the calls go nowhere: the cable doesn't mean the
+ * slider is on it (codex on P3's design). */
+#ifdef AK820_DEV_HOOKS
+#    define STANDIN_SET() (standin_link != 0xFFu)
+#else
+#    define STANDIN_SET() false
+#endif
+void env_bt_select(uint8_t slot) {
+    if (!STANDIN_SET()) bt_ui_select_slot(slot);
+}
+void env_bt_pair(uint8_t slot) {
+    if (!STANDIN_SET()) bt_ui_pair_slot(slot);
+}
+void env_bt_pair_stop(void) {
+    if (!STANDIN_SET()) bt_ui_pair_stop();
+}
+uint8_t env_bt_pair_facts(void) {
+#ifdef AK820_DEV_HOOKS
+    if (standin_link != 0xFFu) return standin_pf;
+#endif
+    return (uint8_t)((bt_ui_pair_waiting() ? ENV_PF_WAITING : 0u) | (ch582_pair_retrying() ? ENV_PF_RETRYING : 0u) |
+                     (ch582_pair_confirmed() ? ENV_PF_CONFIRMED : 0u) |
+                     (ch582_select_state() == CH582_SEL_LOST ? ENV_PF_SEL_LOST : 0u));
 }
 
 #ifndef AK820_BUILD_HASH

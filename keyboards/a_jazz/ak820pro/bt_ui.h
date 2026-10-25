@@ -23,5 +23,13 @@ bool bt_ui_slot_key(uint16_t keycode, keyrecord_t *record);   /* BT1/BT2/BT3 */
 bool bt_ui_24g_key(keyrecord_t *record);                      /* BT24G */
 bool bt_ui_pair_key(keyrecord_t *record);                     /* BT_PAIR */
 
-/* 10 Hz housekeeping: fire hold-to-pair at the threshold, under the finger. */
+/* 10 Hz housekeeping: fire hold-to-pair at the threshold, under the finger,
+ * and the menu's pending pair once the link stops linking. */
 void bt_pair_hold_task(void);
+
+/* The menu's Connection (P3, plans/CONFIG-MENU-P1-DESIGN.md). Slots are 0-2.
+ * Each does nothing unless the slider is on BT. */
+void bt_ui_select_slot(uint8_t slot);   /* the slot key's tap, without its hold */
+void bt_ui_pair_slot(uint8_t slot);     /* select it unless current, then pair when the link isn't linking */
+void bt_ui_pair_stop(void);             /* the pending pair dropped; advertising cancelled by the tap's select */
+bool bt_ui_pair_waiting(void);          /* a menu pair armed, not yet sent */
