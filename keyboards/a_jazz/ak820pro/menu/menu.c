@@ -15,6 +15,7 @@
 #include "menu_slots.h"
 #include "menu_text.h"
 #include "../graphics/res/menu_text_pages.h"
+#include "../graphics/batt_text.h"   /* P4: the Battery choice previews the dashboard's text */
 
 /* --- The tree ---------------------------------------------------------------
  * Every row a node of its own (options included: the top level's "Clock 24h"
@@ -43,9 +44,8 @@ enum {
 _Static_assert(N_COUNT <= 63, "a row's node is 6 bits");
 _Static_assert(MENU_HELP_TOPICS == 4, "Help's four topics");
 
-/* The build plan's order (P2a): Bootloader moves to the end of page one. */
-/* P4 (JD, 10-25): Battery under Clock, and Diagnostics under Bootloader on
- * page two. */
+/* The top level's order (P4, JD 10-25): Battery under Clock, and
+ * Diagnostics under Bootloader on page two. */
 static const uint8_t top_rows[]   = {N_LIGHT, N_SCREEN, N_CONN, N_POWER, N_IND,  N_CLOCK,
                                      N_BATT,  N_BOOT,   N_DIAG, N_HELP,  N_ABOUT, N_EXIT};
 static const uint8_t light_rows[] = {N_BACK, N_EFFECT, N_BRIGHT, N_HUE, N_SAT, N_SPEED, N_LIGHTS};
@@ -68,6 +68,36 @@ static const char *const clock_short_by_enum[4] = {"24h", "12h", "Off", "Date"};
  * level's value. */
 static const char *const batt_full[2]  = {"Percent", "Hours of use"};
 static const char *const batt_short[2] = {"Percent", "Hours"};
+/* P4 (JD, 10-25): the choice previews each readout as the dashboard shows it
+ * on battery, and a note under it says why the hours don't show yet. Read
+ * live: the rows' signatures follow the text (row_sig), so a change repaints
+ * them without anything stored. */
+static bool batt_hours_ready(const env_batt_t *b) {
+    return b->on_battery && b->avg_minutes >= 60u && b->left_min != 0xFFFFu;
+}
+static const char *batt_preview(bool hours, char *buf) {   /* buf: BATT_TEXT_MAX + 1 at least */
+    env_batt_t b;
+    env_batt_facts(&b);
+    if (b.pct > 100u) return "--";
+    if (b.pct == 0u && b.on_battery) return "Low";
+    if (hours && !batt_hours_ready(&b)) return "--";
+    batt_level_text(buf, b.pct, b.on_battery, b.left_min, b.avg_minutes >= 60u, hours);
+    return buf;
+}
+static void batt_note(uint8_t line, char *buf, size_t n) {
+    env_batt_t b;
+    env_batt_facts(&b);
+    buf[0] = '\0';
+    if (batt_hours_ready(&b) || line > 2u) return;
+    if (b.avg_minutes < 60u) {
+        static const char *const warm[2] = {"Hours show after an", "hour on battery:"};
+        if (line < 2u) snprintf(buf, n, "%s", warm[line]);
+        else           snprintf(buf, n, "%u min to go.", (unsigned)(60u - b.avg_minutes));
+    } else if (line < 2u) {
+        static const char *const off[2] = {"Hours show only", "on battery."};
+        snprintf(buf, n, "%s", off[line]);
+    }
+}
 /* P3: the top level's Connection value by link code (0 USB, 1 2.4G, 2-4 BT
  * 1-3), and the current slot's link in six cells by ENV_LINK_* state. */
 static const char *const link_names[5] = {"USB", "2.4G", "BT 1", "BT 2", "BT 3"};
@@ -481,7 +511,7 @@ static void about_line(uint8_t line, char *out, size_t sz) {
 
 /* A row's content: what the slot shows, for its signature and its painter. */
 typedef struct { uint8_t kind; uint8_t node; uint8_t val; bool bullet, lit; uint8_t line; } row_t;
-enum { RK_BLANK = 0, RK_ITEM, RK_TEXT, RK_ABOUT, RK_VALUE };
+enum { RK_BLANK = 0, RK_ITEM, RK_TEXT, RK_ABOUT, RK_VALUE, RK_NOTE };   /* RK_NOTE: P4's note under Battery */
 
 /* P1b's value rows (Lighting's, and the top level's Screen): which one, for
  * the signature, and the live value, read as it composes (not latched: a
@@ -559,6 +589,11 @@ static row_t row_at(uint8_t r) {
         return x;
     }
     uint8_t i = (uint8_t)(f->top + r), val;
+    if (f->node == N_BATT && r >= 4u && r <= 6u) {   /* P4: the hours' note, under the choice; not selectable */
+        x.kind = RK_NOTE;
+        x.line = (uint8_t)(r - 4u);
+        return x;
+    }
     if (i >= row_count(f->node)) return x;
     x.kind = RK_ITEM;
     x.node = row_node(f->node, i, &val);
@@ -598,6 +633,12 @@ static void row_text(const row_t *x, char *out) {
         memcpy(out, buf, n > 20 ? 20 : n);
         return;
     }
+    if (x->kind == RK_NOTE) {
+        batt_note(x->line, buf, sizeof buf);
+        size_t n = strlen(buf);
+        memcpy(out, buf, n > 20 ? 20 : n);
+        return;
+    }
     if (x->kind == RK_VALUE) {
         size_t      at   = 0;
         const char *icon = icon_of(x->node);   /* the top level's Screen */
@@ -625,6 +666,7 @@ static void row_text(const row_t *x, char *out) {
     else if (x->node == N_BATT) value = batt_short[x->val & 1u];
     else if (x->node == N_CONN) value = link_names[x->val % 5u];          /* P3 */
     else if (x->node >= N_BT0 && x->node <= N_BT2) value = link_words[x->val % 5u];
+    else if (x->node == N_BV0 || x->node == N_BV1) value = batt_preview(x->node == N_BV1, buf);   /* P4 */
     else if (x->node == N_DIAG || x->node == N_HELP || x->node == N_ABOUT || x->node == N_HEALTH ||
              x->node == N_CAMERA || x->node == N_RESET || is_topic(x->node) || x->node == N_LIGHT || x->node == N_BOOT ||
              x->node == N_IND)
@@ -646,6 +688,17 @@ static void row_text(const row_t *x, char *out) {
 }
 
 static uint16_t row_sig(const row_t *x) {
+    /* P4: live text (the Battery choice's previews and note): a hash of what
+     * the row shows, in 0x1000-0x1FFF (no other kind's), with the bullet and
+     * the lit bit as RK_ITEM's. A collision only delays a repaint to the
+     * text's next change. */
+    if (x->kind == RK_NOTE || (x->kind == RK_ITEM && (x->node == N_BV0 || x->node == N_BV1))) {
+        char cells[21];
+        row_text(x, cells);
+        uint16_t h = 0x811Cu;
+        for (uint8_t i = 0; i < 20u; i++) h = (uint16_t)((h ^ (uint8_t)cells[i]) * 0x0193u);
+        return (uint16_t)(0x1000u | (h & 0x0FFCu) | (x->bullet ? 2u : 0u) | (x->lit ? 1u : 0u));
+    }
     switch (x->kind) {
         case RK_ITEM:
             return (uint16_t)((1u << 14) | ((uint16_t)x->node << 8) | ((uint16_t)(x->val & 15u) << 4) |

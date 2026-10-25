@@ -61,6 +61,7 @@ static inline void dprobe_note(uint8_t i, uint16_t t0) {
 #define PANEL_BKL       A16
 
 #define PANEL_WIDTH     128
+_Static_assert(PANEL_WIDTH <= 255, "draw_battery() keeps x and widths in a byte");
 #define PANEL_HEIGHT    128
 
 #define COL_BG          0x0000   // black background
@@ -1926,10 +1927,12 @@ static bool batt_bulb_stale(void) {
 
 static void draw_battery(bool force) {
     static bool     last_chrg  = false;
-    static uint16_t last_fw    = 0;            /* fill bar width on the panel, px */
+    /* A byte each where a value fits one (the panel is 128 px wide): the dev
+     * build's RAM floor (P4, codex). */
+    static uint8_t  last_fw    = 0;            /* fill bar width on the panel, px */
     static uint16_t last_col   = 0;            /* ...and its colour               */
-    static uint16_t last_txt_x = PANEL_WIDTH;  /* where the percent text starts   */
-    static uint16_t last_txt_w = 0;            /* ...and how wide it is            */
+    static uint8_t  last_txt_x = PANEL_WIDTH;  /* where the percent text starts   */
+    static uint8_t  last_txt_w = 0;            /* ...and how wide it is            */
     static bool     last_absent = false;       /* no pack fitted: cross, no number */
     static char     last_txt[8] = "\x01";      /* what the text slot says ("\x01": never drawn) */
 
@@ -2112,8 +2115,8 @@ static void draw_battery(bool force) {
             bool     clear = x > last_txt_x;
             if (clear)
                 lcd_clear_rect(last_txt_x, STATUS_Y, (uint16_t)(x - last_txt_x), lcd_font_height(FONT_STATUS));
-            last_txt_x = x;
-            last_txt_w = w;
+            last_txt_x = (uint8_t)x;
+            last_txt_w = (uint8_t)w;
             txt_placed = true;
             /* A shortening text's clear is this call's work; its glyphs start
              * on the next (codex, flash 2c verification: clear plus three
@@ -2141,7 +2144,7 @@ static void draw_battery(bool force) {
         lcd_clear_rect((uint16_t)(BATT_IN_X0 + want_fw), BATT_IN_Y0, (uint16_t)(last_fw - want_fw), BATT_IN_H);
     if (want_fw > 0)
         lcd_fill_rect(BATT_IN_X0, BATT_IN_Y0, BATT_IN_X0 + want_fw - 1, BATT_IN_Y1, want_col);
-    last_fw  = want_fw;
+    last_fw  = (uint8_t)want_fw;
     last_col = want_col;
 }
 

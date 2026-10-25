@@ -10,8 +10,10 @@ void batt_level_text(char *out, uint8_t pct, bool on_battery, uint16_t left_min,
     bool ready = on_battery && avg_ready && left_min != 0xFFFFu;
     if (ready && hours) {
         /* JD, 10-25: "160 h ... all the time there" */
+        unsigned h = left_min / 60u;
+        if (h > 999u) h = 999u;   /* three digits: the estimate's ceiling is 1092 h, and nothing awake draws that little */
         if (left_min < 60u) snprintf(wide, sizeof wide, "<1h");
-        else                snprintf(wide, sizeof wide, "%uh", (unsigned)(left_min / 60u));
+        else                snprintf(wide, sizeof wide, "%uh", h);
     } else if (ready && left_min < 600u) {
         /* Hours of USE beside the level once they matter: under 10 h on
          * battery, with a mature average (plans/DEEP-SLEEP-BUILD-PLAN.md,

@@ -27,6 +27,11 @@ uint8_t  env_clock_mode(void);          /* enum display_clock_mode: 0 24H, 1 12H
 void     env_clock_set(uint8_t m);      /* display_set_clock_mode() + kb_eeconfig_set_clock_mode() */
 void     env_health_reset(void);        /* health_reset() + display_debug_refresh() */
 bool     env_batt_hours(void);          /* P4: the dashboard's battery in hours of use, not percent */
+/* P4: what the readout is made of: the level (0xFF unknown), on battery, the
+ * time left (minutes of use; 0xFFFF none), the average's minutes on battery
+ * since boot (the hours wait for 60). */
+typedef struct { uint8_t pct; bool on_battery; uint16_t left_min, avg_minutes; } env_batt_t;
+void     env_batt_facts(env_batt_t *b);
 void     env_batt_hours_set(bool h);    /* kb_eeconfig_set_batt_hours(): draw_battery() reads it there */
 
 /* P1b's primitives (menu_edit.c's): each one QMK or board call in
