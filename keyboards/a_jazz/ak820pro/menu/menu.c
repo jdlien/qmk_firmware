@@ -689,17 +689,22 @@ static uint8_t marker_x(void) {
     }
     return (uint8_t)(STRIP_X0 + (a * 120u + 128u) / 256u);
 }
-/* A hue at full saturation and value, RGB565 (QMK's sextant method). */
+/* A hue at full saturation and value, RGB565, by QMK's own arithmetic
+ * (quantum/color.c's hsv_to_rgb_impl() with s = v = 255), so the strip's
+ * colours are the keys' (codex, P1b's code review). */
 static uint16_t hue565(uint8_t h) {
-    uint8_t region = (uint8_t)(h / 43u), rem = (uint8_t)((h - region * 43u) * 6u);
+    uint8_t region = (uint8_t)(h * 6u / 255u), rem = (uint8_t)((h * 2 - region * 85) * 3);
+    uint8_t q = (uint8_t)((255u * (255u - ((255u * rem) >> 8))) >> 8);
+    uint8_t t = (uint8_t)((255u * (255u - ((255u * (255u - rem)) >> 8))) >> 8);
     uint8_t r, g, b;
     switch (region) {
-        case 0:  r = 255; g = rem; b = 0; break;
-        case 1:  r = (uint8_t)(255u - rem); g = 255; b = 0; break;
-        case 2:  r = 0; g = 255; b = rem; break;
-        case 3:  r = 0; g = (uint8_t)(255u - rem); b = 255; break;
-        case 4:  r = rem; g = 0; b = 255; break;
-        default: r = 255; g = 0; b = (uint8_t)(255u - rem); break;
+        case 6:
+        case 0:  r = 255; g = t; b = 0; break;
+        case 1:  r = q; g = 255; b = 0; break;
+        case 2:  r = 0; g = 255; b = t; break;
+        case 3:  r = 0; g = q; b = 255; break;
+        case 4:  r = t; g = 0; b = 255; break;
+        default: r = 255; g = 0; b = q; break;
     }
     return (uint16_t)(((r & 0xF8u) << 8) | ((g & 0xFCu) << 3) | (b >> 3));
 }
@@ -994,6 +999,11 @@ menu_result_t menu_input(int8_t turns, mi_latch_t latch, uint32_t now) {
      * where it is: only its bullet follows the model. */
     bool changed = sync_model();
     last_idle    = 0;
+    /* An editor or a previewing choice whose edit an external write has
+     * already rolled back takes no more input: menu_tick() pops it with
+     * "Cancelled" (codex, P1b's code review: a click queued behind the write
+     * showed "Saved" for an edit that no longer existed). */
+    if ((is_editor(cur()->node) || is_preview(cur()->node)) && !me_active()) return MENU_NONE;
     uint8_t g0   = ms_tgen();
     frame_t *f = cur();
     if (turns) {
@@ -1067,12 +1077,14 @@ void menu_tick(uint32_t now, uint32_t idle_ms) {
     last_idle = idle_ms;
     /* P1b: an external write is a new target (codex, round two); one that
      * cancelled the open edit also pops it, with "Cancelled". */
-    uint8_t pend = me_take_pending();
+    uint8_t pend  = me_take_pending();
+    bool    moved = sync_model();   /* Fn+B, Fn+C, while the menu shows */
     if ((pend & ME_PEND_CANCELLED) && (is_editor(cur()->node) || is_preview(cur()->node))) {
         flash(T_CANCELLED, now);
-        (void)pop(now);
-    }
-    bool moved = sync_model() || pend;   /* Fn+B, Fn+C, while the menu shows */
+        (void)pop(now);   /* its target is the new one (one target, not two: codex) */
+        moved = false;
+    } else if (pend)
+        moved = true;
     uint8_t t = want_title(now, idle_ms);
     if (t != title_id) {
         title_id = t;
