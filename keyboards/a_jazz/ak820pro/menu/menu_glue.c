@@ -87,7 +87,7 @@ void    env_lcd_set(uint8_t level, bool save) {
     display_set_brightness(level);
     if (save) kb_eeconfig_set_lcd_brightness(level);
 }
-_Static_assert(ENV_IND_LOCKS == IND_LOCKS && ENV_IND_CHARGING == IND_CHARGING && ENV_IND_MAX == IND_LEVEL_MAX,
+_Static_assert((int)ENV_IND_LOCKS == (int)IND_LOCKS && (int)ENV_IND_CHARGING == (int)IND_CHARGING && ENV_IND_MAX == IND_LEVEL_MAX,
                "menu_env.h's indicator groups are indicators.h's");
 uint8_t env_ind_level(uint8_t which) { return indicator_get_level(which); }
 void    env_ind_set(uint8_t which, uint8_t level, bool save) {
