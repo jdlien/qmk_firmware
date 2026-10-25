@@ -139,14 +139,15 @@ static const char *icon_of(uint8_t node) {
 
 /* --- The palette ------------------------------------------------------------- */
 #if defined(AK820_DEV_HOOKS) || defined(MENU_HOST_TEST)
-static uint16_t pal[MP_N] = {MENU_LIT, MENU_DIM, MENU_LEAVE, MENU_WHITE, MENU_GREY, MENU_TRACK, MENU_CURSOR};
+static uint16_t pal[MP_N] = {MENU_LIT, MENU_DIM, MENU_LEAVE, MENU_WHITE, MENU_GREY, MENU_TRACK, MENU_CURSOR, MENU_ICON_LIT};
 bool menu_set_color(uint8_t i, uint16_t c) {
     if (i >= MP_N) return false;
     pal[i] = c;
     return true;
 }
 #else
-static const uint16_t pal[MP_N] = {MENU_LIT, MENU_DIM, MENU_LEAVE, MENU_WHITE, MENU_GREY, MENU_TRACK, MENU_CURSOR};
+static const uint16_t pal[MP_N] = {MENU_LIT, MENU_DIM, MENU_LEAVE, MENU_WHITE, MENU_GREY, MENU_TRACK, MENU_CURSOR,
+                                   MENU_ICON_LIT};
 #endif
 uint16_t menu_color(uint8_t i) { return i < MP_N ? pal[i] : 0; }
 
@@ -674,10 +675,12 @@ static bool    is_row(uint8_t s) { return s >= S_ROW0; }
  * in white; the saved option's green box; the current slot's status icon): 0
  * for none. Read from the row's content, so it follows the signature (the
  * icon is its node's, the state its val, the saved option or current slot its
- * bullet). */
+ * bullet, the lit tint its lit bit). */
 static uint16_t row_icon_colour(const row_t *x) {
     if (x->kind != RK_ITEM && x->kind != RK_VALUE) return 0u;
-    if (icon_of(x->node)) return pal[MP_WHITE];   /* JD, 10-25: white, lit or not, "so they pop" */
+    /* JD, 10-25: white "so they pop"; on the selected row a whiter yellow than
+     * its text ("feels weird when they don't change at all") */
+    if (icon_of(x->node)) return x->lit ? pal[MP_ICON_LIT] : pal[MP_WHITE];
     if (x->kind != RK_ITEM || !x->bullet || !is_option(x->node)) return 0u;
     return x->node >= N_BT0 && x->node <= N_BT2 ? link_colour[x->val % 5u] : MENU_SAVED;
 }
