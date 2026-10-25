@@ -406,14 +406,15 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
             return false;
         case CLK_MODE:
             if (record->event.pressed) {
-                /* 24h -> 12h -> off -> date -> 24h. Persisted like the backlight
-                 * level: through kb_eeconfig's coalesced deferred flush. */
-                uint8_t m = (uint8_t)((display_get_clock_mode() + 1) % DISPLAY_CLOCK_MODE_COUNT);
+                /* The menu's order (JD, 10-25): 24h:ss -> 24h -> 12h:ss -> 12h ->
+                 * date -> off -> 24h:ss. Persisted like the backlight level:
+                 * through kb_eeconfig's coalesced deferred flush. */
+                uint8_t m = display_clock_mode_next(display_get_clock_mode());
                 display_set_clock_mode(m);
                 kb_eeconfig_set_clock_mode(m);
 #ifdef PARAM_OVERLAY
-                static const char *const clock_mode_names[DISPLAY_CLOCK_MODE_COUNT] = {
-                    "Clock 24h", "Clock 12h", "Clock off", "Clock date",
+                static const char *const clock_mode_names[DISPLAY_CLOCK_MODE_COUNT] = {   /* 12 characters at most */
+                    "Clock 24h:ss", "Clock 12h:ss", "Clock off", "Clock date", "Clock 24h", "Clock 12h",
                 };
                 display_set_param_status(clock_mode_names[m]);
 #endif

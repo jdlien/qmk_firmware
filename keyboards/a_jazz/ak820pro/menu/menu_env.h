@@ -23,9 +23,13 @@ bool     env_probe_handoff(uint8_t *out4);   /* op 27 sub 9: false unless the da
 /* P1a's settings and facts (plans/CONFIG-MENU-P1-DESIGN.md). */
 uint8_t  env_power_mode(void);          /* 0 Always on, 1 Balanced, 2 Power saver, 3 Lights out */
 void     env_power_set(uint8_t m);      /* power_set_mode() */
-uint8_t  env_clock_mode(void);          /* enum display_clock_mode: 0 24H, 1 12H, 2 OFF, 3 DATE */
+uint8_t  env_clock_mode(void);          /* enum display_clock_mode: 0 24H, 1 12H, 2 OFF, 3 DATE, 4 24H_HM, 5 12H_HM */
 void     env_clock_set(uint8_t m);      /* display_set_clock_mode() + kb_eeconfig_set_clock_mode() */
 void     env_health_reset(void);        /* health_reset() + display_debug_refresh() */
+/* The Clock's examples (10-25): the RTC's time now (rtc_get_time()); false
+ * while it isn't set. */
+typedef struct { uint8_t hours, minutes, seconds, day, month; uint16_t year; } env_time_t;
+bool     env_clock_now(env_time_t *t);
 bool     env_batt_hours(void);          /* P4: the dashboard's battery in hours of use, not percent */
 /* P4: what the readout is made of: the level (0xFF unknown), on battery, the
  * time left (minutes of use; 0xFFFF none), the average's minutes on battery

@@ -305,12 +305,19 @@ ms_step_t ms_step(void) {
         }
     }
     if (pick != NO_CURSOR) {
+        uint16_t now   = layout->sig(pick);
+        uint8_t  first = 0;
+        if (slots[pick].state == MS_COMMITTED && layout->first_chunk) {   /* its first chunks already right */
+            first = layout->first_chunk(pick, slots[pick].sig, now);
+            if (first >= layout->chunks(pick)) first = 0;
+        }
         slots[pick].state = MS_PARTIAL;
-        slots[pick].sig   = layout->sig(pick);
+        slots[pick].sig   = now;
         slots[pick].gen   = tgen;
         if (is_row(pick) && (slots[pick].sig & 1u)) maybe_lit |= row_bit(pick);   /* before its first piece */
         cursor           = pick;
-        chunk = piece    = 0;
+        chunk            = first;
+        piece            = 0;
         return paint_piece();
     }
     note_settled();   /* nothing left for this target */

@@ -42,6 +42,12 @@ typedef struct {
      * row0 + nrows - 1 (at most 8), whose signature's bit 0 means lit. 0 rows:
      * no highlight policy (the fixture's layouts). */
     uint8_t row0, nrows;
+    /* Optional (the Clock's live examples, 10-25): a COMMITTED slot picked
+     * again for a new signature starts its op at this chunk, not 0. The
+     * layout returns c > 0 only when the two signatures' targets agree on
+     * chunks 0 .. c-1, so those pixels on the panel are already the new
+     * target's. A PARTIAL or invalidated slot always starts at 0. */
+    uint8_t (*first_chunk)(uint8_t slot, uint16_t was, uint16_t now);
 } ms_layout_t;
 
 typedef enum {

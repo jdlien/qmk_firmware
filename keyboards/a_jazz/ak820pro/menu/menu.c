@@ -39,6 +39,7 @@ enum {
     N_PAIRNOW,                                                  /* 43: "Pair device to BT n", the current slot (JD, 10-25) */
     N_PAIRING,                                                  /* 44: the Pairing page, its slot in the frame's cursor */
     N_BATT, N_BV0, N_BV1,                                       /* 45-47: P4, Battery and its two readouts */
+    N_CLK4, N_CLK5,                                             /* 48-49: the Clock's rows 5-6 (rows: clock_enum[]) */
     N_COUNT
 };
 _Static_assert(N_COUNT <= 63, "a row's node is 6 bits");
@@ -54,16 +55,26 @@ static const uint8_t conn_rows[]  = {N_BACK, N_BT0, N_BT1, N_BT2, N_PAIRNOW};   
 static const uint8_t diag_rows[]  = {N_BACK, N_HEALTH, N_CAMERA, N_RESET};
 static const uint8_t help_rows[]  = {N_BACK, N_TOPIC0, N_TOPIC1, N_TOPIC2, N_TOPIC3};
 static const uint8_t power_rows[] = {N_BACK, N_POW0, N_POW1, N_POW2, N_POW3};
-static const uint8_t clock_rows[] = {N_BACK, N_CLK0, N_CLK1, N_CLK2, N_CLK3};
+static const uint8_t clock_rows[] = {N_BACK, N_CLK0, N_CLK1, N_CLK2, N_CLK3, N_CLK4, N_CLK5};
 static const uint8_t batt_rows[]  = {N_BACK, N_BV0, N_BV1};   /* P4 */
 
 static const char *const power_full[4]  = {"Always on", "Balanced", "Power saver", "Lights out"};
 static const char *const power_short[4] = {"Always on", "Balanced", "Saver", "Lights out"};
-/* The choice's rows in the mockup's order, and the clock enum each maps to:
- * 24 hour = 24H (0), 12 hour = 12H (1), Date = DATE (3), Off = OFF (2). */
-static const char *const clock_full[4]  = {"24 hour", "12 hour", "Date", "Off"};
-static const uint8_t     clock_enum[4]  = {0, 1, 3, 2};
-static const char *const clock_short_by_enum[4] = {"24h", "12h", "Off", "Date"};
+/* The choice's rows in MENU-TEXT's order (10-25: the modes without seconds),
+ * and the clock enum each maps to: 24h:ss = 24H (0), 24h = 24H_HM (4),
+ * 12h:ss = 12H (1), 12h = 12H_HM (5), Date = DATE (3), Off = OFF (2). Each
+ * row but Off shows a live example of its format (clock_example()). */
+#define CLOCK_ROWS 6
+static const char *const clock_full[CLOCK_ROWS] = {"24h", "24h", "12h", "12h", "Date", "Off"};
+static const uint8_t     clock_enum[CLOCK_ROWS] = {0, 4, 1, 5, 3, 2};
+static const char *const clock_short_by_enum[CLOCK_ROWS] = {"24h", "12h", "Off", "Date", "24h", "12h"};
+/* A Clock row's index (0-5), or -1. */
+static int8_t clk_row(uint8_t node) {
+    if (node >= N_CLK0 && node <= N_CLK3) return (int8_t)(node - N_CLK0);
+    if (node == N_CLK4 || node == N_CLK5) return (int8_t)(4 + node - N_CLK4);
+    return -1;
+}
+static const char *clock_example(uint8_t row, char *buf);   /* by row_sig(), below */
 /* P4: the battery readout, by its row (0 percent, 1 hours), and the top
  * level's value. */
 static const char *const batt_full[2]  = {"Percent", "Hours of use"};
@@ -156,7 +167,7 @@ static const char *label_of(uint8_t node) {
     if (node >= N_BT0 && node <= N_BT2) return slot_names[node - N_BT0];
     if (node >= N_TOPIC0 && node <= N_TOPIC3) return menu_help_titles[node - N_TOPIC0];
     if (node >= N_POW0 && node <= N_POW3) return power_full[node - N_POW0];
-    if (node >= N_CLK0 && node <= N_CLK3) return clock_full[node - N_CLK0];
+    if (clk_row(node) >= 0) return clock_full[clk_row(node)];
     if (node >= N_BV0 && node <= N_BV1) return batt_full[node - N_BV0];
     return "";
 }
@@ -289,7 +300,7 @@ static bool is_preview(uint8_t node) { return node == N_EFFECT || node == N_LIGH
 static bool is_choice(uint8_t node) { return node == N_POWER || node == N_CLOCK || node == N_BATT || is_preview(node); }
 static bool is_option(uint8_t node) {   /* a row a check box marks: a choice's option, or a slot (P3) */
     return (node >= N_POW0 && node <= N_CLK3) || node == N_EFFOPT || node == N_LTSOPT || (node >= N_BT0 && node <= N_BT2) ||
-           (node >= N_BV0 && node <= N_BV1);
+           (node >= N_BV0 && node <= N_BV1) || node == N_CLK4 || node == N_CLK5;
 }
 static bool is_ind_editor(uint8_t node) { return node == N_LOCKS || node == N_CHGL; }   /* P2a */
 static bool is_editor(uint8_t node) { return node == N_SCREEN || (node >= N_BRIGHT && node <= N_SPEED) || is_ind_editor(node); }
@@ -330,7 +341,7 @@ static uint8_t saved_row(uint8_t node) {
     if (node == N_EFFECT) return (uint8_t)(effect_index(me_saved()) + 1);
     if (node == N_LIGHTS) return me_saved() ? 2u : 1u;
     if (node == N_BATT) return env_batt_hours() ? 2u : 1u;   /* P4 */
-    for (uint8_t i = 0; i < 4; i++)
+    for (uint8_t i = 0; i < CLOCK_ROWS; i++)
         if (clock_enum[i] == model_clock) return (uint8_t)(1u + i);
     return 1;
 }
@@ -602,7 +613,7 @@ static row_t row_at(uint8_t r) {
     x.node = row_node(f->node, i, &val);
     x.lit  = i == f->cursor;
     if (x.node == N_POWER) x.val = model_power & 3u;
-    else if (x.node == N_CLOCK) x.val = model_clock & 3u;
+    else if (x.node == N_CLOCK) x.val = model_clock < CLOCK_ROWS ? model_clock : 0u;
     else if (x.node == N_BATT) x.val = env_batt_hours() ? 1u : 0u;   /* P4: only the menu changes it, so no latch */
     else if (x.node == N_CONN) x.val = link_code();   /* P3: the link, link_names[] */
     else if (x.node == N_PAIRNOW) x.val = (uint8_t)(link_slot() > 2u ? 2u : link_slot());   /* the slot it pairs */
@@ -665,7 +676,8 @@ static void row_text(const row_t *x, char *out) {
                                               : label_of(x->node);
     const char *value = "";
     if (x->node == N_POWER) value = power_short[x->val & 3u];
-    else if (x->node == N_CLOCK) value = clock_short_by_enum[x->val & 3u];
+    else if (x->node == N_CLOCK) value = clock_short_by_enum[x->val % CLOCK_ROWS];
+    else if (clk_row(x->node) >= 0 && clk_row(x->node) < 5) value = clock_example((uint8_t)clk_row(x->node), buf);
     else if (x->node == N_BATT) value = batt_short[x->val & 1u];
     else if (x->node == N_CONN) value = link_names[x->val % 5u];          /* P3 */
     else if (x->node >= N_BT0 && x->node <= N_BT2) value = link_words[x->val % 5u];
@@ -690,18 +702,84 @@ static void row_text(const row_t *x, char *out) {
     if (vn) memcpy(out + 20 - vn, value, vn);
 }
 
+/* What a Battery row's text is made of, as batt_preview() and batt_note()
+ * decide it, without composing it: equal keys, equal text (the host test
+ * checks every change repaints). */
+static uint32_t batt_key(const row_t *x) {
+    env_batt_t b;
+    env_batt_facts(&b);
+    bool ready = batt_hours_ready(&b);
+    if (x->kind == RK_NOTE) {
+        if (ready || x->line > 2u || (b.on_battery && (b.pct == 0u || b.pct > 100u))) return 0;
+        if (b.avg_minutes < 60u) return x->line < 2u ? 1u : 2u | (uint32_t)(60u - b.avg_minutes) << 2;
+        return !b.on_battery && x->line < 2u ? 3u : 0u;
+    }
+    if (b.pct > 100u) return 1;                    /* "--" */
+    if (b.pct == 0u && b.on_battery) return 2;     /* "Low" */
+    if (x->node == N_BV1) {                        /* "--", "<1h", "160h" (999 at most) */
+        if (!ready) return 3;
+        uint32_t h = b.left_min < 60u ? 0u : b.left_min / 60u;
+        return 4u | (h > 999u ? 999u : h) << 3;
+    }
+    /* "85%", or under 10 h "18% 6h", "18% <1h" (batt_level_text()) */
+    uint32_t h = ready && b.left_min < 600u ? (b.left_min < 60u ? 10u : b.left_min / 60u) : 15u;
+    return 0x10000u | (uint32_t)b.pct << 4 | h;
+}
+/* The Clock's examples (10-25): the format each row's mode shows, at the
+ * RTC's time now. */
+static const char *clock_example(uint8_t row, char *buf) {   /* buf: 24 */
+    static const char *const months[12] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    env_time_t t;
+    uint8_t    mode   = clock_enum[row];
+    bool       twelve = mode == 1u || mode == 5u, secs = mode == 0u || mode == 1u;
+    if (!env_clock_now(&t)) return row == 4u ? "--- --, ----" : secs ? "--:--:--" : "--:--";
+    unsigned hh = t.hours;
+    if (twelve) {
+        hh %= 12u;
+        if (hh == 0u) hh = 12u;
+    }
+    const char *ap = t.hours >= 12u ? "PM" : "AM";
+    if (row == 4u) snprintf(buf, 24, "%s %u, %u", months[(t.month + 11u) % 12u], (unsigned)t.day, (unsigned)t.year);
+    else if (secs && twelve) snprintf(buf, 24, "%u:%02u:%02u %s", hh, (unsigned)t.minutes, (unsigned)t.seconds, ap);
+    else if (secs) snprintf(buf, 24, "%02u:%02u:%02u", hh, (unsigned)t.minutes, (unsigned)t.seconds);
+    else if (twelve) snprintf(buf, 24, "%u:%02u %s", hh, (unsigned)t.minutes, ap);
+    else snprintf(buf, 24, "%02u:%02u", hh, (unsigned)t.minutes);
+    return buf;
+}
+/* An example row's signature: 0x2000 | row << 10 | wide << 9 | tick << 2 |
+ * bullet << 1 | lit. The tick (7 bits) is the second of the day for the rows
+ * with seconds, the minute for the others, the day for Date; consecutive
+ * ticks differ, so each repaints. `wide`: a 12h:ss time of 11 characters
+ * (10-12 o'clock) reaches cell 9, the left half. */
+static uint16_t clock_sig(const row_t *x, uint8_t row) {
+    env_time_t t;
+    uint8_t    mode = clock_enum[row];
+    uint32_t   tick = 0x7Fu;
+    bool       wide = false;
+    if (env_clock_now(&t)) {
+        if (row == 4u) tick = (uint32_t)t.month * 32u + t.day;
+        else if (mode == 0u || mode == 1u) tick = (uint32_t)t.hours * 3600u + t.minutes * 60u + t.seconds;
+        else tick = (uint32_t)t.hours * 60u + t.minutes;
+        if (mode == 1u) wide = t.hours % 12u == 0u || t.hours % 12u >= 10u;
+    }
+    return (uint16_t)(0x2000u | ((uint16_t)row << 10) | (wide ? 0x200u : 0u) | ((tick & 0x7Fu) << 2) |
+                      (x->bullet ? 2u : 0u) | (x->lit ? 1u : 0u));
+}
+
 static uint16_t row_sig(const row_t *x) {
-    /* P4: live text (the Battery choice's previews and note): a hash of what
-     * the row shows, in 0x1000-0x1FFF (no other kind's), with the bullet and
-     * the lit bit as RK_ITEM's. A collision only delays a repaint to the
-     * text's next change. */
+    /* P4: live text (the Battery choice's previews and note): a hash of
+     * what the row shows, keyed by its inputs (batt_key(), no formatting:
+     * the text cost 19 ms passes on the board), in 0x1000-0x1FFF (no other
+     * kind's), with the bullet and the lit bit as RK_ITEM's. A collision only
+     * delays a repaint to the text's next change. */
     if (x->kind == RK_NOTE || (x->kind == RK_ITEM && (x->node == N_BV0 || x->node == N_BV1))) {
-        char cells[21];
-        row_text(x, cells);
+        uint32_t k = batt_key(x) ^ ((uint32_t)x->node << 24) ^ ((uint32_t)x->line << 30);
         uint16_t h = 0x811Cu;
-        for (uint8_t i = 0; i < 20u; i++) h = (uint16_t)((h ^ (uint8_t)cells[i]) * 0x0193u);
+        for (uint8_t i = 0; i < 4u; i++, k >>= 8) h = (uint16_t)((h ^ (uint8_t)k) * 0x0193u);
         return (uint16_t)(0x1000u | (h & 0x0FFCu) | (x->bullet ? 2u : 0u) | (x->lit ? 1u : 0u));
     }
+    if (x->kind == RK_ITEM && clk_row(x->node) >= 0 && clk_row(x->node) < 5) return clock_sig(x, (uint8_t)clk_row(x->node));
     switch (x->kind) {
         case RK_ITEM:
             return (uint16_t)((1u << 14) | ((uint16_t)x->node << 8) | ((uint16_t)(x->val & 15u) << 4) |
@@ -860,7 +938,15 @@ static ms_paint_t l_paint(uint8_t s, uint8_t c, uint8_t p) {
                       pal[MP_CURSOR], c, p, fg, row_icon_colour(&x));
 }
 
-static const ms_layout_t L_LIST = {11, l_sig, l_chunks, l_pieces, l_paint, S_ROW0, MENU_ROWS};
+/* A Clock example's tick (10-25): the right half only, its cells 10-19 and
+ * the trail, when nothing but the tick changed (clock_sig()); not Date,
+ * whose text crosses the halves. A split row's right half is chunk 3. */
+static uint8_t l_first(uint8_t s, uint16_t was, uint16_t now) {
+    if (!is_row(s) || (was & 0xE000u) != 0x2000u || (now & 0xE000u) != 0x2000u) return 0;
+    if (((was ^ now) & (uint16_t)~0x01FCu) != 0u || ((now >> 10) & 7u) == 4u) return 0;
+    return row_split(s) ? 3u : 2u;
+}
+static const ms_layout_t L_LIST = {11, l_sig, l_chunks, l_pieces, l_paint, S_ROW0, MENU_ROWS, l_first};
 
 /* --- The confirm geometry: Reset counters' two pages (the mockup: text at y
  * 22, 36, 72 and 86 under the title and the separator). */
@@ -922,7 +1008,7 @@ static ms_paint_t c_paint(uint8_t s, uint8_t c, uint8_t p) {
     memcpy(cells, buf, n > 20 ? 20 : n);
     return text_piece(cells, (node == N_CONNINFO ? info_y : c_y)[i], false, 0, 0, c, p, pal[MP_WHITE], 0);
 }
-static const ms_layout_t L_CONFIRM = {6, c_sig, c_chunks, c_pieces, c_paint, 0, 0};
+static const ms_layout_t L_CONFIRM = {6, c_sig, c_chunks, c_pieces, c_paint, 0, 0, 0};
 
 /* --- The editors (P1b; C8's geometry) ----------------------------------------
  * Range: the title, the separator, the bar as 7 column bands, the value, the
@@ -1092,8 +1178,8 @@ static ms_paint_t e_paint(uint8_t s, uint8_t c, uint8_t p) {
     memcpy(cells, ln, strlen(ln));
     return text_piece(cells, (uint16_t)(HINT_Y0 + (s - vs - 1u) * ROW_H), false, 0, 0, c, p, pal[MP_WHITE], 0);
 }
-static const ms_layout_t L_RANGE = {2 + BAR_N + 1 + 3, e_sig, e_chunks, e_pieces, e_paint, 0, 0};
-static const ms_layout_t L_HUE   = {2 + ENV_N + 1 + 3, e_sig, e_chunks, e_pieces, e_paint, 0, 0};
+static const ms_layout_t L_RANGE = {2 + BAR_N + 1 + 3, e_sig, e_chunks, e_pieces, e_paint, 0, 0, 0};
+static const ms_layout_t L_HUE   = {2 + ENV_N + 1 + 3, e_sig, e_chunks, e_pieces, e_paint, 0, 0, 0};
 _Static_assert(2 + ENV_N + 1 + 3 <= MS_MAX_SLOTS, "the hue editor's slots");
 _Static_assert(ENV_BW * (ENV_Y1 - ENV_Y0 + 1) * 2 <= MB_PASS_BYTES && BAR_BW * (BAR_YB - BAR_YT + 1) * 2 <= MB_PASS_BYTES,
                "a band is one piece");

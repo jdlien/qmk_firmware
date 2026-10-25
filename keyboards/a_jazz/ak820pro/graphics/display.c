@@ -643,6 +643,15 @@ uint8_t display_get_clock_mode(void) {
     return clock_mode;
 }
 
+uint8_t display_clock_mode_next(uint8_t mode) {
+    static const uint8_t order[DISPLAY_CLOCK_MODE_COUNT] = {
+        DISPLAY_CLOCK_24H, DISPLAY_CLOCK_24H_HM, DISPLAY_CLOCK_12H, DISPLAY_CLOCK_12H_HM, DISPLAY_CLOCK_DATE, DISPLAY_CLOCK_OFF,
+    };
+    for (uint8_t i = 0; i < DISPLAY_CLOCK_MODE_COUNT; i++)
+        if (order[i] == mode) return order[(i + 1u) % DISPLAY_CLOCK_MODE_COUNT];
+    return DISPLAY_CLOCK_24H;
+}
+
 void display_set_clock_mode(uint8_t mode) {
     if (mode >= DISPLAY_CLOCK_MODE_COUNT) mode = DISPLAY_CLOCK_24H;
     if (mode == clock_mode) return;
@@ -1412,7 +1421,10 @@ void draw_clock(void) {
         return;
     }
 
-    bool     twelve = (clock_mode == DISPLAY_CLOCK_12H);
+    bool     twelve = (clock_mode == DISPLAY_CLOCK_12H || clock_mode == DISPLAY_CLOCK_12H_HM);
+    /* Seconds in 24H and 12H; the _HM modes (the menu's, 10-25) leave them
+     * off. DISPLAY_CLOCK_SHOW_SECONDS still vetoes them in every mode. */
+    bool     secs   = DISPLAY_CLOCK_SHOW_SECONDS && (clock_mode == DISPLAY_CLOCK_24H || clock_mode == DISPLAY_CLOCK_12H);
     bool     pm     = shown.hours >= 12;
     unsigned hh     = shown.hours;
     if (twelve) {
@@ -1421,15 +1433,12 @@ void draw_clock(void) {
     }
 
     char time_str[12];
-#if DISPLAY_CLOCK_SHOW_SECONDS
-    if (twelve) snprintf(time_str, sizeof(time_str), "%u:%02u:%02u",
-                         hh, (unsigned)shown.minutes, (unsigned)shown.seconds);
-    else        snprintf(time_str, sizeof(time_str), "%02u:%02u:%02u",
-                         hh, (unsigned)shown.minutes, (unsigned)shown.seconds);
-#else
-    if (twelve) snprintf(time_str, sizeof(time_str), "%u:%02u", hh, (unsigned)shown.minutes);
-    else        snprintf(time_str, sizeof(time_str), "%02u:%02u", hh, (unsigned)shown.minutes);
-#endif
+    if (secs && twelve) snprintf(time_str, sizeof(time_str), "%u:%02u:%02u",
+                                 hh, (unsigned)shown.minutes, (unsigned)shown.seconds);
+    else if (secs)      snprintf(time_str, sizeof(time_str), "%02u:%02u:%02u",
+                                 hh, (unsigned)shown.minutes, (unsigned)shown.seconds);
+    else if (twelve)    snprintf(time_str, sizeof(time_str), "%u:%02u", hh, (unsigned)shown.minutes);
+    else                snprintf(time_str, sizeof(time_str), "%02u:%02u", hh, (unsigned)shown.minutes);
     /* Through the glyph queue (audit BW-3): queue_line diffs against the
      * band's shadow, so the per-second case queues 1-2 glyphs exactly as the
      * old last_time[] compare did, and a force repaint (band_clear above

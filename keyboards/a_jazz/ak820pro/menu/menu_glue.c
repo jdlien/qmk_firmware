@@ -62,6 +62,12 @@ void env_health_reset(void) {
     health_reset();
     display_debug_refresh();
 }
+bool env_clock_now(env_time_t *t) {
+    rtc_time_t r;
+    if (!rtc_get_time(&r)) return false;
+    *t = (env_time_t){r.hours, r.minutes, r.seconds, r.day, r.month, r.year};
+    return true;
+}
 /* P4: the battery readout. The dashboard reads the setting each time it
  * composes the text, so the menu's close (the staged restore) shows it. */
 bool env_batt_hours(void) { return kb_eeconfig_get_batt_hours(); }

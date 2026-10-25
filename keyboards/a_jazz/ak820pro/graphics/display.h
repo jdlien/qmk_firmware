@@ -60,10 +60,15 @@ enum display_clock_mode {
     DISPLAY_CLOCK_12H,          /* H:MM:SS + stacked grey AM/PM glyph          */
     DISPLAY_CLOCK_OFF,          /* band blank; the playback timer still uses it */
     DISPLAY_CLOCK_DATE,         /* "Sep 1, 2026" in the 20px face (appended 2026-09-01) */
+    DISPLAY_CLOCK_24H_HM,       /* HH:MM (appended 2026-10-25: the menu's Clock options) */
+    DISPLAY_CLOCK_12H_HM,       /* H:MM + the AM/PM glyph */
     DISPLAY_CLOCK_MODE_COUNT    /* append only: the value is persisted */
 };
 void    display_set_clock_mode(uint8_t mode);
 uint8_t display_get_clock_mode(void);
+/* Fn+C's next mode, in the menu's order: 24h:ss, 24h, 12h:ss, 12h, Date,
+ * Off, and around (JD, 10-25). */
+uint8_t display_clock_mode_next(uint8_t mode);
 
 /* --- Host text slot -------------------------------------------------------
  * A single line the host pushes over raw HID, drawn in the band above the
