@@ -87,7 +87,7 @@ static const char *label_of(uint8_t node) {
         case N_IND:    return "Indicators";
         case N_CONN:   return "Connection";
         case N_LOCKS:  return "Lock lights";
-        case N_CHGL:   return "Charging light";
+        case N_CHGL:   return "Charging";   /* the mockup's row; its editor's title is "Charging light" */
         default: break;
     }
     if (node >= N_TOPIC0 && node <= N_TOPIC3) return menu_help_titles[node - N_TOPIC0];
