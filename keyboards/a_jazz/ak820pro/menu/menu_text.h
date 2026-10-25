@@ -36,6 +36,7 @@
 #define MT_I_EXIT       "\x94"
 #define MT_I_LIGHT      "\x95"       /* P1b */
 #define MT_I_SCREEN     "\x96\x97"
+#define MT_I_BOOT       "\x98\x99"   /* the bootloader item */
 
 /* A line as a slot paints it: `lead` pixels, then `cells` glyph cells (the
  * string, padded with spaces, codes the face hasn't shown as '?'), then

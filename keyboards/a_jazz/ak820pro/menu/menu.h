@@ -18,6 +18,7 @@ typedef enum {
     MENU_DIAG_HEALTH,   /* hand off to the Health page (C1) */
     MENU_DIAG_CAMERA,   /* hand off to the Camera page */
     MENU_CLOSE,         /* Exit, or Back at the top */
+    MENU_BOOTLOADER,    /* the bootloader item: enter it, as Fn+Esc does */
 } menu_result_t;
 
 void          menu_open(uint32_t now);                    /* the top level, row 0, a fresh layout */

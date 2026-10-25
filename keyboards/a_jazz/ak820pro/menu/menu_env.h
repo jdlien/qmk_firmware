@@ -46,6 +46,11 @@ uint8_t  env_effects(void);                         /* rgb_effects_n */
 uint8_t  env_effect_mode(uint8_t i);
 const char *env_effect_name(uint8_t i);
 bool     env_effect_two_tone(uint8_t mode);         /* the mode uses speed as its second colour's hue offset (Alphas/Mods) */
+/* The bootloader item: Fn+Esc's path (the splash, 1.5 s, reset_keyboard());
+ * and whether the battery is in its reserve, when it refuses (flash.sh's
+ * rule: power_lights_cut()). */
+void     env_bootloader(void);
+bool     env_reserve(void);
 #define  ENV_UNKNOWN 0xFFFFu
 typedef struct {
     uint32_t uptime_s;

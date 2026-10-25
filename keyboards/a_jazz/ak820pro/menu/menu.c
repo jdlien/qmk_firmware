@@ -30,12 +30,13 @@ enum {
     N_LIGHT, N_SCREEN,                                          /* 24-25: P1b */
     N_EFFECT, N_BRIGHT, N_HUE, N_SAT, N_SPEED, N_LIGHTS,        /* 26-31: Lighting's rows */
     N_EFFOPT, N_LTSOPT,                                         /* 32-33: an Effect or Lights option, its index in val */
+    N_BOOT,                                                     /* 34: the bootloader item (JD, 10-24) */
     N_COUNT
 };
 _Static_assert(N_COUNT <= 63, "a row's node is 6 bits");
 _Static_assert(MENU_HELP_TOPICS == 4, "Help's four topics");
 
-static const uint8_t top_rows[]   = {N_LIGHT, N_SCREEN, N_POWER, N_CLOCK, N_DIAG, N_HELP, N_ABOUT, N_EXIT};
+static const uint8_t top_rows[]   = {N_LIGHT, N_SCREEN, N_POWER, N_CLOCK, N_DIAG, N_BOOT, N_HELP, N_ABOUT, N_EXIT};
 static const uint8_t light_rows[] = {N_BACK, N_EFFECT, N_BRIGHT, N_HUE, N_SAT, N_SPEED, N_LIGHTS};
 static const uint8_t diag_rows[]  = {N_BACK, N_HEALTH, N_CAMERA, N_RESET};
 static const uint8_t help_rows[]  = {N_BACK, N_TOPIC0, N_TOPIC1, N_TOPIC2, N_TOPIC3};
@@ -78,6 +79,7 @@ static const char *label_of(uint8_t node) {
         case N_SAT:    return "Saturation";
         case N_SPEED:  return two_tone() ? "Second color" : "Speed";   /* Alphas/Mods' speed is its second colour */
         case N_LIGHTS: return "Lights";
+        case N_BOOT:   return "Bootloader";
         default: break;
     }
     if (node >= N_TOPIC0 && node <= N_TOPIC3) return menu_help_titles[node - N_TOPIC0];
@@ -99,6 +101,7 @@ static const char *icon_of(uint8_t node) {
         case N_EXIT:  return MT_I_EXIT " ";
         case N_LIGHT: return MT_I_LIGHT " ";   /* P1b */
         case N_SCREEN: return MT_I_SCREEN;
+        case N_BOOT:  return MT_I_BOOT;
         default:      return NULL;
     }
 }
@@ -217,7 +220,8 @@ static uint8_t saved_row(uint8_t node) {
 /* --- Titles ------------------------------------------------------------------ */
 enum { T_TOP = 1, T_POWER, T_CLOCK, T_DIAG, T_HELP, T_ABOUT, T_TOPIC0, T_RESET = T_TOPIC0 + 4,
        T_SAVED = 16, T_CANCELLED, T_RESET_DONE, T_HINT, T_HINT_BACK,
-       T_LIGHT, T_SCREEN, T_EFFECT, T_BRIGHT, T_HUE, T_SAT, T_SPEED, T_SECOND, T_LIGHTS };   /* 21-29: P1b */
+       T_LIGHT, T_SCREEN, T_EFFECT, T_BRIGHT, T_HUE, T_SAT, T_SPEED, T_SECOND, T_LIGHTS,   /* 21-29: P1b */
+       T_BOOT };                                                                            /* 30 */
 _Static_assert(T_RESET == 11, "the title ids: the design's table");
 
 static uint8_t screen_title(void) {
@@ -238,6 +242,7 @@ static uint8_t screen_title(void) {
         case N_SAT:    return T_SAT;
         case N_SPEED:  return two_tone() ? T_SECOND : T_SPEED;
         case N_LIGHTS: return T_LIGHTS;
+        case N_BOOT:   return T_BOOT;
         default:      return is_topic(n) ? (uint8_t)(T_TOPIC0 + (n - N_TOPIC0)) : T_TOP;
     }
 }
@@ -264,6 +269,7 @@ static const char *title_text(uint8_t id) {
         case T_SPEED:      return "Speed";
         case T_SECOND:     return "Second color";
         case T_LIGHTS:     return "Lights";
+        case T_BOOT:       return "Bootloader";
         default: break;
     }
     if (id >= T_TOPIC0 && id < T_TOPIC0 + 4) return menu_help_titles[id - T_TOPIC0];
@@ -283,6 +289,7 @@ static const char *title_icon(uint8_t id) {
         case T_HELP:  return icon_of(N_HELP);
         case T_ABOUT: return icon_of(N_ABOUT);
         case T_SCREEN: return icon_of(N_SCREEN);
+        case T_BOOT:   return icon_of(N_BOOT);
         default:      return id >= T_LIGHT && id <= T_LIGHTS ? icon_of(N_LIGHT) : "";
     }
 }
@@ -483,7 +490,7 @@ static void row_text(const row_t *x, char *out) {
     if (x->node == N_POWER) value = power_short[x->val & 3u];
     else if (x->node == N_CLOCK) value = clock_short_by_enum[x->val & 3u];
     else if (x->node == N_DIAG || x->node == N_HELP || x->node == N_ABOUT || x->node == N_HEALTH ||
-             x->node == N_CAMERA || x->node == N_RESET || is_topic(x->node) || x->node == N_LIGHT)
+             x->node == N_CAMERA || x->node == N_RESET || is_topic(x->node) || x->node == N_LIGHT || x->node == N_BOOT)
         value = MT_TRI_R;                            /* JD, 10-24: ▶ for > */
     size_t      at   = 0;
     const char *icon = icon_of(x->node);
@@ -625,10 +632,16 @@ static const char *const c_lines[2][4] = {
     {"Clear the health", "counters?", "Click: reset", "Hold: cancel"},
     {"Counters reset.", "", "Click: back", ""},
 };
+/* The bootloader item's (JD, 10-24; the words wait for his text pass): the
+ * question, and the refusal on the battery's reserve. */
+static const char *const boot_lines[2][4] = {
+    {"For a firmware", "update over USB.", "Click: enter", "Hold: cancel"},
+    {"Plug in first:", "the battery is low.", "Click: back", ""},
+};
 static uint16_t c_sig(uint8_t s) {
     if (s == 0) return title_id;
     if (s == 1) return 1;
-    return (uint16_t)(0x100u | ((uint16_t)confirm_page << 4) | (uint16_t)(s - 2u));
+    return (uint16_t)((cur()->node == N_BOOT ? 0x200u : 0x100u) | ((uint16_t)confirm_page << 4) | (uint16_t)(s - 2u));
 }
 static uint8_t c_chunks(uint8_t s) { return s == 1 ? 1 : 2; }
 static uint8_t c_pieces(uint8_t s, uint8_t c) { return l_pieces(s == 1 ? S_SEP : S_TITLE, c); }
@@ -637,7 +650,7 @@ static ms_paint_t c_paint(uint8_t s, uint8_t c, uint8_t p) {
     char cells[21];
     memset(cells, ' ', 20);
     cells[20]      = '\0';
-    const char *ln = c_lines[confirm_page & 1u][s - 2u];
+    const char *ln = (cur()->node == N_BOOT ? boot_lines : c_lines)[confirm_page & 1u][s - 2u];
     memcpy(cells, ln, strlen(ln));
     return text_piece(cells, c_y[s - 2u], false, 0, 0, c, p, pal[MP_WHITE]);
 }
@@ -887,7 +900,7 @@ static menu_result_t pop(uint32_t now) {
         retitle(now);
         ms_set_layout(&L_LIST, false);
     } else
-        show(false, from == N_RESET, now);
+        show(false, from == N_RESET || from == N_BOOT, now);
     return MENU_NONE;
 }
 
@@ -975,8 +988,9 @@ static menu_result_t activate(uint32_t now) {
         case N_HEALTH: return MENU_DIAG_HEALTH;
         case N_CAMERA: return MENU_DIAG_CAMERA;
         case N_RESET:
+        case N_BOOT:
             confirm_page = 0;
-            push(N_RESET, 0);
+            push(node, 0);
             show(true, false, now);
             return MENU_NONE;
         default:
@@ -1046,6 +1060,15 @@ menu_result_t menu_input(int8_t turns, mi_latch_t latch, uint32_t now) {
             return pop(now);
         }
         if (is_list(f->node) || is_choice(f->node)) return activate(now);
+        if (f->node == N_BOOT) {   /* enter it, unless the battery is in its reserve (flash.sh's rule) */
+            if (confirm_page == 0) {
+                if (!env_reserve()) return MENU_BOOTLOADER;
+                confirm_page = 1;
+                ms_retarget();
+                return MENU_NONE;
+            }
+            return pop(now);
+        }
         if (f->node == N_RESET) {
             if (confirm_page == 0) {
                 env_health_reset();
@@ -1060,7 +1083,7 @@ menu_result_t menu_input(int8_t turns, mi_latch_t latch, uint32_t now) {
         return pop(now);   /* a topic, About: back */
     }
     if (latch == MI_LATCH_BACK) {   /* pop() cancels an editor's or a previewing choice's edit */
-        if (is_choice(f->node) || is_editor(f->node) || (f->node == N_RESET && confirm_page == 0))
+        if (is_choice(f->node) || is_editor(f->node) || ((f->node == N_RESET || f->node == N_BOOT) && confirm_page == 0))
             flash(T_CANCELLED, now);
         return pop(now);
     }
@@ -1106,7 +1129,7 @@ uint8_t menu_cursor(void) {
     if (!depth) return 0xFF;
     frame_t *f = cur();
     if (is_topic(f->node)) return f->top;
-    if (f->node == N_RESET) return confirm_page;
+    if (f->node == N_RESET || f->node == N_BOOT) return confirm_page;
     if (is_editor(f->node)) return me_value();   /* P1b: an editor's value */
     return f->cursor;
 }
