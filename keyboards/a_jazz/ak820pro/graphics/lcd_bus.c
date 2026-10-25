@@ -444,11 +444,14 @@ bool lcd_blit_mono(const uint8_t *bits, uint8_t stride, uint16_t x, uint16_t y, 
     return ok;
 }
 
-/* Generated pixels (P1b: the editors' bar and hue bands): fn(ctx, col, row)
- * gives each pixel's RGB565, composed in raster order into the scratch,
- * already in panel order, and streamed as lcd_blit_mono's are, whole rows to
- * the scratch. False: a polled send gave up (blit_lost set), or a bad rect. */
-bool lcd_blit_gen(uint16_t x, uint16_t y, uint16_t w, uint16_t h, lcd_px_fn fn, const void *ctx) {
+/* Generated rows (P1b: the editors' bar and hue bands): fn(ctx, row, px, w)
+ * fills one row of w pixels straight into the scratch, in panel order (each
+ * RGB565 as the halfword whose little-endian bytes are hi, lo), and the rows
+ * stream as lcd_blit_mono's do. A row a call, not a pixel: a call and a test
+ * per pixel cost a hue band ~5 ms under the row ISR's load (the board script,
+ * 10-24: passes of 16-19 ms in the hue editor). False: a polled send gave up
+ * (blit_lost set), or a bad rect. */
+bool lcd_blit_rows(uint16_t x, uint16_t y, uint16_t w, uint16_t h, lcd_row_fn fn, const void *ctx) {
     WDT_SCOPE(WDT_SITE_LCD_TRANSFER);
     if (!lcd_stream_begin(x, y, w, h)) return false;   /* x + w <= FRAME_W: a row fits the scratch */
     uint16_t *const start = scratch_buf.h;
@@ -459,10 +462,8 @@ bool lcd_blit_gen(uint16_t x, uint16_t y, uint16_t w, uint16_t h, lcd_px_fn fn, 
             p = start;
             if (stream_broken) break;   /* given up: compose no further */
         }
-        for (uint16_t c = 0; c < w; c++) {
-            const uint16_t v = fn(ctx, c, r);
-            *p++             = (uint16_t)((v >> 8) | (v << 8));
-        }
+        fn(ctx, r, p, w);
+        p += w;
     }
     if (p != start && !stream_broken) lcd_stream_bytes(lcd_scratch, (uint32_t)(p - start) * 2u);
     bool ok = !stream_broken;

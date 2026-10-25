@@ -33,8 +33,8 @@ bool mb_glyph(char c, uint16_t x, uint16_t y) {
 bool mb_glyph_big(char c, uint16_t x, uint16_t y) {
     return lcd_draw_flash_glyph_try(ASSET_IOSEVKA_MEDIUM_20, c, x, y);   /* FONT_STATUS: 10x23 */
 }
-bool mb_pixels(uint16_t x, uint16_t y, uint16_t w, uint16_t h, mb_px_fn fn, const void *ctx) {
-    return lcd_blit_gen(x, y, w, h, fn, ctx);
+bool mb_rows(uint16_t x, uint16_t y, uint16_t w, uint16_t h, mb_row_fn fn, const void *ctx) {
+    return lcd_blit_rows(x, y, w, h, fn, ctx);
 }
 bool mb_mono(const uint8_t *bits, uint8_t stride, uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t fg, uint16_t bg) {
     return lcd_blit_mono(bits, stride, x, y, w, h, fg, bg);

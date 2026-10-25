@@ -709,21 +709,29 @@ static uint16_t hue565(uint8_t h) {
     return (uint16_t)(((r & 0xF8u) << 8) | ((g & 0xFCu) << 3) | (b >> 3));
 }
 
+/* The bands' rows, filled a row at a time in panel order (MB_PANEL): a
+ * precomputed row copied, then the few pixels that differ set. */
 typedef struct { uint8_t x0, edge; uint16_t grey, white; } bar_ctx_t;
-static uint16_t bar_px(const void *v, uint16_t col, uint16_t row) {
+static void bar_row(const void *v, uint16_t row, uint16_t *px, uint16_t w) {
     const bar_ctx_t *c = v;
-    uint16_t         x = (uint16_t)(c->x0 + col), y = (uint16_t)(BAR_YT + row);
-    if (x == BAR_X0 || x == BAR_X1 || y == BAR_YT || y == BAR_YB) return c->grey;
-    return x < c->edge ? c->white : 0;
+    const uint16_t   y = (uint16_t)(BAR_YT + row);
+    for (uint16_t i = 0; i < w; i++) {
+        const uint16_t x = (uint16_t)(c->x0 + i);
+        px[i] = (y == BAR_YT || y == BAR_YB || x == BAR_X0 || x == BAR_X1) ? c->grey : x < c->edge ? c->white : 0u;
+    }
 }
 typedef struct { uint8_t x0, mx; uint16_t white, tri; uint16_t col[ENV_BW]; } env_ctx_t;
-static uint16_t env_px(const void *v, uint16_t col, uint16_t row) {
+static void env_row(const void *v, uint16_t row, uint16_t *px, uint16_t w) {
     const env_ctx_t *c = v;
-    int16_t          x = (int16_t)(c->x0 + col), y = (int16_t)(ENV_Y0 + row), d = (int16_t)(x - c->mx);
-    if (y >= 38) return (d < 0 ? -d : d) <= 2 - (y - 38) ? c->tri : 0;   /* the triangle: 5, 3, 1 */
-    if (d == 0) return c->white;                                         /* the line, y 20-37 */
-    if (y >= STRIP_YT && y <= STRIP_YB && x >= STRIP_X0 && x <= STRIP_X1) return c->col[col];
-    return 0;
+    const int16_t    y = (int16_t)(ENV_Y0 + row), rel = (int16_t)(c->mx - c->x0);
+    if (y >= STRIP_YT && y <= STRIP_YB) memcpy(px, c->col, (size_t)w * 2u);   /* the strip; 0 outside it */
+    else memset(px, 0, (size_t)w * 2u);
+    if (y >= 38) {   /* the triangle: 5, 3, 1 */
+        int16_t half = (int16_t)(2 - (y - 38));
+        for (int16_t d = (int16_t)-half; d <= half; d++)
+            if (rel + d >= 0 && rel + d < (int16_t)w) px[rel + d] = c->tri;
+    } else if (rel >= 0 && rel < (int16_t)w)
+        px[rel] = c->white;   /* the line, y 20-37 */
 }
 
 /* A band's signature: the bar's, where the edge falls in it (the outline and
@@ -742,16 +750,16 @@ static uint16_t band_sig(uint8_t k) {
 }
 static ms_paint_t band_paint(uint8_t k) {
     if (!is_hue_editor(cur()->node)) {
-        bar_ctx_t c = {(uint8_t)(BAR_X0 + k * BAR_BW), bar_edge(), pal[MP_GREY], pal[MP_WHITE]};
+        bar_ctx_t c = {(uint8_t)(BAR_X0 + k * BAR_BW), bar_edge(), MB_PANEL(pal[MP_GREY]), MB_PANEL(pal[MP_WHITE])};
         uint16_t  w = k + 1 == BAR_N ? (uint16_t)(BAR_X1 - c.x0 + 1u) : BAR_BW;
-        return mb_pixels(c.x0, BAR_YT, w, BAR_YB - BAR_YT + 1u, bar_px, &c) ? MS_PAINT_DONE : MS_PAINT_FAILED;
+        return mb_rows(c.x0, BAR_YT, w, BAR_YB - BAR_YT + 1u, bar_row, &c) ? MS_PAINT_DONE : MS_PAINT_FAILED;
     }
-    env_ctx_t c = {(uint8_t)(k * ENV_BW), marker_x(), pal[MP_WHITE], pal[MP_LIT], {0}};
+    env_ctx_t c = {(uint8_t)(k * ENV_BW), marker_x(), MB_PANEL(pal[MP_WHITE]), MB_PANEL(pal[MP_LIT]), {0}};
     for (uint8_t i = 0; i < ENV_BW; i++) {
         uint16_t x = (uint16_t)(c.x0 + i);
-        if (x >= STRIP_X0 && x <= STRIP_X1) c.col[i] = hue565((uint8_t)(((x - STRIP_X0) * 256u + 60u) / 120u));
+        if (x >= STRIP_X0 && x <= STRIP_X1) c.col[i] = MB_PANEL(hue565((uint8_t)(((x - STRIP_X0) * 256u + 60u) / 120u)));
     }
-    return mb_pixels(c.x0, ENV_Y0, ENV_BW, ENV_Y1 - ENV_Y0 + 1u, env_px, &c) ? MS_PAINT_DONE : MS_PAINT_FAILED;
+    return mb_rows(c.x0, ENV_Y0, ENV_BW, ENV_Y1 - ENV_Y0 + 1u, env_row, &c) ? MS_PAINT_DONE : MS_PAINT_FAILED;
 }
 
 /* The value, centred in its 10 big cells. */
