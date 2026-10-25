@@ -27,14 +27,13 @@
 #define MT_TRI_R        "\x86"       /* ▶ a row that opens a page */
 #define MT_CURSOR       "\x87"       /* the selected row's, in its lead: columns 0-2 */
 #define MT_WRENCH       "\x88\x89"   /* before "Configuration" */
-#define MT_CHECK_CIRCLE "\x8a\x8b"   /* the saved option */
-#define MT_CHECK_BOX    "\x8c\x8d"   /* its fallback */
-#define MT_I_POWER      "\x8e"       /* the top level's icons */
-#define MT_I_CLOCK      "\x8f\x90"
-#define MT_I_DIAG       "\x91"
-#define MT_I_HELP       "\x92\x93"
-#define MT_I_ABOUT      "\x94\x95"
-#define MT_I_EXIT       "\x96"
+#define MT_CHECK_BOX    "\x8a\x8b"   /* the saved option */
+#define MT_I_POWER      "\x8c"       /* the top level's icons, and its sections' titles' */
+#define MT_I_CLOCK      "\x8d\x8e"
+#define MT_I_DIAG       "\x8f"
+#define MT_I_HELP       "\x90\x91"
+#define MT_I_ABOUT      "\x92\x93"
+#define MT_I_EXIT       "\x94"
 
 /* A line as a slot paints it: `lead` pixels, then `cells` glyph cells (the
  * string, padded with spaces, codes the face hasn't shown as '?'), then

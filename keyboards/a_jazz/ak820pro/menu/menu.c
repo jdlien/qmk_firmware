@@ -82,7 +82,7 @@ static const char *icon_of(uint8_t node) {
 
 /* --- The palette ------------------------------------------------------------- */
 #if defined(AK820_DEV_HOOKS) || defined(MENU_HOST_TEST)
-static uint16_t pal[MP_N] = {MENU_LIT, MENU_DIM, MENU_LEAVE, MENU_WHITE, MENU_GREY, MENU_TRACK};
+static uint16_t pal[MP_N] = {MENU_LIT, MENU_DIM, MENU_LEAVE, MENU_WHITE, MENU_GREY, MENU_TRACK, MENU_CURSOR};
 bool menu_set_color(uint8_t i, uint16_t c) {
     if (i >= MP_N) return false;
     pal[i] = c;
@@ -96,19 +96,10 @@ uint32_t menu_compose_max_ticks(bool reset) {
 }
 #    define COMPOSE_T0() uint32_t ct0_ = mb_now_ticks()
 #    define COMPOSE_T1() do { uint32_t d_ = mb_now_ticks() - ct0_; if (d_ > compose_max) compose_max = d_; } while (0)
-/* The saved option's mark: 0 the circled check, 1 the squared one (JD, 10-24:
- * the circle, unless it renders badly on the panel); op 27 sub 14. */
-static uint8_t check_style;
-bool menu_set_check(uint8_t style) {
-    if (style > 1) return false;
-    check_style = style;
-    return true;
-}
 #else
-static const uint16_t pal[MP_N] = {MENU_LIT, MENU_DIM, MENU_LEAVE, MENU_WHITE, MENU_GREY, MENU_TRACK};
+static const uint16_t pal[MP_N] = {MENU_LIT, MENU_DIM, MENU_LEAVE, MENU_WHITE, MENU_GREY, MENU_TRACK, MENU_CURSOR};
 #    define COMPOSE_T0() ((void)0)
 #    define COMPOSE_T1() ((void)0)
-#    define check_style 0u
 #endif
 uint16_t menu_color(uint8_t i) { return i < MP_N ? pal[i] : 0; }
 
@@ -171,7 +162,7 @@ static uint8_t screen_title(void) {
 }
 static const char *title_text(uint8_t id) {
     switch (id) {
-        case T_TOP:        return MT_WRENCH " Configuration";   /* JD, 10-24 */
+        case T_TOP:        return "Configuration";
         case T_POWER:      return "Power";
         case T_CLOCK:      return "Clock";
         case T_DIAG:       return "Diagnostics";
@@ -187,6 +178,22 @@ static const char *title_text(uint8_t id) {
     }
     if (id >= T_TOPIC0 && id < T_TOPIC0 + 4) return menu_help_titles[id - T_TOPIC0];
     return "";
+}
+/* A heading's icon, before its text (JD, 10-24): the wrench on the top level,
+ * and a section's own on every screen inside it ("keep the consistency").
+ * The flashes and the hints are messages, not headings: none. */
+static const char *title_icon(uint8_t id) {
+    if (id == T_TOP) return MT_WRENCH " ";   /* it inks all 12 columns: a space */
+    if (id >= T_TOPIC0 && id < T_TOPIC0 + 4) return icon_of(N_HELP);
+    switch (id) {
+        case T_POWER: return icon_of(N_POWER);
+        case T_CLOCK: return icon_of(N_CLOCK);
+        case T_DIAG:
+        case T_RESET: return icon_of(N_DIAG);
+        case T_HELP:  return icon_of(N_HELP);
+        case T_ABOUT: return icon_of(N_ABOUT);
+        default:      return "";
+    }
 }
 
 /* --- About ------------------------------------------------------------------ */
@@ -235,12 +242,14 @@ static void about_line(uint8_t line, char *out, size_t sz) {
 /* --- The list geometry (C8): 0 the title, 1 the separator, 2 the scrollbar,
  * 3-10 the rows. The scrollbar's slot comes before the rows so a page step
  * shows the new position first, then the text flows in (JD, 10-24: it moved
- * only after all the text, a second or two). A row is one slot of two chunks
- * (half rows, JD: by efficiency). Every text slot's 20 cells are x 4-123 and
- * its 1 px trail x 124; its lead is x 3 for the title and the confirm's
- * lines, and x 0-3 for a list row: the cursor's three columns and its 1 px
- * gap (JD, 10-24: x 0-2 were black, so nothing moved). Chunk 0 is the lead
- * and cells 0-9, chunk 1 cells 10-19 and the trail. */
+ * only after all the text, a second or two). A row is one slot in half rows
+ * (JD: by efficiency). Every text slot's 20 cells are x 4-123 and its 1 px
+ * trail x 124; its lead is x 3 for the title and the confirm's lines, and x
+ * 0-3 for a list row: the cursor's three columns and its 1 px gap (JD, 10-24:
+ * x 0-2 were black, so nothing moved). The title's chunks: the lead and cells
+ * 0-9, then cells 10-19 and the trail. A row's: its lead first, alone (the
+ * cursor has its own colour: JD, 10-24, it "kinda blends into" a lit icon;
+ * one piece, 112 B), then cells 0-9, then cells 10-19 and the trail. */
 #define S_TITLE 0
 #define S_SEP   1
 #define S_BAR   2
@@ -249,8 +258,8 @@ static void about_line(uint8_t line, char *out, size_t sz) {
 #define ROW_H   14
 #define TEXT_X  4
 #define ROW_LEAD 4
-#define CHUNK_W(lead, c) ((uint16_t)((c) ? 10u * MT_CELL_W + 1u : (lead) + 10u * MT_CELL_W))
-#define CHUNK_MAX CHUNK_W(ROW_LEAD, 0)   /* 64 */
+#define HALF_W  (10u * MT_CELL_W)   /* ten cells */
+#define CHUNK_MAX (HALF_W + 1u)     /* 61: a lead or a trail pixel with them */
 #define BAR_X   125
 #define BAR_Y0  15
 #define BAR_H   (MENU_ROWS * ROW_H)
@@ -317,7 +326,7 @@ static void row_text(const row_t *x, char *out) {
         memcpy(out, icon, 2);
         at = 2;
     } else if (x->node >= N_POW0 && x->node <= N_CLK3) {   /* an option: the saved one's check in cells 0-1 */
-        if (x->bullet) memcpy(out, check_style ? MT_CHECK_BOX : MT_CHECK_CIRCLE, 2);
+        if (x->bullet) memcpy(out, MT_CHECK_BOX, 2);       /* JD, 10-24: the square; the circle "doesn't look good" */
         at = 2;                                            /* in line with "◀ Back" */
     }
     size_t ln = strlen(label), vn = strlen(value);
@@ -362,32 +371,46 @@ static uint16_t l_sig(uint8_t s) {
     row_t x = row_at((uint8_t)(s - S_ROW0));
     return row_sig(&x);
 }
-static uint8_t l_chunks(uint8_t s) { return (s == S_SEP || s == S_BAR) ? 1 : 2; }
+static bool    is_row(uint8_t s) { return s >= S_ROW0; }
+static uint8_t l_chunks(uint8_t s) { return (s == S_SEP || s == S_BAR) ? 1 : is_row(s) ? 3 : 2; }
 static uint8_t rows_per_piece(void) { return (uint8_t)(MB_PASS_BYTES / (CHUNK_MAX * 2u)); }   /* 4 */
 static uint8_t l_pieces(uint8_t s, uint8_t c) {
-    (void)c;
-    if (s == S_SEP || s == S_BAR) return 1;
+    if (s == S_SEP || s == S_BAR || (is_row(s) && c == 0)) return 1;   /* a row's lead: every pixel row at once */
     uint8_t r = rows_per_piece();
     return (uint8_t)((MT_CELL_H + r - 1u) / r);
 }
 _Static_assert(MB_PASS_BYTES / (CHUNK_MAX * 2u) >= 1 && (MB_PASS_BYTES / (CHUNK_MAX * 2u)) * ((CHUNK_MAX + 7u) / 8u) <= BITS_MAX,
                "a half-row piece: whole pixel rows, its bits in the buffer");
+_Static_assert(ROW_LEAD * MT_CELL_H * 2u <= MB_PASS_BYTES && ROW_LEAD <= 8u && MT_CELL_H <= BITS_MAX, "a row's lead: one piece");
 
-/* One piece of a 20-cell text slot at y with a `lead` px lead (the cursor's
- * glyph in it, or 0): chunk c's half, piece p's rows. */
-static ms_paint_t text_piece(const char *cells, uint16_t y, uint8_t lead, uint8_t cursor, uint8_t c, uint8_t p, uint16_t fg) {
+/* One piece of a 20-cell text slot at y: chunk c, piece p's pixel rows. A
+ * row (`row`) has the 4 px lead, with `cursor` (a code, or 0) in it in
+ * `cursor_fg`; the title and the confirm's lines a 1 px one. */
+static ms_paint_t text_piece(const char *cells, uint16_t y, bool row, uint8_t cursor, uint16_t cursor_fg, uint8_t c,
+                             uint8_t p, uint16_t fg) {
     COMPOSE_T0();
+    const uint8_t  lead = row ? ROW_LEAD : 1u;
     mt_line_t      l    = {cells, 20, lead, 1, false, false, cursor};
+    const bool     lc   = row && c == 0;   /* the row's lead */
+    uint16_t       c0, w;                  /* the chunk's line columns, [c0, c0 + w) */
+    if (!row) {                            /* [0, 61), [61, 122) */
+        c0 = c ? (uint16_t)(lead + HALF_W) : 0u;
+        w  = c ? (uint16_t)(HALF_W + 1u) : (uint16_t)(lead + HALF_W);
+    } else if (lc) {                       /* [0, 4) */
+        c0 = 0;
+        w  = lead;
+    } else {                               /* [4, 64), [64, 125) */
+        c0 = c == 1 ? lead : (uint16_t)(lead + HALF_W);
+        w  = c == 1 ? (uint16_t)HALF_W : (uint16_t)(HALF_W + 1u);
+    }
     const uint8_t  rpp  = rows_per_piece();
-    const uint8_t  r0   = (uint8_t)(p * rpp);
-    const uint8_t  rows = (uint8_t)(r0 + rpp > MT_CELL_H ? MT_CELL_H - r0 : rpp);
-    const uint16_t w    = CHUNK_W(lead, c);
-    const uint16_t c0   = c ? CHUNK_W(lead, 0) : 0;
+    const uint8_t  r0   = lc ? 0 : (uint8_t)(p * rpp);
+    const uint8_t  rows = lc ? MT_CELL_H : (uint8_t)(r0 + rpp > MT_CELL_H ? MT_CELL_H - r0 : rpp);
     const uint8_t  st   = (uint8_t)((w + 7u) / 8u);
     uint8_t        bits[BITS_MAX];
     mt_bits(&l, c0, w, r0, rows, bits, st);
     COMPOSE_T1();
-    return mb_mono(bits, st, (uint16_t)(TEXT_X - lead + c0), (uint16_t)(y + r0), w, rows, fg, 0)
+    return mb_mono(bits, st, (uint16_t)(TEXT_X - lead + c0), (uint16_t)(y + r0), w, rows, lc ? cursor_fg : fg, 0)
                ? MS_PAINT_DONE : MS_PAINT_FAILED;
 }
 
@@ -408,10 +431,11 @@ static ms_paint_t l_paint(uint8_t s, uint8_t c, uint8_t p) {
     if (s == S_TITLE) {
         memset(cells, ' ', 20);
         cells[20]      = '\0';
-        const char *tt = title_text(title_id);
-        size_t      n  = strlen(tt);
-        memcpy(cells, tt, n > 20 ? 20 : n);
-        return text_piece(cells, 0, 1, 0, c, p, pal[MP_WHITE]);
+        const char *ic = title_icon(title_id), *tt = title_text(title_id);
+        size_t      ni = strlen(ic), n = strlen(tt);
+        memcpy(cells, ic, ni);
+        memcpy(cells + ni, tt, n > 20 - ni ? 20 - ni : n);
+        return text_piece(cells, 0, false, 0, 0, c, p, pal[MP_WHITE]);
     }
     row_t x = row_at((uint8_t)(s - S_ROW0));
     row_text(&x, cells);
@@ -419,9 +443,9 @@ static ms_paint_t l_paint(uint8_t s, uint8_t c, uint8_t p) {
                 : x.lit              ? pal[MP_LIT]
                 : (x.node == N_BACK || x.node == N_EXIT) ? pal[MP_LEAVE]
                                      : pal[MP_DIM];
-    /* The cursor (JD, 10-24): in the lit row's lead, in its colour. */
-    return text_piece(cells, (uint16_t)(ROW_Y0 + (s - S_ROW0) * ROW_H), ROW_LEAD, x.lit ? (uint8_t)MT_CURSOR[0] : 0u,
-                      c, p, fg);
+    /* The cursor (JD, 10-24): in the lit row's lead, in its own colour. */
+    return text_piece(cells, (uint16_t)(ROW_Y0 + (s - S_ROW0) * ROW_H), true, x.lit ? (uint8_t)MT_CURSOR[0] : 0u,
+                      pal[MP_CURSOR], c, p, fg);
 }
 
 static const ms_layout_t L_LIST = {11, l_sig, l_chunks, l_pieces, l_paint, S_ROW0, MENU_ROWS};
@@ -447,7 +471,7 @@ static ms_paint_t c_paint(uint8_t s, uint8_t c, uint8_t p) {
     cells[20]      = '\0';
     const char *ln = c_lines[confirm_page & 1u][s - 2u];
     memcpy(cells, ln, strlen(ln));
-    return text_piece(cells, c_y[s - 2u], 1, 0, c, p, pal[MP_WHITE]);
+    return text_piece(cells, c_y[s - 2u], false, 0, 0, c, p, pal[MP_WHITE]);
 }
 static const ms_layout_t L_CONFIRM = {6, c_sig, c_chunks, c_pieces, c_paint, 0, 0};
 

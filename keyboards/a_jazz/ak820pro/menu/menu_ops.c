@@ -280,9 +280,8 @@ bool menu_ops_op27(uint8_t *d, uint32_t now) {
         put16(&d[14], ticks_to_us16(comp));
         return true;
     }
-    if (sub == 13 || sub == 14) {   /* 13: a menu colour, live: [5] the palette index, [6..7] RGB565. 14: the
-                                     * check mark, [5] 0 the circle, 1 the square. The menu repaints. */
-        bool ok = sub == 13 ? menu_set_color(d[5], (uint16_t)(d[6] | (d[7] << 8))) : menu_set_check(d[5]);
+    if (sub == 13) {   /* a menu colour, live: [5] the palette index, [6..7] RGB565; the menu repaints */
+        bool ok = menu_set_color(d[5], (uint16_t)(d[6] | (d[7] << 8)));
         if (ok && OWNER_MENU_OPEN() && menu_kind == MK_MENU) {
             menu_invalidate();
             ms_retarget();
