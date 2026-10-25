@@ -35,7 +35,7 @@ enum {
     N_LOCKS, N_CHGL,                                            /* 37-38: Indicators' rows */
     N_CONNINFO,                                                 /* 39: P3, Connection off BT */
     N_BT0, N_BT1, N_BT2,                                        /* 40-42: Connection's slots */
-    N_PAIRNOW,                                                  /* 43: "Pair a device", the current slot (JD, 10-25) */
+    N_PAIRNOW,                                                  /* 43: "Pair device to BT n", the current slot (JD, 10-25) */
     N_PAIRING,                                                  /* 44: the Pairing page, its slot in the frame's cursor */
     N_COUNT
 };
@@ -66,11 +66,14 @@ static const char *const link_words[5] = {"", "Trying", "Pair", "Linked", "Faile
 /* The current slot's icon in its check box's cells, by the same state (JD,
  * 10-25: "a green checkmark beside Linked ... red x in a circle for
  * Failed"; the box stays, green): idle, linking, advertising, linked,
- * failed. Its colour, fixed (0: the row's own); RGB565. */
+ * failed. Its colour, fixed; RGB565. The box is green, as on every page. */
 static const char *const link_icons[5]   = {MT_CHECK_BOX, MT_I_WAIT, MT_I_CONN, MT_CHECK_BOX, MT_I_FAIL};
-static const uint16_t    link_colour[5]  = {0, 0x9492u /* #909090 */, 0x3CFFu /* #3C9CFF */, 0x468Cu /* #40D060 */,
+static const uint16_t    link_colour[5]  = {MENU_SAVED, 0x9492u /* #909090 */, 0x3CFFu /* #3C9CFF */, MENU_SAVED,
                                             0xFACBu /* #FF5A5A */};
 static const char *const slot_names[3] = {"Bluetooth 1", "Bluetooth 2", "Bluetooth 3"};
+/* Pair a device's row, by the slot it pairs (JD, 10-25: "Pair (a )device to
+ * BT N"; with the "a" it's 21 cells). */
+static const char *const pair_labels[3] = {"Pair device to BT 1", "Pair device to BT 2", "Pair device to BT 3"};
 
 /* The live effect uses speed as its second colour (Alphas/Mods): Lighting's
  * row and editor are Second color then, not Speed (P1b). */
@@ -105,7 +108,6 @@ static const char *label_of(uint8_t node) {
         case N_CONN:   return "Connection";
         case N_LOCKS:  return "Lock lights";
         case N_CHGL:   return "Charging";   /* the mockup's row; its editor's title is "Charging light" */
-        case N_PAIRNOW: return "Pair a device";
         default: break;
     }
     if (node >= N_BT0 && node <= N_BT2) return slot_names[node - N_BT0];
@@ -239,6 +241,9 @@ static bool is_list(uint8_t node) {
 static bool is_bt_screen(uint8_t node) { return node == N_CONN || node == N_PAIRING; }   /* P3: on BT only */
 static bool is_preview(uint8_t node) { return node == N_EFFECT || node == N_LIGHTS; }   /* P1b's previewing choices */
 static bool is_choice(uint8_t node) { return node == N_POWER || node == N_CLOCK || is_preview(node); }
+static bool is_option(uint8_t node) {   /* a row a check box marks: a choice's option, or a slot (P3) */
+    return (node >= N_POW0 && node <= N_CLK3) || node == N_EFFOPT || node == N_LTSOPT || (node >= N_BT0 && node <= N_BT2);
+}
 static bool is_ind_editor(uint8_t node) { return node == N_LOCKS || node == N_CHGL; }   /* P2a */
 static bool is_editor(uint8_t node) { return node == N_SCREEN || (node >= N_BRIGHT && node <= N_SPEED) || is_ind_editor(node); }
 static bool is_confirm(uint8_t node) {   /* the confirm geometry's pages */
@@ -592,13 +597,13 @@ static void row_text(const row_t *x, char *out) {
     if (x->kind != RK_ITEM) return;
     const char *label = x->node == N_EFFOPT   ? env_effect_name(x->val)
                       : x->node == N_LTSOPT   ? (x->val ? "On" : "Off")
+                      : x->node == N_PAIRNOW  ? pair_labels[x->val % 3u]
                                               : label_of(x->node);
     const char *value = "";
     if (x->node == N_POWER) value = power_short[x->val & 3u];
     else if (x->node == N_CLOCK) value = clock_short_by_enum[x->val & 3u];
     else if (x->node == N_CONN) value = link_names[x->val % 5u];          /* P3 */
     else if (x->node >= N_BT0 && x->node <= N_BT2) value = link_words[x->val % 5u];
-    else if (x->node == N_PAIRNOW) value = link_names[2u + x->val % 3u];   /* "BT 2": pairing takes over that slot */
     else if (x->node == N_DIAG || x->node == N_HELP || x->node == N_ABOUT || x->node == N_HEALTH ||
              x->node == N_CAMERA || x->node == N_RESET || is_topic(x->node) || x->node == N_LIGHT || x->node == N_BOOT ||
              x->node == N_IND)
@@ -608,8 +613,7 @@ static void row_text(const row_t *x, char *out) {
     if (icon) {
         memcpy(out, icon, 2);
         at = 2;
-    } else if ((x->node >= N_POW0 && x->node <= N_CLK3) || x->node == N_EFFOPT || x->node == N_LTSOPT ||
-               (x->node >= N_BT0 && x->node <= N_BT2)) {   /* an option: the saved one's check in cells 0-1 */
+    } else if (is_option(x->node)) {                       /* an option: the saved one's check in cells 0-1 */
         if (x->bullet)   /* JD, 10-24: the square; the circle "doesn't look good". P3: a slot's, by its link */
             memcpy(out, x->node >= N_BT0 && x->node <= N_BT2 ? link_icons[x->val % 5u] : MT_CHECK_BOX, 2);
         at = 2;                                            /* in line with "◀ Back" */
@@ -666,11 +670,13 @@ static uint16_t l_sig(uint8_t s) {
     return row_sig(&x);
 }
 static bool    is_row(uint8_t s) { return s >= S_ROW0; }
-/* P3: a row whose cells 0-1 take a colour of their own (the current slot's
- * status icon): 0 for none. Read from the row's content, so it follows the
- * signature (the state is its val, the current slot its bullet). */
+/* P3: a row whose cells 0-1 take a colour of their own (the saved option's
+ * green box; the current slot's status icon): 0 for none. Read from the row's
+ * content, so it follows the signature (the state is its val, the saved
+ * option or current slot its bullet). */
 static uint16_t row_icon_colour(const row_t *x) {
-    return x->kind == RK_ITEM && x->bullet && x->node >= N_BT0 && x->node <= N_BT2 ? link_colour[x->val % 5u] : 0u;
+    if (x->kind != RK_ITEM || !x->bullet || !is_option(x->node)) return 0u;
+    return x->node >= N_BT0 && x->node <= N_BT2 ? link_colour[x->val % 5u] : MENU_SAVED;
 }
 static bool row_split(uint8_t s) {
     row_t x = row_at((uint8_t)(s - S_ROW0));

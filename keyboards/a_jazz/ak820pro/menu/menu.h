@@ -49,6 +49,7 @@ bool     menu_set_color(uint8_t i, uint16_t rgb565);   /* false: no such colour 
 #define MENU_GREY      0x632Cu   /* the separator, #646464 */
 #define MENU_TRACK     0x4228u   /* the scrollbar's track, #464646 */
 #define MENU_CURSOR    0xA514u   /* the cursor, #A5A2A5: a neutral grey a shade under the dim rows (JD, 10-24: in the lit colour it "blends into" a lit icon) */
+#define MENU_SAVED     0x468Cu   /* the saved option's check box, #40D060, on every page (JD, 10-25: "green everywhere") */
 #define MENU_FLASH_MS  1300u
 #define MENU_HINT_FROM 4000u     /* the hints after 4 s idle: "Turn + Click Knob" 1 s, */
 #define MENU_HINT_EVERY 6000u    /* then "Hold to Go Back" 1 s (JD, 10-24), every 6 s */
