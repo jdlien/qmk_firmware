@@ -55,7 +55,7 @@ void env_health_reset(void) {
 
 /* About's snapshot (P1a): compact facts, frozen while the page shows. */
 void env_about(env_about_t *a) {
-    a->uptime_s = timer_read32() / 1000u;
+    a->uptime_s = rtc_seconds_since_boot();   /* slept seconds included; timer_read32 stops asleep */
     a->batt_pm  = battery_level_permille();   /* 0xFFFF unknown */
     uint16_t mv = battery_pack_mv();
     a->pack_mv  = mv ? mv : ENV_UNKNOWN;       /* its unknown is 0 */

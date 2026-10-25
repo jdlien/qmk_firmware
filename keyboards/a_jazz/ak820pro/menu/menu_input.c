@@ -47,7 +47,7 @@ void mi_init(void) {
     latch = MI_LATCH_NONE;
     dropped = 0;
     last_input = 0;
-    syn_hold = syn_fired = owed = syn_lost = false;
+    syn_hold = syn_fired = owed = syn_lost = syn_back_taken = false;
     syn_latch = MI_LATCH_NONE;
     syn_start = 0;
     syn_ms = 0;

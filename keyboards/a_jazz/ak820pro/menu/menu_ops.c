@@ -26,9 +26,10 @@ static uint8_t losses_seen;
  * fixture while op 27's arming is set (the S0/S1 scripts); op 27 sub 4 the
  * fixture, sub 11 the menu. */
 enum { MK_NONE = 0, MK_FIXTURE, MK_MENU };
-static uint8_t menu_kind = MK_NONE;
+static uint8_t menu_kind   = MK_NONE;
+static uint8_t report_kind = MK_FIXTURE;   /* op 27 sub 5's: the last session's, kept after it closes */
 static void kind_for_new_session(uint8_t k) {
-    if (po_session() == SESSION_NONE) menu_kind = k;
+    if (po_session() == SESSION_NONE) menu_kind = report_kind = k;
 }
 
 bool menu_enabled(void) {
@@ -173,7 +174,7 @@ static void op27_read(uint8_t *d) {
     put16(&d[10], po_gen());
     d[12] = (uint8_t)po_phase();
     d[13] = po_damaged();
-    if (menu_kind == MK_MENU) {   /* 16 + the node showing; the cursor, a topic's top, the confirm's page */
+    if (report_kind == MK_MENU) {   /* 16 + the node showing; the cursor, a topic's top, the confirm's page */
         d[14] = OWNER_MENU_OPEN() ? menu_screen_id() : 0;
         d[15] = po_owner() == PANEL_MENU ? menu_cursor() : 0xFFu;
     } else {

@@ -119,6 +119,13 @@ static void new_target(void) {
 }
 
 void ms_set_layout(const ms_layout_t *l, bool fresh) {
+    /* The discarded slot's op is abandoned, so the new layout's first op
+     * takes a fresh timing origin (codex, P1a's code review: it was counted
+     * as the old op's untimed continuation). An op whose DMA is still flying
+     * keeps its state: it ends during the clear's first band, which quiesces
+     * the bus, before the new layout paints anything. */
+    settle_ops();
+    if (!ops_inflight) op_started = op_untimed = false;
     layout = l;
     /* A clear in progress is never restarted by navigation: it finishes its
      * remaining bands. Opening, or coming back from another owner, sweeps

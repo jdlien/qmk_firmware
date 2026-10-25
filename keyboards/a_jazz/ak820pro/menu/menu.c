@@ -501,8 +501,25 @@ static menu_result_t activate(uint32_t now) {
     }
 }
 
+/* The latched model, read fresh (Fn+B, Fn+C). True: it changed. */
+static bool sync_model(void) {
+    uint8_t p = env_power_mode(), c = env_clock_mode();
+    if (p == model_power && c == model_clock) return false;
+    model_power = p;
+    model_clock = c;
+    return true;
+}
+
 menu_result_t menu_input(int8_t turns, mi_latch_t latch, uint32_t now) {
     if (!depth) return MENU_NONE;
+    /* Before navigation reads it (codex, P1a's code review: a choice opened
+     * on the previous pass's saved value, and a click committed it); and the
+     * input is knob input, so the hint's idle time restarts here, not a tick
+     * later (no target for the hint between). An open choice's cursor stays
+     * where it is: only its bullet follows the model. */
+    bool changed = sync_model();
+    last_idle    = 0;
+    uint8_t g0   = ms_tgen();
     frame_t *f = cur();
     if (turns) {
         if (is_list(f->node) || is_choice(f->node)) {
@@ -543,6 +560,7 @@ menu_result_t menu_input(int8_t turns, mi_latch_t latch, uint32_t now) {
         if (is_choice(f->node) || (f->node == N_RESET && confirm_page == 0)) flash(T_CANCELLED, now);
         return pop(now);
     }
+    if (changed && ms_tgen() == g0) ms_retarget();   /* nothing navigated: the model's change is the target */
     return MENU_NONE;
 }
 
@@ -558,13 +576,7 @@ static void retitle(uint32_t now) { title_id = want_title(now, last_idle); }
 void menu_tick(uint32_t now, uint32_t idle_ms) {
     if (!depth) return;
     last_idle  = idle_ms;
-    bool moved = false;
-    uint8_t p = env_power_mode(), c = env_clock_mode();
-    if (p != model_power || c != model_clock) {   /* Fn+B, Fn+C, while the menu shows */
-        model_power = p;
-        model_clock = c;
-        moved       = true;
-    }
+    bool moved = sync_model();   /* Fn+B, Fn+C, while the menu shows */
     uint8_t t = want_title(now, idle_ms);
     if (t != title_id) {
         title_id = t;
