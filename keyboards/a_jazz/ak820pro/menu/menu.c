@@ -35,9 +35,8 @@ enum {
     N_LOCKS, N_CHGL,                                            /* 37-38: Indicators' rows */
     N_CONNINFO,                                                 /* 39: P3, Connection off BT */
     N_BT0, N_BT1, N_BT2,                                        /* 40-42: Connection's slots */
-    N_PAIRLIST,                                                 /* 43: "Pair a device" */
-    N_PAIR0, N_PAIR1, N_PAIR2,                                  /* 44-46: its slots */
-    N_PAIRING,                                                  /* 47: the Pairing page, its slot in the frame's cursor */
+    N_PAIRNOW,                                                  /* 43: "Pair a device", the current slot (JD, 10-25) */
+    N_PAIRING,                                                  /* 44: the Pairing page, its slot in the frame's cursor */
     N_COUNT
 };
 _Static_assert(N_COUNT <= 63, "a row's node is 6 bits");
@@ -47,8 +46,7 @@ _Static_assert(MENU_HELP_TOPICS == 4, "Help's four topics");
 static const uint8_t top_rows[]   = {N_LIGHT, N_SCREEN, N_CONN, N_POWER, N_IND, N_CLOCK, N_DIAG, N_BOOT, N_HELP, N_ABOUT, N_EXIT};
 static const uint8_t light_rows[] = {N_BACK, N_EFFECT, N_BRIGHT, N_HUE, N_SAT, N_SPEED, N_LIGHTS};
 static const uint8_t ind_rows[]   = {N_BACK, N_LOCKS, N_CHGL};
-static const uint8_t conn_rows[]  = {N_BACK, N_BT0, N_BT1, N_BT2, N_PAIRLIST};   /* P3: on BT */
-static const uint8_t pair_rows[]  = {N_BACK, N_PAIR0, N_PAIR1, N_PAIR2};
+static const uint8_t conn_rows[]  = {N_BACK, N_BT0, N_BT1, N_BT2, N_PAIRNOW};   /* P3: on BT */
 static const uint8_t diag_rows[]  = {N_BACK, N_HEALTH, N_CAMERA, N_RESET};
 static const uint8_t help_rows[]  = {N_BACK, N_TOPIC0, N_TOPIC1, N_TOPIC2, N_TOPIC3};
 static const uint8_t power_rows[] = {N_BACK, N_POW0, N_POW1, N_POW2, N_POW3};
@@ -100,11 +98,10 @@ static const char *label_of(uint8_t node) {
         case N_CONN:   return "Connection";
         case N_LOCKS:  return "Lock lights";
         case N_CHGL:   return "Charging";   /* the mockup's row; its editor's title is "Charging light" */
-        case N_PAIRLIST: return "Pair a device";
+        case N_PAIRNOW: return "Pair a device";
         default: break;
     }
     if (node >= N_BT0 && node <= N_BT2) return slot_names[node - N_BT0];
-    if (node >= N_PAIR0 && node <= N_PAIR2) return slot_names[node - N_PAIR0];
     if (node >= N_TOPIC0 && node <= N_TOPIC3) return menu_help_titles[node - N_TOPIC0];
     if (node >= N_POW0 && node <= N_POW3) return power_full[node - N_POW0];
     if (node >= N_CLK0 && node <= N_CLK3) return clock_full[node - N_CLK0];
@@ -195,7 +192,6 @@ static const uint8_t *rows_of(uint8_t node, uint8_t *n) {
         case N_LIGHT: *n = sizeof light_rows; return light_rows;
         case N_IND:   *n = sizeof ind_rows;   return ind_rows;
         case N_CONN:  *n = sizeof conn_rows;  return conn_rows;
-        case N_PAIRLIST: *n = sizeof pair_rows; return pair_rows;
         default:      *n = 0;                 return 0;
     }
 }
@@ -231,10 +227,9 @@ static uint8_t row_index(uint8_t list, uint8_t node) {
 }
 static bool is_topic(uint8_t node) { return node >= N_TOPIC0 && node <= N_TOPIC3; }
 static bool is_list(uint8_t node) {
-    return node == N_TOP || node == N_DIAG || node == N_HELP || node == N_LIGHT || node == N_IND || node == N_CONN ||
-           node == N_PAIRLIST;
+    return node == N_TOP || node == N_DIAG || node == N_HELP || node == N_LIGHT || node == N_IND || node == N_CONN;
 }
-static bool is_bt_screen(uint8_t node) { return node == N_CONN || node == N_PAIRLIST || node == N_PAIRING; }   /* P3: on BT only */
+static bool is_bt_screen(uint8_t node) { return node == N_CONN || node == N_PAIRING; }   /* P3: on BT only */
 static bool is_preview(uint8_t node) { return node == N_EFFECT || node == N_LIGHTS; }   /* P1b's previewing choices */
 static bool is_choice(uint8_t node) { return node == N_POWER || node == N_CLOCK || is_preview(node); }
 static bool is_ind_editor(uint8_t node) { return node == N_LOCKS || node == N_CHGL; }   /* P2a */
@@ -286,8 +281,8 @@ enum { T_TOP = 1, T_POWER, T_CLOCK, T_DIAG, T_HELP, T_ABOUT, T_TOPIC0, T_RESET =
        T_LIGHT, T_SCREEN, T_EFFECT, T_BRIGHT, T_HUE, T_SAT, T_SPEED, T_SECOND, T_LIGHTS,   /* 21-29: P1b */
        T_BOOT, T_BOOT_BUSY,                                                                 /* 30-31 */
        T_IND, T_CONN, T_LOCKS, T_CHGL,                                                      /* 32-35: P2a */
-       T_PAIRLIST, T_PAIRING, T_NOW_BT1, T_NOW_BT2, T_NOW_BT3,                              /* 36-40: P3 */
-       T_ALREADY_BT1, T_ALREADY_BT2, T_ALREADY_BT3, T_PAIR_STOPPED };                       /* 41-44 */
+       T_PAIRING, T_NOW_BT1, T_NOW_BT2, T_NOW_BT3,                                          /* 36-39: P3 */
+       T_ALREADY_BT1, T_ALREADY_BT2, T_ALREADY_BT3, T_PAIR_STOPPED };                       /* 40-43 */
 _Static_assert(T_RESET == 11, "the title ids: the design's table");
 
 static uint8_t screen_title(void) {
@@ -314,7 +309,6 @@ static uint8_t screen_title(void) {
         case N_CONNINFO: return T_CONN;
         case N_LOCKS:  return T_LOCKS;
         case N_CHGL:   return T_CHGL;
-        case N_PAIRLIST: return T_PAIRLIST;
         case N_PAIRING:  return T_PAIRING;
         default:      return is_topic(n) ? (uint8_t)(T_TOPIC0 + (n - N_TOPIC0)) : T_TOP;
     }
@@ -348,7 +342,6 @@ static const char *title_text(uint8_t id) {
         case T_CONN:       return "Connection";
         case T_LOCKS:      return "Lock lights";
         case T_CHGL:       return "Charging light";
-        case T_PAIRLIST:   return "Pair a device";
         case T_PAIRING:    return "Pairing";
         case T_NOW_BT1:    return "Now on BT 1";
         case T_NOW_BT2:    return "Now on BT 2";
@@ -381,7 +374,6 @@ static const char *title_icon(uint8_t id) {
         case T_LOCKS:
         case T_CHGL:   return icon_of(N_IND);
         case T_CONN:
-        case T_PAIRLIST:
         case T_PAIRING: return icon_of(N_CONN);
         default:      return id >= T_LIGHT && id <= T_LIGHTS ? icon_of(N_LIGHT) : "";
     }
@@ -543,6 +535,7 @@ static row_t row_at(uint8_t r) {
     if (x.node == N_POWER) x.val = model_power & 3u;
     else if (x.node == N_CLOCK) x.val = model_clock & 3u;
     else if (x.node == N_CONN) x.val = link_code();   /* P3: the link, link_names[] */
+    else if (x.node == N_PAIRNOW) x.val = (uint8_t)(link_slot() > 2u ? 2u : link_slot());   /* the slot it pairs */
     else if (x.node >= N_BT0 && x.node <= N_BT2) {   /* the current slot: its check, and its link's word */
         x.bullet = on_bt() && x.node - N_BT0 == link_slot();
         x.val    = x.bullet ? (uint8_t)(link_state() < 5u ? link_state() : 0u) : 0u;
@@ -598,9 +591,10 @@ static void row_text(const row_t *x, char *out) {
     else if (x->node == N_CLOCK) value = clock_short_by_enum[x->val & 3u];
     else if (x->node == N_CONN) value = link_names[x->val % 5u];          /* P3 */
     else if (x->node >= N_BT0 && x->node <= N_BT2) value = link_words[x->val % 5u];
+    else if (x->node == N_PAIRNOW) value = link_names[2u + x->val % 3u];   /* "BT 2": pairing takes over that slot */
     else if (x->node == N_DIAG || x->node == N_HELP || x->node == N_ABOUT || x->node == N_HEALTH ||
              x->node == N_CAMERA || x->node == N_RESET || is_topic(x->node) || x->node == N_LIGHT || x->node == N_BOOT ||
-             x->node == N_IND || x->node == N_PAIRLIST)
+             x->node == N_IND)
         value = MT_TRI_R;                            /* JD, 10-24: ▶ for > */
     size_t      at   = 0;
     const char *icon = icon_of(x->node);
@@ -762,7 +756,7 @@ static const char *const info_lines[4] = {"Switch to BT mode to", "change Blueto
  * written below. The words wait for JD's text pass (MENU-TEXT.md). */
 static const char *const pair_lines[6][3] = {
     {NULL, "Getting ready...", "Click or hold: stop"},
-    {"On the computer, add", NULL, "Click or hold: stop"},   /* the band's exact advertised name */
+    {"On the device, add", NULL, "Click or hold: stop"},   /* JD, 10-25: a phone or an iPad too; the band's exact advertised name */
     {NULL, "connected.", "Click: back"},
     {"Pairing ended.", "", "Click: back"},
     {"Pairing didn't", "start. Try again.", "Click: back"},
@@ -1180,18 +1174,12 @@ static menu_result_t activate(uint32_t now) {
             ms_retarget();
             return MENU_NONE;
         }
-        case N_PAIRLIST:
-            push(node, 1);
-            show(false, false, now);
-            return MENU_NONE;
-        case N_PAIR0:
-        case N_PAIR1:
-        case N_PAIR2: {   /* start it; the page replaces the list (three frames at most), Connection's cursor on the slot */
-            uint8_t slot = (uint8_t)(node - N_PAIR0);
+        case N_PAIRNOW: {   /* the current slot (JD, 10-25), straight to its page; Connection's cursor on its row */
+            uint8_t slot = link_slot() > 2u ? 2u : link_slot();
             env_bt_pair(slot);
             (void)sync_model();
-            stack[depth - 2].cursor = (uint8_t)(1u + slot);
-            *f = (frame_t){N_PAIRING, slot, 0};
+            f->cursor = (uint8_t)(1u + slot);
+            push(N_PAIRING, slot);
             retitle(now);
             ms_set_layout(&L_CONFIRM, false);
             return MENU_NONE;
