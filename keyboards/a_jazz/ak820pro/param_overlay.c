@@ -35,7 +35,7 @@ static bool param_is_repeatable(uint16_t kc) {
         case RM_SATU: case RM_SATD:
         case RM_VALU: case RM_VALD:
         case RM_SPDU: case RM_SPDD:
-        /* LCD backlight, same treatment: 24 levels is too many to tap through. */
+        /* LCD backlight, same treatment: 101 levels (P2b; JD: "1% per press ... the same acceleration we do for lights"). */
         case SCR_UP:  case SCR_DN:
             return true;
         default:

@@ -987,7 +987,7 @@ static int16_t val_of_pct(int16_t p) { return (int16_t)((p * 255 + 50) / 100); }
  * detent is the finest step the value shows (JD, 10-25: "micro-adjustments
  * by one value/percent"): a hue's unit, a level, or the next percentage of
  * a 0-255 value; a fast one is 8% (as fast as the old 20 of 255) or 12 hue
- * units. The Screen's 24 levels are the panel's own: one a detent. */
+ * units. The Screen's levels are 0-100 since P2b, as the indicators'. */
 static void edit_turn(int8_t turns, uint32_t now) {
     bool fast = turns >= 2 || turns <= -2 || (ft_have && (uint32_t)(now - ft_last) < 90u);
     ft_have   = true;
@@ -996,9 +996,9 @@ static void edit_turn(int8_t turns, uint32_t now) {
     int16_t v    = me_value();
     if (is_hue_editor(node))
         v = (int16_t)((v + turns * (fast ? 12 : 1)) & 255);
-    else if (node == N_SCREEN || is_ind_editor(node)) {   /* levels: the Screen's 0-23, the indicators' 0-100 */
+    else if (node == N_SCREEN || is_ind_editor(node)) {   /* levels 0-100: the Screen's, the indicators' */
         int16_t max = e_range_max();
-        v = (int16_t)(v + turns * (node == N_SCREEN || !fast ? 1 : 8));
+        v = (int16_t)(v + turns * (fast ? 8 : 1));
         if (v < 0) v = 0;
         if (v > max) v = max;
     } else {   /* a 0-255 value shown as a percentage */

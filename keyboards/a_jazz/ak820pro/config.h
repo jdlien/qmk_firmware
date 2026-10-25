@@ -270,7 +270,7 @@
 #define EECONFIG_KB_DATA_SIZE    9
 // The battery row in whole percent. Define BATTERY_SHOW_TENTHS for tenths
 // ("85.9%"), the view the 2026-09-28 drain test was calibrated with.
-#define EECONFIG_KB_DATA_VERSION 5
+#define EECONFIG_KB_DATA_VERSION 6   // 6: the LCD level 0-100 (P2b); 5: the indicator levels (P2a)
 
 // Debounce eeconfig flushes from RGB adjustment. Without this QMK writes MCU
 // flash on every single step (~8/s while a key is held), which is both needless
@@ -344,9 +344,9 @@
  * RTC_LOG_EVERY_PASS enabled. */
 #define RTC_PERIOD_INITIAL 33600
 
-// LCD backlight level at boot: index into bkl_duty[] in graphics/display.c.
-// 1 = the dimmest lit step (1/64 duty, ~1.6%), chosen on hardware as "about
-// right for a dark room". 0 would be off; BKL_MAX_LEVEL (11) is full.
+// LCD backlight level at boot: a level 0-100 (P2b; DISPLAY_BRIGHTNESS_DEFAULT,
+// below, is the one in force). 1 = the dimmest lit step (one tick in 48,
+// ~2.1%). 0 would be off; BKL_MAX_LEVEL (100) is full.
 // Not persisted deliberately -- see display_set_brightness().
 /* --- Parameter readout overlay --------------------------------------------
  * Show a setting in the LCD info band while you adjust it: RGB brightness, hue,
@@ -433,11 +433,13 @@
 #define PARAM_OVERLAY
 #define PARAM_OVERLAY_HOLD_MS 2000   /* how long a change stays on screen */
 
-/* Boot brightness, as an index into bkl_duty[] in graphics/display.c (0..9,
- * which the Fn+PgUp/PgDn readout shows as level*100/9 -- so 5 reads "LCD 56%").
- * Level 5 is duty 8/48, i.e. 17% of the actual PWM period; the levels are
- * spaced perceptually, so the index and the duty do not track each other.
+/* Boot brightness, a level 0-100 (P2b, 10-25: indicator_levels.h's table, as
+ * graphics/display.c uses it; the Fn+PgUp/PgDn readout and the menu show the
+ * level as its percentage). 42 is about 5 ticks of 48, the old 24-level
+ * table's level 5 (10% of the PWM period); the levels are spaced
+ * perceptually, so the level and the duty do not track each other.
  *
+ * History: the 10-level table's 5 was duty 8/48. Before that it
  * WAS 1 ("LCD 11%"), chosen in a dark room where the dimmest lit step looked
  * right. Against real content it reads as too dim to be comfortable -- the panel
  * is mostly black anyway, so the lit pixels are a small fraction of the area and
@@ -445,8 +447,10 @@
  * it is still far below the stock always-on-full behaviour.
  *
  * Not persisted: every kb-eeconfig write is an internal-flash program/erase,
- * which is the thing that wedges this board. Change it here, not at runtime. */
-#define DISPLAY_BRIGHTNESS_DEFAULT 5
+ * which is the thing that wedges this board. Change it here, not at runtime.
+ * (Since phase 4.2 the keys' and the menu's level is persisted, deferred and
+ * coalesced; this is the level after a flash.) */
+#define DISPLAY_BRIGHTNESS_DEFAULT 42
 
 // The lock lights' (Caps Lock, Win Lock) default level, 0-100 (indicators.c,
 // indicator_levels.h; the menu's Indicators sets and saves it). They are dimmed

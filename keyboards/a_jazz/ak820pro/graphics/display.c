@@ -192,39 +192,28 @@ bool display_get_power(void) {
  * roughly a power law, so an even duty spread wastes most of its steps at the
  * top where they are indistinguishable and gives nothing usable at the bottom,
  * which is the end that matters in a dark room. */
-#define BKL_PWM_TICKS 48   /* 20000/48 = 417 Hz, floor 1/48 = 2.1%. Sized when
-                            * the tick was losing 23% of its ticks to a priority
-                            * inversion (an effective 15385 Hz -> 320 Hz). The
-                            * tick is now a steady 20000, so there is headroom to
-                            * lengthen this for a dimmer floor if wanted. */
-/* 24 levels (was 10). Every entry is a distinct integer tick count -- the duty
- * resolution is only 0..48, so a longer table has to be checked for collapsed
- * steps, and this one has none.
- *
- * Ratios between adjacent steps run 1.09-1.17 above duty 6, against 1.5-1.78
- * for the old 10-level table: the jumps JD could see are gone. The bottom three
- * (1->2 = +100%, 2->3 = +50%, 3->4 = +33%) are NOT fixable at 48 ticks -- there
- * is no integer between them. Closing those needs a longer BKL_PWM_TICKS, which
- * lowers the switching rate; 96 ticks would give a 1% floor at 208 Hz, and that
- * is close enough to visible flicker that it was ruled out deliberately.
- * Flicker is a worse defect than a coarse first step.
- *
- * The last entry must equal BKL_PWM_TICKS so the top level is full duty;
- * C cannot _Static_assert on an array element, so it is stated here. */
-static const uint8_t bkl_duty[] = {
-     0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11,
-    12, 14, 16, 18, 20, 23, 26, 29, 33, 37, 42, 48,
-};
-#define BKL_MAX_LEVEL ((uint8_t)(sizeof(bkl_duty) / sizeof(bkl_duty[0])) - 1)
-_Static_assert(sizeof(bkl_duty) == 24, "brightness UI documents 24 levels (0..23); resize deliberately");
+/* 101 levels, 0-100 (P2b, plans/CONFIG-MENU-P1-DESIGN.md; JD, 10-25: the
+ * Screen "way too coarse" at 24): the indicators' table and sigma-delta
+ * (indicator_levels.h), on the same 48-tick floor: level 1 is one tick in 48
+ * (BKL_PWM_TICKS: 20000/48 = 417 Hz, floor 1/48 = 2.1%), the old level 1;
+ * 100 is full on; each step x1.04, perceptually even. The old 24-level
+ * table's bottom (1->2 = +100%, 2->3 = +50% in duty) had no integer tick
+ * between its steps; the sigma-delta spreads fractions of a tick, so its
+ * pulses never come further apart than at level 1 and the floor's flicker
+ * is unchanged. The old levels land at round(1 + 99 x ln(ticks) / ln 48):
+ * 5 ticks (the default) is 42. */
+#include "indicator_levels.h"
+#define BKL_PWM_TICKS IND_PWM_TICKS
+#define BKL_MAX_LEVEL ((uint8_t)IND_LEVEL_MAX)
 _Static_assert(BKL_MAX_LEVEL == MENU_LCD_MAX, "the menu's Screen editor: menu/menu.h's MENU_LCD_MAX");
 
 #ifndef DISPLAY_BRIGHTNESS_DEFAULT
 #    define DISPLAY_BRIGHTNESS_DEFAULT BKL_MAX_LEVEL
 #endif
+_Static_assert(DISPLAY_BRIGHTNESS_DEFAULT <= BKL_MAX_LEVEL, "the default is a level 0-100");
 
 static volatile uint8_t bkl_level = DISPLAY_BRIGHTNESS_DEFAULT;
-static volatile uint8_t bkl_phase = 0;
+static uint16_t         bkl_acc;   /* the tick's sigma-delta (ISR only) */
 /* Power-save ceiling on the level (power.c), BKL_NO_CAP when off. A cap, not a
  * setting: the user's level, and its EEPROM copy, stay where they were. */
 #define BKL_NO_CAP 0xFFu
@@ -281,9 +270,9 @@ static inline uint8_t bkl_effective(void) {
 }
 
 void display_backlight_tick(void) {
-    uint8_t duty = bkl_duty[bkl_effective()];
+    uint16_t duty = ind_level_duty[bkl_effective()];
 
-    if (duty >= BKL_PWM_TICKS) {
+    if (duty >= IND_FULL) {
         gpio_write_pin(PANEL_BKL, 1);
         return;
     }
@@ -291,12 +280,7 @@ void display_backlight_tick(void) {
         gpio_write_pin(PANEL_BKL, 0);
         return;
     }
-
-    uint8_t phase = bkl_phase + 1;
-    if (phase >= BKL_PWM_TICKS) phase = 0;
-    bkl_phase = phase;
-
-    gpio_write_pin(PANEL_BKL, phase < duty);
+    gpio_write_pin(PANEL_BKL, ind_sd_step(&bkl_acc, duty));   /* P2b: the duty spread, as the indicators' */
 }
 
 uint8_t display_get_brightness_max(void) {
@@ -330,9 +314,13 @@ void display_backlight_pin_off(void) {
     gpio_write_pin_low(PANEL_BKL);
 }
 
+/* In whole ticks of BKL_PWM_TICKS, 0-48, as battery.c's draw model has always
+ * taken it (P2b: rounded from the fine duty, at most half a tick off, ~0.4 mW;
+ * so battery.c and its host replays keep their scale). */
 uint8_t display_backlight_duty(void) {
-    return bkl_duty[display_backlight_effective()];
+    return (uint8_t)((ind_level_duty[display_backlight_effective()] + 128u) >> 8);
 }
+_Static_assert(IND_FULL == 256u * BKL_PWM_TICKS, "display_backlight_duty(): 1/256 ticks");
 
 void display_brightness_up(void) {
     if (bkl_level < BKL_MAX_LEVEL) display_set_brightness(bkl_level + 1);
@@ -349,7 +337,7 @@ void display_set_power(bool on) {
     /* The ISR hook drives the pin from here on; write it once so power-off takes
      * effect immediately rather than at the next tick. From the effective
      * level, so the menu's session keeps the panel lit through a power-off. */
-    gpio_write_pin(PANEL_BKL, bkl_duty[bkl_effective()] > 0);
+    gpio_write_pin(PANEL_BKL, ind_level_duty[bkl_effective()] > 0);
 }
 
 void display_toggle_power(void) {

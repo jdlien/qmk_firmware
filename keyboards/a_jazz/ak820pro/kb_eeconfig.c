@@ -98,7 +98,8 @@ void kb_eeconfig_set_rtc_period(uint16_t period) {
 }
 
 bool kb_eeconfig_get_lcd_brightness(uint8_t *level) {
-    if (kb_config.lcd_brightness_p1 == 0 || kb_config.lcd_brightness_p1 > 32) {
+    /* P2b: the level is 0-100 (version 6; display.c's BKL_MAX_LEVEL) */
+    if (kb_config.lcd_brightness_p1 == 0 || kb_config.lcd_brightness_p1 > IND_LEVEL_MAX + 1u) {
         return false;   /* unset, or garbage (e.g. the test hook's poke) */
     }
     *level = (uint8_t)(kb_config.lcd_brightness_p1 - 1);
@@ -186,7 +187,7 @@ void kb_eeconfig_test_write(void) {
     /* Force a REAL, IMMEDIATE flash program (the point is to wedge the CPU
      * right after one). The pattern always keeps bit 7 set AND changes the
      * low bits, so every invocation writes a different, ALWAYS-invalid value
-     * (> 32 guard above) -- repeated test runs cannot XOR back to validity.
+     * (> 101 guard above) -- repeated test runs cannot XOR back to validity.
      * The board runs on the compile-time default until the next settled
      * write of any field stores a real value again; the poke itself does not
      * schedule that heal. */

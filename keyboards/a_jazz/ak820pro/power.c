@@ -75,7 +75,7 @@ static const ladder_t ladders[POWER_MODE_COUNT] = {
 /* The dim: the lighting's value capped here, so 100% becomes 25% and a colour
  * keeps its hue (the driver's per-channel scale turned a dim purple red). */
 #define DIM_VAL            64u
-#define SCREEN_DIM_LEVEL    4u   /* of the 0..23 backlight levels; a ceiling */
+#define SCREEN_DIM_LEVEL   37u   /* of the 0..100 backlight levels (P2b: 4.09 ticks, the old 4 of 23 never dimmer); a ceiling */
 #define BACKLIGHT_NO_CAP 0xFFu
 /* Below this level on battery, the lighting follows Power Saver's stages
  * whatever the mode (BATTERY-GAUGE-PLAN.md, "Low battery"). Lighting only:
