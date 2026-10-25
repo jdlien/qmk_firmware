@@ -259,7 +259,12 @@ static uint16_t blockers(void) {
     /* A hard rule, not a timing accident: a lit screen needs the 20 kHz
      * tick, which a sleep stops (plan section 1). */
     if (display_backlight_effective() > 0) b |= DSB_LIT;
-    if (!power_rgb_dark()) b |= DSB_RGB;
+    /* Dark as applied AND as shown. The dark stage's scale reaches the LEDs
+     * only at a render's flush, and where the stage and the sleep share a
+     * time (Balanced, Power saver) they come in the same pass. Asleep the row
+     * ISR keeps its frame, so a wake showed the old dim frame for ~40 ms
+     * until a render replaced it (JD's slow-motion video, 10-24). */
+    if (!power_rgb_dark() || !sn32f2xx_led_committed_dark()) b |= DSB_RGB;
     if (ch582_is_pairing()) b |= DSB_PAIRING;
     if (rc_active) b |= DSB_RECOVERY;
     if (!knob_at_rest()) b |= DSB_KNOB;
@@ -668,6 +673,15 @@ static void recovery_begin(uint8_t reason) {
     battery_sleep_wake();
     ch582_sleep_wake();
     display_sleep_wake();   /* host content expired; the backlight held */
+    /* The ladder's stage now, not at the next 10 Hz tick: the system timer
+     * stood still asleep, so that tick came ~100 ms after the wake, and the
+     * keys stayed dark until it and one render after. No I/O: apply() sets
+     * the caps and restarts the effect, and a notice posted here only sets
+     * the display's flags, painted by its 10 Hz housekeeping after the
+     * waking input. The low cap sees the level from before the sleep until
+     * the gauge step, so a sleep that crossed it lights the keys at the
+     * mode's ceiling for one tick, once a discharge (review, 10-24). */
+    power_task();
     ur_state     = UR_WAIT;
     ur_at        = rc_woke_at;
     ur_fn0       = (uint16_t)(SN_USB->FRMNO & 0x7FFu);
