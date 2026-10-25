@@ -33,7 +33,7 @@ bool          menu_long_wait(void);                       /* P3: the Pairing pag
 
 /* The palette: these defaults, and on dev builds op 27 sub 13 changes one
  * live (JD tunes colours on the panel without a flash a shade). */
-enum { MP_LIT = 0, MP_DIM, MP_LEAVE, MP_WHITE, MP_GREY, MP_TRACK, MP_CURSOR, MP_ICON_LIT, MP_N };
+enum { MP_LIT = 0, MP_DIM, MP_LEAVE, MP_WHITE, MP_GREY, MP_TRACK, MP_CURSOR, MP_N };
 uint16_t menu_color(uint8_t i);
 #if defined(AK820_DEV_HOOKS) || defined(MENU_HOST_TEST)
 bool     menu_set_color(uint8_t i, uint16_t rgb565);   /* false: no such colour */
@@ -50,7 +50,7 @@ bool     menu_set_color(uint8_t i, uint16_t rgb565);   /* false: no such colour 
 #define MENU_TRACK     0x4228u   /* the scrollbar's track, #464646 */
 #define MENU_CURSOR    0xA514u   /* the cursor, #A5A2A5: a neutral grey a shade under the dim rows (JD, 10-24: in the lit colour it "blends into" a lit icon) */
 #define MENU_SAVED     0x468Cu   /* the saved option's check box, #40D060, on every page (JD, 10-25: "green everywhere") */
-#define MENU_ICON_LIT  0xFFB8u   /* the selected row's top-level icon, #FFF7C6: a whiter yellow than its text (JD, 10-25; the others' are white) */
+#define MENU_ICON_LIT  0xFFB8u   /* the selected row's top-level icon, #FFF7C6: a whiter yellow than its text (JD, 10-25; the others' are white). Not in the palette: a slot there cost the dev heap 8 B */
 #define MENU_FLASH_MS  1300u
 #define MENU_HINT_FROM 4000u     /* the hints after 4 s idle: "Turn + Click Knob" 1 s, */
 #define MENU_HINT_EVERY 6000u    /* then "Hold to Go Back" 1 s (JD, 10-24), every 6 s */
