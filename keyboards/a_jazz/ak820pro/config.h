@@ -262,14 +262,15 @@
 // Persist a small keyboard-specific config block in EEPROM. On SN32F290 QMK's
 // default "vendor" EEPROM driver is wear-leveling backed by MCU internal flash.
 // Layout is owned by kb_eeconfig.c (BT slot, RTC period, LCD brightness,
-// clock format, battery level, power mode). Bump EECONFIG_KB_DATA_VERSION if the layout
+// clock format, battery level, power mode, the two indicator levels). Bump
+// EECONFIG_KB_DATA_VERSION if the layout
 // changes -- QMK validates the block by version, not size, and a mismatch
 // zero-fills it once at the next boot (a flash erases the whole emulated
 // EEPROM anyway).
-#define EECONFIG_KB_DATA_SIZE    7
+#define EECONFIG_KB_DATA_SIZE    9
 // The battery row in whole percent. Define BATTERY_SHOW_TENTHS for tenths
 // ("85.9%"), the view the 2026-09-28 drain test was calibrated with.
-#define EECONFIG_KB_DATA_VERSION 4
+#define EECONFIG_KB_DATA_VERSION 5
 
 // Debounce eeconfig flushes from RGB adjustment. Without this QMK writes MCU
 // flash on every single step (~8/s while a key is held), which is both needless
@@ -447,9 +448,10 @@
  * which is the thing that wedges this board. Change it here, not at runtime. */
 #define DISPLAY_BRIGHTNESS_DEFAULT 5
 
-// Indicator LED brightness (Caps Lock, Win Lock, Charging) -- index into
-// ind_duty[] in ak820pro.c. These are software-PWM'd on the same tick as the
-// LCD backlight; at full drive they are searchlights on a dark desk, and the
-// charging one is not under user control at all. 1 = dimmest lit step (1/64).
-// 0 would turn them off entirely.
+// The lock lights' (Caps Lock, Win Lock) default level, 0-100 (indicators.c,
+// indicator_levels.h; the menu's Indicators sets and saves it). They are dimmed
+// in software on the same tick as the LCD backlight; at full drive they are
+// searchlights on a dark desk. 1 = the dimmest lit step (one tick in 48).
+// 0 would turn them off entirely. The charging light's is CHARGING_LED_BRIGHTNESS
+// (indicators.c), 0.
 #define INDICATOR_BRIGHTNESS_DEFAULT 1

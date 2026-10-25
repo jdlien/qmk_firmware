@@ -8,6 +8,7 @@
 #include "bluetooth/ch582f_ajazz.h"   /* the module's battery level */
 #include "battery.h"                  /* battery_ran_from_pack */
 #include "overrun_diag.h"             /* dev: the interrupt-service-gap monitor rides this tick */
+#include "kb_eeconfig.h"              /* the saved levels (P2a) */
 #include <hal.h>
 
 /* --- Indicator LEDs -------------------------------------------------------
@@ -16,14 +17,17 @@
  * full drive they are painfully bright on a desk in a dark room -- the charging
  * one especially, since it is not under user control at all.
  *
- * So they are software-PWM'd rather than switched, sharing the 20 kHz CT16B3
- * tick the LCD backlight uses (pwm_tick_cb below). Same duty curve and the same
- * reasoning: perceptually spaced, because a linear ramp wastes its steps at the
- * top and gives nothing usable at the bottom. Level 0 is fully off, if you would
+ * So they are dimmed in software rather than switched, sharing the 20 kHz
+ * CT16B3 tick the LCD backlight uses (pwm_tick_cb below). The levels are the
+ * menu's 0-100 (P2a, plans/CONFIG-MENU-P1-DESIGN.md; indicator_levels.h):
+ * perceptually spaced, because a linear ramp wastes its steps at the top and
+ * gives nothing usable at the bottom. Level 0 is fully off, if you would
  * rather lose an indicator than see it.
  *
  * These functions only record desired state now; the ISR drives the pins. */
-/* 96 rather than the backlight's 64, tuned on hardware.
+/* The period's history: one pulse of one tick every IND_PWM_TICKS
+ * (indicator_levels.h) is the dimmest level, and the sigma-delta below keeps
+ * that floor. 96 rather than the backlight's 64, tuned on hardware.
  *
  * Minimum brightness is always 1 tick, so a dimmer floor needs a longer period
  * -- which lowers the switching frequency, since one pulse per period IS the
@@ -41,26 +45,26 @@
  * measured 20000 Hz, so RGB_MATRIX_SPD_STEP does not affect it and the old
  * three-way coupling between LED field rate, backlight and indicators is gone.
  *
- * If flicker reappears, shorten this (brighter, faster) rather than reaching for
- * the ISR rate. */
-#define IND_PWM_TICKS 48   /* 20000/48 = 417 Hz, floor 1/48 = 2.1%. The earlier
-                            * flicker at 96 ticks was measured against a tick
-                            * that was dropping 23% of its interrupts; with a
-                            * steady 20000 the same period is now 208 Hz. */
-static const uint8_t ind_duty[] = { 0, 1, 2, 3, 5, 8, 12, 18, 28, 48 };
-_Static_assert(sizeof(ind_duty) == 10, "indicator levels are 0..9");
+ * If flicker reappears, shorten the floor's period (brighter, faster) rather
+ * than reaching for the ISR rate. IND_PWM_TICKS is 48: 20000/48 = 417 Hz,
+ * floor 1/48 = 2.1%. The earlier flicker at 96 ticks was measured against a
+ * tick that was dropping 23% of its interrupts; with a steady 20000 the same
+ * period is now 208 Hz. */
+#include "indicator_levels.h"
+_Static_assert(IND_PWM_TICKS == 48 && IND_LEVEL_MAX == 100, "the levels' floor and range");
 
-/* Per-LED levels: the charging LED is not under user control and duplicates
- * what the battery icon already shows, so it defaults to 0 (off) while the
- * locks stay dimly lit. */
+/* Per-group levels (0-100): the charging LED duplicates what the battery icon
+ * already shows, so it defaults to 0 (off) while the locks stay dimly lit (1,
+ * the old level 1). The menu's Indicators set and save them (kb_eeconfig). */
 #ifndef INDICATOR_BRIGHTNESS_DEFAULT
 #    define INDICATOR_BRIGHTNESS_DEFAULT 1
 #endif
 #ifndef CHARGING_LED_BRIGHTNESS
 #    define CHARGING_LED_BRIGHTNESS 0
 #endif
+_Static_assert(INDICATOR_BRIGHTNESS_DEFAULT <= IND_LEVEL_MAX && CHARGING_LED_BRIGHTNESS <= IND_LEVEL_MAX,
+               "the defaults are levels 0-100");
 
-static volatile uint8_t ind_phase = 0;
 static volatile bool    ind_caps     = false;
 static volatile bool    ind_winlock  = false;
 static volatile bool    ind_scroll   = false;   /* host-reported; no key on this board */
@@ -87,32 +91,31 @@ static uint32_t scr_key_at     = 0;
 static bool     scr_key_armed  = false;   /* a KC_SCRL press not yet answered */
 static volatile bool    ind_charging = false;
 
-static volatile uint8_t ind_lvl_caps     = INDICATOR_BRIGHTNESS_DEFAULT;
-static volatile uint8_t ind_lvl_winlock  = INDICATOR_BRIGHTNESS_DEFAULT;
-static volatile uint8_t ind_lvl_charging = CHARGING_LED_BRIGHTNESS;
+/* The groups' levels (main loop), and their duties for the ISR: each one
+ * aligned uint16_t store, so the tick never reads half of one. The force bits
+ * (IND_LOCKS, IND_CHARGING as bits 0 and 1) light a group whatever its state:
+ * the menu's preview. */
+static uint8_t           ind_lvl[2] = {INDICATOR_BRIGHTNESS_DEFAULT, CHARGING_LED_BRIGHTNESS};
+static volatile uint16_t ind_duty_locks, ind_duty_chg;   /* from ind_lvl in pwm_tick_init() */
+static volatile uint8_t  ind_force = 0;
 
-/* ISR context. `phase < duty` handles both ends without special-casing: duty 0
- * is never true (always off) and duty == IND_PWM_TICKS is always true (full on).
- * Writes are suppressed unless an output actually changes, so a steady indicator
- * costs two pin writes per PWM period rather than one per tick. */
-static uint8_t ind_last_out = 0xFFu;   /* 0xFF: write the pins on the next tick */
+/* ISR context. Each group's duty is spread by a first-order sigma-delta
+ * (indicator_levels.h, ind_tick_out): at level 1 one tick in IND_PWM_TICKS,
+ * as the old phase compare's level 1; above it the on-ticks spread evenly, so
+ * no gap between pulses is longer than at level 1. A pin is written only when
+ * its bit changes, or all three after a restart (ind_pins_to_write). */
+static uint16_t ind_acc_locks, ind_acc_chg;
+static uint8_t  ind_last_out = IND_OUT_UNKNOWN;
 
 static void indicators_tick(void) {
-    uint8_t phase = ind_phase + 1;
-    if (phase >= IND_PWM_TICKS) phase = 0;
-    ind_phase = phase;
-
-    uint8_t out = 0;
-    if (ind_caps     && phase < ind_duty[ind_lvl_caps])     out |= 1u;
-    if (ind_winlock  && phase < ind_duty[ind_lvl_winlock])  out |= 2u;
-    if (ind_charging && phase < ind_duty[ind_lvl_charging]) out |= 4u;
-
-    if (out == ind_last_out) return;
+    const uint8_t out = ind_tick_out(ind_caps, ind_winlock, ind_charging, ind_force, &ind_acc_locks, &ind_acc_chg,
+                                     ind_duty_locks, ind_duty_chg);
+    const uint8_t ch  = ind_pins_to_write(out, ind_last_out);
+    if (!ch) return;
     ind_last_out = out;
-
-    gpio_write_pin(LED_CAPS_LOCK_PIN, (out & 1u) != 0u);
-    gpio_write_pin(LED_WINLOCK_PIN, (out & 2u) != 0u);
-    gpio_write_pin(LED_CHARGING_PIN, (out & 4u) != 0u);
+    if (ch & 1u) gpio_write_pin(LED_CAPS_LOCK_PIN, (out & 1u) != 0u);
+    if (ch & 2u) gpio_write_pin(LED_WINLOCK_PIN, (out & 2u) != 0u);
+    if (ch & 4u) gpio_write_pin(LED_CHARGING_PIN, (out & 4u) != 0u);
 }
 
 /* Backlight + indicator software PWM tick, on its OWN timer (CT16B3/GPTD4).
@@ -161,6 +164,8 @@ static const GPTConfig pwm_tick_cfg = {
 };
 
 void pwm_tick_init(void) {
+    ind_duty_locks = ind_level_duty[ind_lvl[IND_LOCKS]];   /* the defaults; indicators_load_saved() follows */
+    ind_duty_chg   = ind_level_duty[ind_lvl[IND_CHARGING]];
     gptStart(&GPTD4, &pwm_tick_cfg);
     gptStartContinuous(&GPTD4, PWM_TICK_TIMEBASE / PWM_TICK_HZ);
 
@@ -207,7 +212,7 @@ void pwm_tick_stopI(void) {
 
 void pwm_tick_startI(void) {
     if (!pwm_tick_stopped) return;
-    ind_last_out = 0xFFu;
+    ind_last_out = IND_OUT_UNKNOWN;   /* every pin written on the next tick */
     gptStartContinuousI(&GPTD4, PWM_TICK_TIMEBASE / PWM_TICK_HZ);
     SN_CT16B3->MCTRL = CT16_PWM_UNLOCK(SN_CT16B3->MCTRL | mskCT16_MRnRST_EN(0));
     pwm_tick_stopped = false;
@@ -223,7 +228,7 @@ void pwm_tick_run(bool on) {
 }
 
 bool indicators_any_lit(void) {
-    return ind_caps || ind_winlock || ind_charging;
+    return ind_caps || ind_winlock || ind_charging || ind_force;   /* a preview counts (P2a) */
 }
 
 /* The row-scan hook is now unused; leave the weak no-op in the driver. */
@@ -329,16 +334,32 @@ void lock_note_scroll_key(void) {
     scr_key_armed = true;
 }
 
-uint8_t indicator_get_brightness(void) {
-    return ind_lvl_caps;
+uint8_t indicator_get_level(uint8_t which) {
+    return which <= IND_CHARGING ? ind_lvl[which] : 0;
 }
 
-void indicator_set_brightness(uint8_t level) {
-    if (level > (uint8_t)(sizeof(ind_duty) / sizeof(ind_duty[0])) - 1) {
-        level = (uint8_t)(sizeof(ind_duty) / sizeof(ind_duty[0])) - 1;
+void indicator_set_level(uint8_t which, uint8_t level) {
+    if (which > IND_CHARGING) return;
+    if (level > IND_LEVEL_MAX) level = IND_LEVEL_MAX;
+    ind_lvl[which] = level;
+    if (which == IND_LOCKS) ind_duty_locks = ind_level_duty[level];
+    else ind_duty_chg = ind_level_duty[level];
+}
+
+void indicator_force(uint8_t which, bool on) {
+    if (which > IND_CHARGING) return;
+    const uint8_t bit = (uint8_t)(1u << which);
+    /* One byte store: the ISR reads it whole. Main loop only. */
+    ind_force = on ? (uint8_t)(ind_force | bit) : (uint8_t)(ind_force & (uint8_t)~bit);
+}
+
+uint8_t indicator_forced(void) { return ind_force; }
+
+void indicators_load_saved(void) {
+    for (uint8_t w = IND_LOCKS; w <= IND_CHARGING; w++) {
+        uint8_t level;
+        if (kb_eeconfig_get_ind_level(w, &level)) indicator_set_level(w, level);
     }
-    ind_lvl_caps    = level;
-    ind_lvl_winlock = level;
 }
 
 void update_leds(void) {

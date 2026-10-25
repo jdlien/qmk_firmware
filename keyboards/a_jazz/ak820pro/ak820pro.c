@@ -78,6 +78,7 @@ void early_hardware_init_post(void) {
     // slider booted in the BT position (dip_switch_init ran before EEPROM
     // was read). Details in kb_eeconfig.c / bt_ui.c.
     kb_eeconfig_init();
+    indicators_load_saved();   // the menu's Indicators levels (P2a)
     bt_ui_resume_saved_profile();
     power_init();   // the persisted power mode (Normal, and says so, after a flash)
 

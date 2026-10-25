@@ -29,8 +29,18 @@ bool charge_is_charging(void);
  * the reasoning block in indicators.c -- it latches once a pack is confirmed. */
 bool battery_is_absent(void);
 
-uint8_t indicator_get_brightness(void);
-void    indicator_set_brightness(uint8_t level);
+/* The indicator levels (P2a; plans/CONFIG-MENU-P1-DESIGN.md): 0 off, 1-100
+ * perceptually even (indicator_levels.h), in two groups: the lock lights (Caps
+ * and Win lock) and the charging light. Main loop only. */
+enum { IND_LOCKS = 0, IND_CHARGING = 1 };
+uint8_t indicator_get_level(uint8_t which);
+void    indicator_set_level(uint8_t which, uint8_t level);   /* clamps to 100; RAM only */
+/* The menu's preview: the group lit at its level whatever its state, until
+ * cleared. */
+void    indicator_force(uint8_t which, bool on);
+uint8_t indicator_forced(void);   /* the force bits, 1 << which */
+/* The saved levels (kb_eeconfig), applied: once, right after kb_eeconfig_init(). */
+void    indicators_load_saved(void);
 
 /* The 20 kHz tick (the backlight's and the indicators' software PWM), for
  * sleep.c: stop it with every pin it drives low, and restart it. _run from a

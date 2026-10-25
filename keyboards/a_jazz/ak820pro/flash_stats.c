@@ -27,9 +27,11 @@ static uint32_t rtc_proposals[2], rtc_stores[2];
 #define VIA_START ((uint32_t)(EECONFIG_SIZE))              /* VIA's magic, config, keymap, macros */
 
 /* kb_eeconfig.c's kb_config_t, byte by byte: bt, rtc lo, rtc hi, lcd, clock,
- * battery, power mode. A layout change there must change this table. */
-static const uint8_t kb_byte_field[] = {KBF_BT, KBF_RTC, KBF_RTC, KBF_LCD, KBF_CLOCK, KBF_BATT, KBF_PWR};
+ * battery, power mode, the lock lights, the charging light. A layout change
+ * there must change this table. */
+static const uint8_t kb_byte_field[] = {KBF_BT, KBF_RTC, KBF_RTC, KBF_LCD, KBF_CLOCK, KBF_BATT, KBF_PWR, KBF_LOCKS, KBF_CHG};
 _Static_assert(sizeof(kb_byte_field) == EECONFIG_KB_DATA_SIZE, "one field per kb datablock byte");
+_Static_assert(KBF_COUNT <= 8 && KBF_CHG == (1u << (KBF_COUNT - 1)), "every field a bit of a uint8_t mask");
 
 /* Called by drivers/eeprom/eeprom_wear_leveling.c's eeprom_write_block() just
  * before wear_leveling_write(), which skips the write when nothing changes. */
@@ -127,7 +129,7 @@ bool flash_stats_fill(uint8_t page, uint8_t *out28) {
             break;
         case 1:
             for (uint8_t i = 0; i < FW_COUNT; i++) PUT32(programs[i]);   /* 16 */
-            for (uint8_t i = 0; i < KBF_COUNT; i++) PUT16(kb_field_sessions[i]);   /* 28 */
+            for (uint8_t i = 0; i < KBF_PAGE1; i++) PUT16(kb_field_sessions[i]);   /* 28: frozen */
             break;
         case 2:
             PUT16(rtc_last_proposed);                                    /* 2 */
@@ -137,6 +139,9 @@ bool flash_stats_fill(uint8_t page, uint8_t *out28) {
             PUT32(rtc_stores[0]); PUT32(rtc_stores[1]);                  /* 22 */
             PUT32(last_erase_ms);                                        /* 26 */
             PUT16(WEAR_LEVELING_BACKING_SIZE);                           /* 28: an erase is all of it */
+            break;
+        case 3:   /* P2a: the fields after page 1's six; the rest zero */
+            for (uint8_t i = KBF_PAGE1; i < KBF_COUNT; i++) PUT16(kb_field_sessions[i]);   /* 4 */
             break;
         default:
             return false;

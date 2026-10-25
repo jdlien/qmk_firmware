@@ -31,13 +31,17 @@ enum {
     N_EFFECT, N_BRIGHT, N_HUE, N_SAT, N_SPEED, N_LIGHTS,        /* 26-31: Lighting's rows */
     N_EFFOPT, N_LTSOPT,                                         /* 32-33: an Effect or Lights option, its index in val */
     N_BOOT,                                                     /* 34: the bootloader item (JD, 10-24) */
+    N_IND, N_CONN,                                              /* 35-36: P2a (JD, 10-25) */
+    N_LOCKS, N_CHGL,                                            /* 37-38: Indicators' rows */
     N_COUNT
 };
 _Static_assert(N_COUNT <= 63, "a row's node is 6 bits");
 _Static_assert(MENU_HELP_TOPICS == 4, "Help's four topics");
 
-static const uint8_t top_rows[]   = {N_LIGHT, N_SCREEN, N_POWER, N_CLOCK, N_DIAG, N_BOOT, N_HELP, N_ABOUT, N_EXIT};
+/* The build plan's order (P2a): Bootloader moves to the end of page one. */
+static const uint8_t top_rows[]   = {N_LIGHT, N_SCREEN, N_CONN, N_POWER, N_IND, N_CLOCK, N_DIAG, N_BOOT, N_HELP, N_ABOUT, N_EXIT};
 static const uint8_t light_rows[] = {N_BACK, N_EFFECT, N_BRIGHT, N_HUE, N_SAT, N_SPEED, N_LIGHTS};
+static const uint8_t ind_rows[]   = {N_BACK, N_LOCKS, N_CHGL};
 static const uint8_t diag_rows[]  = {N_BACK, N_HEALTH, N_CAMERA, N_RESET};
 static const uint8_t help_rows[]  = {N_BACK, N_TOPIC0, N_TOPIC1, N_TOPIC2, N_TOPIC3};
 static const uint8_t power_rows[] = {N_BACK, N_POW0, N_POW1, N_POW2, N_POW3};
@@ -80,6 +84,10 @@ static const char *label_of(uint8_t node) {
         case N_SPEED:  return two_tone() ? "Second color" : "Speed";   /* Alphas/Mods' speed is its second colour */
         case N_LIGHTS: return "Lights";
         case N_BOOT:   return "Bootloader";
+        case N_IND:    return "Indicators";
+        case N_CONN:   return "Connection";
+        case N_LOCKS:  return "Lock lights";
+        case N_CHGL:   return "Charging light";
         default: break;
     }
     if (node >= N_TOPIC0 && node <= N_TOPIC3) return menu_help_titles[node - N_TOPIC0];
@@ -102,6 +110,8 @@ static const char *icon_of(uint8_t node) {
         case N_LIGHT: return MT_I_LIGHT " ";   /* P1b */
         case N_SCREEN: return MT_I_SCREEN;
         case N_BOOT:  return MT_I_BOOT;
+        case N_IND:   return MT_I_IND;    /* P2a: the sun (JD's pick) */
+        case N_CONN:  return MT_I_CONN;   /* Bluetooth */
         default:      return NULL;
     }
 }
@@ -143,6 +153,7 @@ static const uint8_t *rows_of(uint8_t node, uint8_t *n) {
         case N_POWER: *n = sizeof power_rows; return power_rows;
         case N_CLOCK: *n = sizeof clock_rows; return clock_rows;
         case N_LIGHT: *n = sizeof light_rows; return light_rows;
+        case N_IND:   *n = sizeof ind_rows;   return ind_rows;
         default:      *n = 0;                 return 0;
     }
 }
@@ -177,10 +188,12 @@ static uint8_t row_index(uint8_t list, uint8_t node) {
     return 0;
 }
 static bool is_topic(uint8_t node) { return node >= N_TOPIC0 && node <= N_TOPIC3; }
-static bool is_list(uint8_t node) { return node == N_TOP || node == N_DIAG || node == N_HELP || node == N_LIGHT; }
+static bool is_list(uint8_t node) { return node == N_TOP || node == N_DIAG || node == N_HELP || node == N_LIGHT || node == N_IND; }
 static bool is_preview(uint8_t node) { return node == N_EFFECT || node == N_LIGHTS; }   /* P1b's previewing choices */
 static bool is_choice(uint8_t node) { return node == N_POWER || node == N_CLOCK || is_preview(node); }
-static bool is_editor(uint8_t node) { return node == N_SCREEN || (node >= N_BRIGHT && node <= N_SPEED); }
+static bool is_ind_editor(uint8_t node) { return node == N_LOCKS || node == N_CHGL; }   /* P2a */
+static bool is_editor(uint8_t node) { return node == N_SCREEN || (node >= N_BRIGHT && node <= N_SPEED) || is_ind_editor(node); }
+static bool is_confirm(uint8_t node) { return node == N_RESET || node == N_BOOT || node == N_CONN; }   /* the confirm geometry's pages */
 static bool is_hue_editor(uint8_t node) { return node == N_HUE || (node == N_SPEED && two_tone()); }
 static uint8_t field_of(uint8_t node) {
     switch (node) {
@@ -191,6 +204,8 @@ static uint8_t field_of(uint8_t node) {
         case N_SPEED:  return ME_SPEED;
         case N_LIGHTS: return ME_ENABLE;
         case N_SCREEN: return ME_LCD;
+        case N_LOCKS:  return ME_LOCKS;
+        case N_CHGL:   return ME_CHG;
         default:       return ME_NONE;
     }
 }
@@ -221,7 +236,8 @@ static uint8_t saved_row(uint8_t node) {
 enum { T_TOP = 1, T_POWER, T_CLOCK, T_DIAG, T_HELP, T_ABOUT, T_TOPIC0, T_RESET = T_TOPIC0 + 4,
        T_SAVED = 16, T_CANCELLED, T_RESET_DONE, T_HINT, T_HINT_BACK,
        T_LIGHT, T_SCREEN, T_EFFECT, T_BRIGHT, T_HUE, T_SAT, T_SPEED, T_SECOND, T_LIGHTS,   /* 21-29: P1b */
-       T_BOOT, T_BOOT_BUSY };                                                               /* 30-31 */
+       T_BOOT, T_BOOT_BUSY,                                                                 /* 30-31 */
+       T_IND, T_CONN, T_LOCKS, T_CHGL };                                                    /* 32-35: P2a */
 _Static_assert(T_RESET == 11, "the title ids: the design's table");
 
 static uint8_t screen_title(void) {
@@ -243,6 +259,10 @@ static uint8_t screen_title(void) {
         case N_SPEED:  return two_tone() ? T_SECOND : T_SPEED;
         case N_LIGHTS: return T_LIGHTS;
         case N_BOOT:   return T_BOOT;
+        case N_IND:    return T_IND;
+        case N_CONN:   return T_CONN;
+        case N_LOCKS:  return T_LOCKS;
+        case N_CHGL:   return T_CHGL;
         default:      return is_topic(n) ? (uint8_t)(T_TOPIC0 + (n - N_TOPIC0)) : T_TOP;
     }
 }
@@ -271,6 +291,10 @@ static const char *title_text(uint8_t id) {
         case T_LIGHTS:     return "Lights";
         case T_BOOT:       return "Bootloader";
         case T_BOOT_BUSY:  return "Try again";   /* a key's release didn't go over the radio */
+        case T_IND:        return "Indicators";
+        case T_CONN:       return "Connection";
+        case T_LOCKS:      return "Lock lights";
+        case T_CHGL:       return "Charging light";
         default: break;
     }
     if (id >= T_TOPIC0 && id < T_TOPIC0 + 4) return menu_help_titles[id - T_TOPIC0];
@@ -291,6 +315,10 @@ static const char *title_icon(uint8_t id) {
         case T_ABOUT: return icon_of(N_ABOUT);
         case T_SCREEN: return icon_of(N_SCREEN);
         case T_BOOT:   return icon_of(N_BOOT);
+        case T_IND:
+        case T_LOCKS:
+        case T_CHGL:   return icon_of(N_IND);
+        case T_CONN:   return icon_of(N_CONN);
         default:      return id >= T_LIGHT && id <= T_LIGHTS ? icon_of(N_LIGHT) : "";
     }
 }
@@ -381,11 +409,15 @@ static int8_t value_which(uint8_t node) {
         case N_SPEED:  return 4;
         case N_LIGHTS: return 5;
         case N_SCREEN: return 6;
+        case N_LOCKS:
+        case N_CHGL:   return 7;   /* P2a: the two told apart by the variant bit (row_sig) */
         default:       return -1;
     }
 }
 static uint8_t live_value(uint8_t node) {
     if (node == N_SCREEN) return env_lcd_level();
+    if (node == N_LOCKS) return env_ind_level(ENV_IND_LOCKS);
+    if (node == N_CHGL) return env_ind_level(ENV_IND_CHARGING);
     env_rgb_t c;
     env_rgb_get(&c);
     switch (node) {
@@ -411,6 +443,11 @@ static void fmt_value(uint8_t node, uint8_t v, char *b, size_t n) {
         case N_LIGHTS: snprintf(b, n, "%s", v ? "On" : "Off"); break;
         case N_SCREEN:
             if (v) snprintf(b, n, "%u%%", (unsigned)((v * 100u + MENU_LCD_MAX / 2u) / MENU_LCD_MAX));
+            else snprintf(b, n, "Off");
+            break;
+        case N_LOCKS:   /* P2a: the level is the percentage */
+        case N_CHGL:
+            if (v) snprintf(b, n, "%u%%", (unsigned)v);
             else snprintf(b, n, "Off");
             break;
         case N_SPEED:   /* Alphas/Mods' second colour: its offset; otherwise a percentage */
@@ -491,7 +528,8 @@ static void row_text(const row_t *x, char *out) {
     if (x->node == N_POWER) value = power_short[x->val & 3u];
     else if (x->node == N_CLOCK) value = clock_short_by_enum[x->val & 3u];
     else if (x->node == N_DIAG || x->node == N_HELP || x->node == N_ABOUT || x->node == N_HEALTH ||
-             x->node == N_CAMERA || x->node == N_RESET || is_topic(x->node) || x->node == N_LIGHT || x->node == N_BOOT)
+             x->node == N_CAMERA || x->node == N_RESET || is_topic(x->node) || x->node == N_LIGHT || x->node == N_BOOT ||
+             x->node == N_IND || x->node == N_CONN)
         value = MT_TRI_R;                            /* JD, 10-24: ▶ for > */
     size_t      at   = 0;
     const char *icon = icon_of(x->node);
@@ -518,7 +556,8 @@ static uint16_t row_sig(const row_t *x) {
         case RK_ABOUT:
             return (uint16_t)((3u << 14) | ((uint16_t)x->line << 8));
         case RK_VALUE: {   /* P1b: 0xE000 | which << 10 | variant << 9 | value << 1 | lit (bit 0 is lit) */
-            uint16_t variant = (x->node == N_SPEED && two_tone()) ? 1u : 0u;
+            /* The variant: Speed's Second color, or P2a's Charging light (which 7, with Lock lights). */
+            uint16_t variant = ((x->node == N_SPEED && two_tone()) || x->node == N_CHGL) ? 1u : 0u;
             return (uint16_t)(0xE000u | ((uint16_t)value_which(x->node) << 10) | (variant << 9) |
                               ((uint16_t)x->val << 1) | (x->lit ? 1u : 0u));
         }
@@ -642,20 +681,37 @@ static const char *const boot_lines[2][4] = {
     {"For a firmware", "update over USB.", "Click: enter", "Hold: cancel"},
     {"Plug in first:", "the battery is low.", "Click: back", ""},
 };
+/* P2a's Connection stub (JD, 10-25; the words wait for his text pass): the
+ * link as it was when the page opened (About's line, from the same
+ * snapshot), and how to change it until the menu can. */
+static const char *const conn_lines[2][3] = {
+    {"Slots: coming soon", "Fn+Q/W/E: a slot", "Hold one 2 s: pair"},   /* on Bluetooth */
+    {"Slots: coming soon", "The slider picks", "BT, 2.4G or cable."},  /* off it: set by the slider */
+};
+static void conn_line(uint8_t i, char *out, size_t sz) {
+    if (i == 0) {
+        about_line(7, out, sz);
+        return;
+    }
+    snprintf(out, sz, "%s", conn_lines[(snap.link & 3u) == ENV_LINK_BT ? 0 : 1][i - 1u]);
+}
 static uint16_t c_sig(uint8_t s) {
     if (s == 0) return title_id;
     if (s == 1) return 1;
+    if (cur()->node == N_CONN) return (uint16_t)(0x8000u | ((uint16_t)(snap.link & 0x7Fu) << 4) | (uint16_t)(s - 2u));
     return (uint16_t)((cur()->node == N_BOOT ? 0x200u : 0x100u) | ((uint16_t)confirm_page << 4) | (uint16_t)(s - 2u));
 }
 static uint8_t c_chunks(uint8_t s) { return s == 1 ? 1 : 2; }
 static uint8_t c_pieces(uint8_t s, uint8_t c) { return l_pieces(s == 1 ? S_SEP : S_TITLE, c); }
 static ms_paint_t c_paint(uint8_t s, uint8_t c, uint8_t p) {
     if (s <= 1) return l_paint(s, c, p);
-    char cells[21];
+    char cells[21], buf[24];
     memset(cells, ' ', 20);
-    cells[20]      = '\0';
-    const char *ln = (cur()->node == N_BOOT ? boot_lines : c_lines)[confirm_page & 1u][s - 2u];
-    memcpy(cells, ln, strlen(ln));
+    cells[20] = '\0';
+    if (cur()->node == N_CONN) conn_line((uint8_t)(s - 2u), buf, sizeof buf);
+    else snprintf(buf, sizeof buf, "%s", (cur()->node == N_BOOT ? boot_lines : c_lines)[confirm_page & 1u][s - 2u]);
+    size_t n = strlen(buf);
+    memcpy(cells, buf, n > 20 ? 20 : n);
     return text_piece(cells, c_y[s - 2u], false, 0, 0, c, p, pal[MP_WHITE]);
 }
 static const ms_layout_t L_CONFIRM = {6, c_sig, c_chunks, c_pieces, c_paint, 0, 0};
@@ -688,7 +744,10 @@ static const char *const hint_lines[3] = {"Turn: change", "Click: save", "Hold: 
 
 static uint8_t e_bands(void) { return is_hue_editor(cur()->node) ? ENV_N : BAR_N; }
 static uint8_t e_value_slot(void) { return (uint8_t)(2u + e_bands()); }
-static uint8_t e_range_max(void) { return cur()->node == N_SCREEN ? (uint8_t)MENU_LCD_MAX : 255u; }
+static uint8_t e_range_max(void) {
+    uint8_t n = cur()->node;
+    return n == N_SCREEN ? (uint8_t)MENU_LCD_MAX : is_ind_editor(n) ? (uint8_t)ENV_IND_MAX : 255u;
+}
 
 /* The bar's fill edge: the first column not filled, 14 (empty) to 114 (full). */
 static uint8_t bar_edge(void) {
@@ -904,7 +963,7 @@ static menu_result_t pop(uint32_t now) {
         retitle(now);
         ms_set_layout(&L_LIST, false);
     } else
-        show(false, from == N_RESET || from == N_BOOT, now);
+        show(false, is_confirm(from), now);
     return MENU_NONE;
 }
 
@@ -929,7 +988,8 @@ static void edit_turn(int8_t turns, uint32_t now) {
     if (is_hue_editor(node))
         v = (int16_t)((v + turns * (fast ? 12 : 3)) & 255);
     else {
-        int16_t max = e_range_max(), step = node == N_SCREEN ? 1 : (fast ? 20 : 5);
+        /* P2a's indicators: 1% a detent, 5 fast (JD: "1-100 in 1% increments"). */
+        int16_t max = e_range_max(), step = node == N_SCREEN ? 1 : is_ind_editor(node) ? (fast ? 5 : 1) : (fast ? 20 : 5);
         v = (int16_t)(v + turns * step);
         if (v < 0) v = 0;
         if (v > max) v = max;
@@ -976,13 +1036,22 @@ static menu_result_t activate(uint32_t now) {
         case N_HUE:
         case N_SAT:
         case N_SPEED:
+        case N_LOCKS:
+        case N_CHGL:
             open_editor(node, now);
             return MENU_NONE;
         case N_DIAG:
         case N_HELP:
         case N_LIGHT:
+        case N_IND:
             push(node, 1);
             show(false, false, now);
+            return MENU_NONE;
+        case N_CONN:   /* P2a's stub: the link, frozen now */
+            env_about(&snap);
+            confirm_page = 0;
+            push(node, 0);
+            show(true, false, now);
             return MENU_NONE;
         case N_ABOUT:
             open_about(now);
@@ -1140,7 +1209,7 @@ uint8_t menu_cursor(void) {
     if (!depth) return 0xFF;
     frame_t *f = cur();
     if (is_topic(f->node)) return f->top;
-    if (f->node == N_RESET || f->node == N_BOOT) return confirm_page;
+    if (is_confirm(f->node)) return confirm_page;
     if (is_editor(f->node)) return me_value();   /* P1b: an editor's value */
     return f->cursor;
 }

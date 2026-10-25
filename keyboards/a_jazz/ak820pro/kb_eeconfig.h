@@ -7,9 +7,10 @@
 
 /* Persisted keyboard config (the EEPROM kb datablock). One module owns the
  * struct so its layout has exactly one home; everything else goes through
- * accessors. The block is 5 bytes (bt_profile, rtc_period u16,
- * lcd_brightness+1, clock_mode+1 -- the last appended 2026-09-01, growing
- * the block from 4; the battery level and the power mode followed) and its
+ * accessors. The block is 9 bytes (bt_profile, rtc_period u16,
+ * lcd_brightness+1, clock_mode+1 -- appended 2026-09-01, growing the block
+ * from 4; the battery level, the power mode and the two indicator levels
+ * followed; kb_eeconfig.c has the layout) and its
  * layout is ASSIGN-ONLY: existing on-device bytes
  * must keep their meaning, and 0 means "unset" for every field added after
  * first ship (a fresh block is zeros).
@@ -55,6 +56,12 @@ void kb_eeconfig_set_batt_level(uint16_t permille);
  * after every flash) or garbage -- power.c then takes Normal and says so. */
 bool kb_eeconfig_get_power_mode(uint8_t *mode);
 void kb_eeconfig_set_power_mode(uint8_t mode);
+
+/* An indicator group's level (IND_LOCKS, IND_CHARGING: 0-100; the menu's
+ * Indicators). Returns false when unset or garbage -- indicators.c keeps its
+ * compile-time default. A saved 0 (Off) is distinct from unset. */
+bool kb_eeconfig_get_ind_level(uint8_t which, uint8_t *level);
+void kb_eeconfig_set_ind_level(uint8_t which, uint8_t level);
 
 /* A change is waiting for its deferred flash write (a sleep's precondition). */
 bool kb_eeconfig_write_pending(void);

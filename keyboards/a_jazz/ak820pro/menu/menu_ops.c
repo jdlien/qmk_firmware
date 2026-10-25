@@ -287,7 +287,8 @@ bool menu_ops_op27(uint8_t *d, uint32_t now) {
         return true;
     }
     if (sub == 14) {   /* P1b's edit, read: [6] open, [7] its field (ME_*), [8] the live value, [9] the saved one,
-                        * [10..11] the external writes that cancelled an edit (the board's exit gates) */
+                        * [10..11] the external writes that cancelled an edit (the board's exit gates); P2a:
+                        * [12] the lock lights' live level, [13] the charging light's, [14] the force bits */
         memset(&d[5], 0, 27);
         d[5] = MI_OK;
         d[6] = me_active() ? 1u : 0u;
@@ -295,6 +296,26 @@ bool menu_ops_op27(uint8_t *d, uint32_t now) {
         d[8] = me_active() ? me_value() : 0u;
         d[9] = me_active() ? me_saved() : 0u;
         put16(&d[10], me_external_count());
+        d[12] = env_ind_level(ENV_IND_LOCKS);
+        d[13] = env_ind_level(ENV_IND_CHARGING);
+        d[14] = env_ind_forced();
+        return true;
+    }
+    if (sub == 15) {   /* P2a's bench (codex on its design, point 2): [5] the force bits, [6] the lock lights'
+                        * level, [7] the charging light's, live, not saved; an external writer of the
+                        * indicators, so an open indicator edit is cancelled first */
+        uint8_t force = d[5], locks = d[6], chg = d[7];
+        memset(&d[5], 0, 27);
+        if (force > 3u || locks > ENV_IND_MAX || chg > ENV_IND_MAX) {
+            d[5] = MI_BAD;
+            return true;
+        }
+        menu_edit_external(ME_DOM_IND);
+        env_ind_set(ENV_IND_LOCKS, locks, false);
+        env_ind_set(ENV_IND_CHARGING, chg, false);
+        env_ind_force(ENV_IND_LOCKS, (force & 1u) != 0);
+        env_ind_force(ENV_IND_CHARGING, (force & 2u) != 0);
+        d[5] = MI_OK;
         return true;
     }
     switch (sub) {

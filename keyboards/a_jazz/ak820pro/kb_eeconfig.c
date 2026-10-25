@@ -18,13 +18,15 @@
 #include "bluetooth/ch582f_ajazz.h"
 #include "graphics/display.h"   /* DISPLAY_CLOCK_MODE_COUNT */
 #include "power.h"              /* POWER_MODE_COUNT */
+#include "indicators.h"         /* IND_LOCKS, IND_CHARGING */
+#include "indicator_levels.h"   /* IND_LEVEL_MAX */
 
-/* Layout (7 bytes; EECONFIG_KB_DATA_SIZE in config.h must match).
+/* Layout (9 bytes; EECONFIG_KB_DATA_SIZE in config.h must match).
  * A fresh block holds ZEROS, so 0 must mean "unset" for every field added
  * after first ship -- hence the +1 encodings. Bytes 0..3 are the phase-4
  * block; byte 4 (clock format) was appended 2026-09-01, byte 5 (battery
- * level) 2026-09-28 and byte 6 (power mode) 2026-10-18, each with a version
- * bump. */
+ * level) 2026-09-28, byte 6 (power mode) 2026-10-18 and bytes 7-8 (the
+ * indicator levels, the menu's P2a) 2026-10-25, each with a version bump. */
 typedef struct __attribute__((packed)) {
     uint8_t bt_profile;        // last BT slot selected (CH582_PROFILE_BT_1..3)
     uint8_t rtc_period_lo;     // converged RTC divider period, LE; 0 = unset
@@ -33,8 +35,10 @@ typedef struct __attribute__((packed)) {
     uint8_t clock_mode_p1;     // clock band format (display_clock_mode) + 1; 0 = unset
     uint8_t batt_level_p1;     // battery level in 0.5 % steps + 1 (1..201); 0 = unset
     uint8_t power_mode_p1;     // power mode (power_mode_t) + 1; 0 = unset
+    uint8_t ind_locks_p1;      // the lock lights' level (0-100) + 1; 0 = unset
+    uint8_t ind_charging_p1;   // the charging light's level (0-100) + 1; 0 = unset
 } kb_config_t;
-_Static_assert(sizeof(kb_config_t) == 7, "block layout is assign-only; do not grow casually");
+_Static_assert(sizeof(kb_config_t) == 9, "block layout is assign-only; do not grow casually");
 _Static_assert(sizeof(kb_config_t) == EECONFIG_KB_DATA_SIZE, "config.h EECONFIG_KB_DATA_SIZE must match the struct");
 
 static kb_config_t kb_config;
@@ -154,6 +158,26 @@ void kb_eeconfig_set_power_mode(uint8_t mode) {
     uint8_t p1 = (uint8_t)(mode + 1);
     if (kb_config.power_mode_p1 == p1) return;
     kb_config.power_mode_p1 = p1;
+    kb_mark_dirty();
+}
+
+static uint8_t *ind_field(uint8_t which) {
+    return which == IND_LOCKS ? &kb_config.ind_locks_p1 : which == IND_CHARGING ? &kb_config.ind_charging_p1 : NULL;
+}
+
+bool kb_eeconfig_get_ind_level(uint8_t which, uint8_t *level) {
+    const uint8_t *f = ind_field(which);
+    if (!f || *f == 0 || *f > IND_LEVEL_MAX + 1u) return false;   /* unset, or garbage */
+    *level = (uint8_t)(*f - 1u);
+    return true;
+}
+
+void kb_eeconfig_set_ind_level(uint8_t which, uint8_t level) {
+    uint8_t *f = ind_field(which);
+    if (!f || level > IND_LEVEL_MAX) return;
+    uint8_t p1 = (uint8_t)(level + 1u);
+    if (*f == p1) return;
+    *f = p1;
     kb_mark_dirty();
 }
 

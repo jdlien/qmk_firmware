@@ -42,6 +42,15 @@ void     env_rgb_flags(uint8_t flags);              /* _noeeprom only: restores 
 void     env_rgb_enable(bool on, bool save);        /* rgb_matrix_enable/disable, never a toggle */
 uint8_t  env_lcd_level(void);                       /* display_get_brightness(): the requested level */
 void     env_lcd_set(uint8_t level, bool save);     /* display_set_brightness(), and kb_eeconfig_set_lcd_brightness() to save */
+/* P2a's indicator groups (indicators.h's IND_LOCKS, IND_CHARGING): the level
+ * 0-100, set live and, to save, kb_eeconfig_set_ind_level(); and the
+ * preview's force, which lights the group whatever its state. */
+enum { ENV_IND_LOCKS = 0, ENV_IND_CHARGING = 1 };
+#define  ENV_IND_MAX 100u
+uint8_t  env_ind_level(uint8_t which);
+void     env_ind_set(uint8_t which, uint8_t level, bool save);
+void     env_ind_force(uint8_t which, bool on);
+uint8_t  env_ind_forced(void);                      /* the force bits, 1 << which (op 27 sub 14) */
 uint8_t  env_effects(void);                         /* rgb_effects_n */
 uint8_t  env_effect_mode(uint8_t i);
 const char *env_effect_name(uint8_t i);

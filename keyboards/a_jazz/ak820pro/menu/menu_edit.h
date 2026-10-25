@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 //
 // P1b's edit transaction (C6; plans/CONFIG-MENU-P1-DESIGN.md, "P1b"): one
-// previewing edit at most, of an RGB field or the LCD level. Pure logic over
+// previewing edit at most, of an RGB field, the LCD level or an indicator
+// level (P2a, which lights its LEDs while it's open). Pure logic over
 // menu_env.h's primitives, so the host tests run this sequencing, not a copy.
 #pragma once
 
@@ -19,10 +20,13 @@ enum {
     ME_SPEED,    /* speed, or Alphas/Mods' second colour's hue offset */
     ME_ENABLE,   /* Lights */
     ME_LCD,      /* the Screen's level */
+    ME_LOCKS,    /* P2a: the lock lights' level, 0-100 */
+    ME_CHG,      /* the charging light's */
 };
 
-/* The conflict domains of an external writer. */
-enum { ME_DOM_RGB = 1, ME_DOM_LCD = 2 };
+/* The conflict domains of an external writer. ME_DOM_IND has none today:
+ * only the menu sets an indicator level. */
+enum { ME_DOM_RGB = 1, ME_DOM_LCD = 2, ME_DOM_IND = 3 };
 
 /* The pending bits menu_tick() consumes (me_take_pending()). */
 enum {

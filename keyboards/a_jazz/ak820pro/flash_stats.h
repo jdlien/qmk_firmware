@@ -43,7 +43,10 @@ enum flash_writer { FW_OTHER = 0, FW_KB, FW_RGB, FW_VIA, FW_COUNT };
 #define KBF_CLOCK 0x08u
 #define KBF_BATT  0x10u
 #define KBF_PWR   0x20u
-#define KBF_COUNT 6
+#define KBF_LOCKS 0x40u   /* P2a: the lock lights' level */
+#define KBF_CHG   0x80u   /* the charging light's */
+#define KBF_COUNT 8       /* the masks are uint8_t: a ninth field widens them */
+#define KBF_PAGE1 6       /* page 1's fields, frozen; the rest on page 3 */
 
 /* backing_store_pre_write_hook: a write session starts. */
 void flash_stats_session(void);
@@ -74,9 +77,10 @@ void flash_stats_reset(void);
  *           u16 kb_mixed     -- kb sessions that changed more than one field
  *           u16 kb_unknown   -- kb sessions with no field mask (should be 0)
  *   page 1: u32 programs[FW_COUNT]
- *           u16 kb_field_sessions[KBF_COUNT] (bt, rtc, lcd, clock, batt,
+ *           u16 kb_field_sessions[0..KBF_PAGE1) (bt, rtc, lcd, clock, batt,
  *               power mode): kb sessions that changed that field ALONE (the
- *               power mode took the page's last, reserved, u16 in 2026-10)
+ *               power mode took the page's last, reserved, u16 in 2026-10).
+ *               Frozen: later fields are page 3's.
  *   page 2: u16 rtc_last_proposed, u8 rtc_last_proposed_path,
  *           u8 rtc_last_stored_path, u16 rtc_last_stored,
  *           u32 rtc_proposals_sof, u32 rtc_proposals_pcf,
@@ -84,5 +88,8 @@ void flash_stats_reset(void);
  *           u32 last_erase_uptime_ms (0: none),
  *           u16 the backing store's size in bytes (WEAR_LEVELING_BACKING_SIZE:
  *               an erase erases all of it)
+ *   page 3: u16 kb_field_sessions[KBF_PAGE1..KBF_COUNT) (the lock lights,
+ *               the charging light: P2a, 2026-10-25), the rest zero (old
+ *               firmware answers page 3 as unhandled)
  * Returns false for an unknown page. */
 bool flash_stats_fill(uint8_t page, uint8_t *out28);
