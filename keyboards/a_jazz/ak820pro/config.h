@@ -409,6 +409,14 @@
  * costs tens of bytes of RAM and absorbs any burst a hand can produce. */
 #define MAX_QUEUED_ENCODER_EVENTS 32
 
+/* The knob rests where its pins agree, 00 and 11 (resolution 2: two
+ * transitions a detent), so the decoder's count starts over at every rest
+ * (drivers/encoder/encoder_quadrature.c, a local change). Without it a count
+ * that began half a detent off (the pins read mid-change at init) lost the
+ * first detent after every reversal until a reboot (JD, 10-25).
+ * scripts/encoder_sim/ runs the decoder both ways. */
+#define ENCODER_REST_PINS_EQUAL
+
 /* Gap between the MODIFIER report and the CONSUMER usage for a modified consumer
  * keycode such as LSA(KC_VOLU). See process_modified_consumer() in ak820pro.c --
  * they travel on DIFFERENT USB ENDPOINTS and the host does not guarantee ordering

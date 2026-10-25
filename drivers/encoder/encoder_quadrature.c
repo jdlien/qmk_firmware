@@ -193,6 +193,17 @@ static void encoder_handle_state_change(uint8_t index, uint8_t state) {
         encoder_pulses[i] = 0;
     }
 #endif
+#ifdef ENCODER_REST_PINS_EQUAL
+    /* A knob that rests wherever its pins agree (00 and 11: two transitions a
+     * detent, resolution 2) starts its count over at every rest. A count begun
+     * out of step -- the pins read mid-change at init -- otherwise stays half a
+     * detent off for the session, and the first detent after every reversal
+     * only cancels it (the AK820 Pro, 10-25: "the first click in any direction
+     * doesn't move", gone after a reboot). A detent still reaches the
+     * resolution on its way in, so nothing else changes; a lone transition into
+     * a rest, which no detent makes, emits nothing. */
+    if (((state ^ (state >> 1)) & 1) == 0) encoder_pulses[i] = 0;
+#endif
 }
 
 void encoder_quadrature_handle_read(uint8_t index, uint8_t pin_a_state, uint8_t pin_b_state) {
