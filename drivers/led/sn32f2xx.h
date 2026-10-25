@@ -94,6 +94,13 @@ uint32_t sn32f2xx_led_load(void);
  * Main-thread only. */
 uint64_t sn32f2xx_led_drive_take(uint32_t now_ms, uint32_t *lit_ms, uint64_t rgb_ms[3]);
 
+/* True when every channel of the COMMITTED frame is zero. A scale or a colour
+ * set this pass reaches that frame only at the next flush, so a board that
+ * stops the row ISR (a deep sleep) waits for this: asleep the ISR keeps its
+ * frame, and at the restart it drives that frame again until a render
+ * replaces it. Main-thread only. */
+bool sn32f2xx_led_committed_dark(void);
+
 /* Scale every LED's output by scale/256 (255 = unscaled) below the rgb_matrix
  * config: dim or darken the matrix without touching the user's brightness.
  * Takes effect as the next frame renders. Main-thread only. */

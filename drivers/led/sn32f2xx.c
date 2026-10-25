@@ -953,6 +953,10 @@ uint64_t sn32f2xx_led_drive_take(uint32_t now_ms, uint32_t *lit_ms, uint64_t rgb
     return r;
 }
 
+bool sn32f2xx_led_committed_dark(void) {
+    return (drive_now[0] | drive_now[1] | drive_now[2]) == 0;
+}
+
 void sn32f2xx_flush(void) {
     if (led_state_buf_update_required) {
         /* The row ISR reads led_state[] to set each channel's duty, and this
