@@ -37,13 +37,17 @@ enum {
     N_BT0, N_BT1, N_BT2,                                        /* 40-42: Connection's slots */
     N_PAIRNOW,                                                  /* 43: "Pair device to BT n", the current slot (JD, 10-25) */
     N_PAIRING,                                                  /* 44: the Pairing page, its slot in the frame's cursor */
+    N_BATT, N_BV0, N_BV1,                                       /* 45-47: P4, Battery and its two readouts */
     N_COUNT
 };
 _Static_assert(N_COUNT <= 63, "a row's node is 6 bits");
 _Static_assert(MENU_HELP_TOPICS == 4, "Help's four topics");
 
 /* The build plan's order (P2a): Bootloader moves to the end of page one. */
-static const uint8_t top_rows[]   = {N_LIGHT, N_SCREEN, N_CONN, N_POWER, N_IND, N_CLOCK, N_DIAG, N_BOOT, N_HELP, N_ABOUT, N_EXIT};
+/* P4 (JD, 10-25): Battery under Clock, and Diagnostics under Bootloader on
+ * page two. */
+static const uint8_t top_rows[]   = {N_LIGHT, N_SCREEN, N_CONN, N_POWER, N_IND,  N_CLOCK,
+                                     N_BATT,  N_BOOT,   N_DIAG, N_HELP,  N_ABOUT, N_EXIT};
 static const uint8_t light_rows[] = {N_BACK, N_EFFECT, N_BRIGHT, N_HUE, N_SAT, N_SPEED, N_LIGHTS};
 static const uint8_t ind_rows[]   = {N_BACK, N_LOCKS, N_CHGL};
 static const uint8_t conn_rows[]  = {N_BACK, N_BT0, N_BT1, N_BT2, N_PAIRNOW};   /* P3: on BT */
@@ -51,6 +55,7 @@ static const uint8_t diag_rows[]  = {N_BACK, N_HEALTH, N_CAMERA, N_RESET};
 static const uint8_t help_rows[]  = {N_BACK, N_TOPIC0, N_TOPIC1, N_TOPIC2, N_TOPIC3};
 static const uint8_t power_rows[] = {N_BACK, N_POW0, N_POW1, N_POW2, N_POW3};
 static const uint8_t clock_rows[] = {N_BACK, N_CLK0, N_CLK1, N_CLK2, N_CLK3};
+static const uint8_t batt_rows[]  = {N_BACK, N_BV0, N_BV1};   /* P4 */
 
 static const char *const power_full[4]  = {"Always on", "Balanced", "Power saver", "Lights out"};
 static const char *const power_short[4] = {"Always on", "Balanced", "Saver", "Lights out"};
@@ -59,6 +64,10 @@ static const char *const power_short[4] = {"Always on", "Balanced", "Saver", "Li
 static const char *const clock_full[4]  = {"24 hour", "12 hour", "Date", "Off"};
 static const uint8_t     clock_enum[4]  = {0, 1, 3, 2};
 static const char *const clock_short_by_enum[4] = {"24h", "12h", "Off", "Date"};
+/* P4: the battery readout, by its row (0 percent, 1 hours), and the top
+ * level's value. */
+static const char *const batt_full[2]  = {"Percent", "Hours of use"};
+static const char *const batt_short[2] = {"Percent", "Hours"};
 /* P3: the top level's Connection value by link code (0 USB, 1 2.4G, 2-4 BT
  * 1-3), and the current slot's link in six cells by ENV_LINK_* state. */
 static const char *const link_names[5] = {"USB", "2.4G", "BT 1", "BT 2", "BT 3"};
@@ -87,6 +96,7 @@ static const char *label_of(uint8_t node) {
     switch (node) {
         case N_POWER:  return "Power";
         case N_CLOCK:  return "Clock";
+        case N_BATT:   return "Battery";   /* P4 */
         case N_DIAG:   return "Diagnostics";
         case N_HELP:   return "Help";
         case N_ABOUT:  return "About";
@@ -114,6 +124,7 @@ static const char *label_of(uint8_t node) {
     if (node >= N_TOPIC0 && node <= N_TOPIC3) return menu_help_titles[node - N_TOPIC0];
     if (node >= N_POW0 && node <= N_POW3) return power_full[node - N_POW0];
     if (node >= N_CLK0 && node <= N_CLK3) return clock_full[node - N_CLK0];
+    if (node >= N_BV0 && node <= N_BV1) return batt_full[node - N_BV0];
     return "";
 }
 
@@ -133,6 +144,7 @@ static const char *icon_of(uint8_t node) {
         case N_BOOT:  return MT_I_BOOT;
         case N_IND:   return MT_I_IND;    /* P2a: the sun (JD's pick) */
         case N_CONN:  return MT_I_CONN;   /* Bluetooth */
+        case N_BATT:  return MT_I_BATT " ";   /* P4: a vertical battery */
         default:      return NULL;
     }
 }
@@ -198,6 +210,7 @@ static const uint8_t *rows_of(uint8_t node, uint8_t *n) {
         case N_HELP:  *n = sizeof help_rows;  return help_rows;
         case N_POWER: *n = sizeof power_rows; return power_rows;
         case N_CLOCK: *n = sizeof clock_rows; return clock_rows;
+        case N_BATT:  *n = sizeof batt_rows;  return batt_rows;
         case N_LIGHT: *n = sizeof light_rows; return light_rows;
         case N_IND:   *n = sizeof ind_rows;   return ind_rows;
         case N_CONN:  *n = sizeof conn_rows;  return conn_rows;
@@ -240,9 +253,10 @@ static bool is_list(uint8_t node) {
 }
 static bool is_bt_screen(uint8_t node) { return node == N_CONN || node == N_PAIRING; }   /* P3: on BT only */
 static bool is_preview(uint8_t node) { return node == N_EFFECT || node == N_LIGHTS; }   /* P1b's previewing choices */
-static bool is_choice(uint8_t node) { return node == N_POWER || node == N_CLOCK || is_preview(node); }
+static bool is_choice(uint8_t node) { return node == N_POWER || node == N_CLOCK || node == N_BATT || is_preview(node); }
 static bool is_option(uint8_t node) {   /* a row a check box marks: a choice's option, or a slot (P3) */
-    return (node >= N_POW0 && node <= N_CLK3) || node == N_EFFOPT || node == N_LTSOPT || (node >= N_BT0 && node <= N_BT2);
+    return (node >= N_POW0 && node <= N_CLK3) || node == N_EFFOPT || node == N_LTSOPT || (node >= N_BT0 && node <= N_BT2) ||
+           (node >= N_BV0 && node <= N_BV1);
 }
 static bool is_ind_editor(uint8_t node) { return node == N_LOCKS || node == N_CHGL; }   /* P2a */
 static bool is_editor(uint8_t node) { return node == N_SCREEN || (node >= N_BRIGHT && node <= N_SPEED) || is_ind_editor(node); }
@@ -282,6 +296,7 @@ static uint8_t saved_row(uint8_t node) {
     if (node == N_POWER) return (uint8_t)(1u + (model_power & 3u));
     if (node == N_EFFECT) return (uint8_t)(effect_index(me_saved()) + 1);
     if (node == N_LIGHTS) return me_saved() ? 2u : 1u;
+    if (node == N_BATT) return env_batt_hours() ? 2u : 1u;   /* P4 */
     for (uint8_t i = 0; i < 4; i++)
         if (clock_enum[i] == model_clock) return (uint8_t)(1u + i);
     return 1;
@@ -294,7 +309,8 @@ enum { T_TOP = 1, T_POWER, T_CLOCK, T_DIAG, T_HELP, T_ABOUT, T_TOPIC0, T_RESET =
        T_BOOT, T_BOOT_BUSY,                                                                 /* 30-31 */
        T_IND, T_CONN, T_LOCKS, T_CHGL,                                                      /* 32-35: P2a */
        T_PAIRING, T_NOW_BT1, T_NOW_BT2, T_NOW_BT3,                                          /* 36-39: P3 */
-       T_ALREADY_BT1, T_ALREADY_BT2, T_ALREADY_BT3, T_PAIR_STOPPED };                       /* 40-43 */
+       T_ALREADY_BT1, T_ALREADY_BT2, T_ALREADY_BT3, T_PAIR_STOPPED,                         /* 40-43 */
+       T_BATT };                                                                            /* 44: P4 */
 _Static_assert(T_RESET == 11, "the title ids: the design's table");
 
 static uint8_t screen_title(void) {
@@ -322,6 +338,7 @@ static uint8_t screen_title(void) {
         case N_LOCKS:  return T_LOCKS;
         case N_CHGL:   return T_CHGL;
         case N_PAIRING:  return T_PAIRING;
+        case N_BATT:   return T_BATT;
         default:      return is_topic(n) ? (uint8_t)(T_TOPIC0 + (n - N_TOPIC0)) : T_TOP;
     }
 }
@@ -362,6 +379,7 @@ static const char *title_text(uint8_t id) {
         case T_ALREADY_BT2: return "Already on BT 2";
         case T_ALREADY_BT3: return "Already on BT 3";
         case T_PAIR_STOPPED: return "Pairing stopped";
+        case T_BATT:       return "Battery";
         default: break;
     }
     if (id >= T_TOPIC0 && id < T_TOPIC0 + 4) return menu_help_titles[id - T_TOPIC0];
@@ -387,6 +405,7 @@ static const char *title_icon(uint8_t id) {
         case T_CHGL:   return icon_of(N_IND);
         case T_CONN:
         case T_PAIRING: return icon_of(N_CONN);
+        case T_BATT:   return icon_of(N_BATT);
         default:      return id >= T_LIGHT && id <= T_LIGHTS ? icon_of(N_LIGHT) : "";
     }
 }
@@ -546,6 +565,7 @@ static row_t row_at(uint8_t r) {
     x.lit  = i == f->cursor;
     if (x.node == N_POWER) x.val = model_power & 3u;
     else if (x.node == N_CLOCK) x.val = model_clock & 3u;
+    else if (x.node == N_BATT) x.val = env_batt_hours() ? 1u : 0u;   /* P4: only the menu changes it, so no latch */
     else if (x.node == N_CONN) x.val = link_code();   /* P3: the link, link_names[] */
     else if (x.node == N_PAIRNOW) x.val = (uint8_t)(link_slot() > 2u ? 2u : link_slot());   /* the slot it pairs */
     else if (x.node >= N_BT0 && x.node <= N_BT2) {   /* the current slot: its check, and its link's word */
@@ -602,6 +622,7 @@ static void row_text(const row_t *x, char *out) {
     const char *value = "";
     if (x->node == N_POWER) value = power_short[x->val & 3u];
     else if (x->node == N_CLOCK) value = clock_short_by_enum[x->val & 3u];
+    else if (x->node == N_BATT) value = batt_short[x->val & 1u];
     else if (x->node == N_CONN) value = link_names[x->val % 5u];          /* P3 */
     else if (x->node >= N_BT0 && x->node <= N_BT2) value = link_words[x->val % 5u];
     else if (x->node == N_DIAG || x->node == N_HELP || x->node == N_ABOUT || x->node == N_HEALTH ||
@@ -1164,6 +1185,7 @@ static menu_result_t activate(uint32_t now) {
     if (is_choice(f->node)) {   /* commit the option under the cursor */
         uint8_t i = (uint8_t)(f->cursor - 1u);
         if (f->node == N_POWER) { env_power_set(i); model_power = i; }
+        else if (f->node == N_BATT) env_batt_hours_set(i == 1u);   /* P4 */
         else { env_clock_set(clock_enum[i]); model_clock = clock_enum[i]; }
         flash(T_SAVED, now);
         return pop(now);
@@ -1171,6 +1193,7 @@ static menu_result_t activate(uint32_t now) {
     switch (node) {
         case N_POWER:
         case N_CLOCK:
+        case N_BATT:
             push(node, saved_row(node));
             show(false, false, now);
             return MENU_NONE;

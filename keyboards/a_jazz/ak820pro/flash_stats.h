@@ -45,7 +45,8 @@ enum flash_writer { FW_OTHER = 0, FW_KB, FW_RGB, FW_VIA, FW_COUNT };
 #define KBF_PWR   0x20u
 #define KBF_LOCKS 0x40u   /* P2a: the lock lights' level */
 #define KBF_CHG   0x80u   /* the charging light's */
-#define KBF_COUNT 8       /* the masks are uint8_t: a ninth field widens them */
+#define KBF_BVIEW 0x100u  /* P4: the battery readout (the masks are uint16_t since) */
+#define KBF_COUNT 9
 #define KBF_PAGE1 6       /* page 1's fields, frozen; the rest on page 3 */
 
 /* backing_store_pre_write_hook: a write session starts. */
@@ -89,7 +90,8 @@ void flash_stats_reset(void);
  *           u16 the backing store's size in bytes (WEAR_LEVELING_BACKING_SIZE:
  *               an erase erases all of it)
  *   page 3: u16 kb_field_sessions[KBF_PAGE1..KBF_COUNT) (the lock lights,
- *               the charging light: P2a, 2026-10-25), the rest zero (old
- *               firmware answers page 3 as unhandled)
+ *               the charging light: P2a, 2026-10-25; the battery readout:
+ *               P4, offset 4), the rest zero (old firmware answers page 3
+ *               as unhandled)
  * Returns false for an unknown page. */
 bool flash_stats_fill(uint8_t page, uint8_t *out28);

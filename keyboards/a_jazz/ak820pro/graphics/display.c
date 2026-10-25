@@ -6,6 +6,7 @@
 
 #include "graphics/display.h"
 #include "graphics/playback.h"
+#include "graphics/batt_text.h"   /* the battery readout's text (P4) */
 #include "lcd_bus.h"
 
 #include <string.h>
@@ -1951,19 +1952,12 @@ static void draw_battery(bool force) {
     else if (batt <= 100 && pm < 1000u)           snprintf(txt, sizeof(txt), "%u.%u%%", pm / 10u, pm % 10u);
 #endif
     else if (batt <= 100) {
-        /* Hours of USE beside the level once they matter: under 10 h on
-         * battery, with a mature average (plans/DEEP-SLEEP-BUILD-PLAN.md,
-         * section 7): "18% 6h", "99% <1h", at most 7 cells. Rounded down. */
-        uint16_t left = battery_time_left_min();
-        if (st == BATTERY_STATE_BATTERY && left < 600u && battery_avg_minutes() >= 60u) {
-            char wide[16];   /* the compiler cannot prove 7 fit: composed wide, then copied */
-            if (left < 60u) snprintf(wide, sizeof(wide), "%u%% <1h", batt);
-            else            snprintf(wide, sizeof(wide), "%u%% %uh", batt, (unsigned)(left / 60u));
-            memcpy(txt, wide, sizeof(txt) - 1u);
-            txt[sizeof(txt) - 1u] = '\0';
-        } else {
-            snprintf(txt, sizeof(txt), "%u%%", batt);
-        }
+        /* The percent, with the hours of use under 10 h ("18% 6h"); or the
+         * hours of use ("160h", the menu's Battery: JD, 10-25) once the
+         * estimate is ready. graphics/batt_text.c has the rules. */
+        _Static_assert(sizeof(txt) == BATT_TEXT_MAX + 1u, "the text slot's cells and its NUL");
+        batt_level_text(txt, batt, st == BATTERY_STATE_BATTERY, battery_time_left_min(),
+                        battery_avg_minutes() >= 60u, kb_eeconfig_get_batt_hours());
     }
     /* "Charge", not "Charging": at 10 px a cell that is 80 px against the 76
      * between the icon slot and the bezel margin, and it would start inside

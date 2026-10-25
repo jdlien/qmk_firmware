@@ -31,6 +31,7 @@ SRC += lockchan_media.c   # what a committed frame means (pure logic; used by de
 
 SRC += graphics/display.c
 SRC += graphics/playback.c   # the playback readout's state (pure logic)
+SRC += graphics/batt_text.c  # the battery readout's text, percent or hours (pure logic; the menu's P4)
 SRC += rtc/rtc.c
 SRC += watchdog.c   # hardware WDT: arm/kick/boot accounting/bootloader stop
 SRC += watchdog_record.c # reset-retained operation breadcrumbs

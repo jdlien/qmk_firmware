@@ -9,7 +9,8 @@
 
 /* The writer the next session belongs to, set by the EEPROM write that is
  * about to open it, and consumed (back to OTHER) when it does. */
-static uint8_t  pending_writer = FW_OTHER, pending_mask = 0;
+static uint8_t  pending_writer = FW_OTHER;
+static uint16_t pending_mask = 0;   /* KBF_* bits: nine fields since P4 */
 static uint8_t  session_writer = FW_OTHER;
 
 static uint32_t sessions[FW_COUNT], programs[FW_COUNT];
@@ -27,17 +28,20 @@ static uint32_t rtc_proposals[2], rtc_stores[2];
 #define VIA_START ((uint32_t)(EECONFIG_SIZE))              /* VIA's magic, config, keymap, macros */
 
 /* kb_eeconfig.c's kb_config_t, byte by byte: bt, rtc lo, rtc hi, lcd, clock,
- * battery, power mode, the lock lights, the charging light. A layout change
- * there must change this table. */
-static const uint8_t kb_byte_field[] = {KBF_BT, KBF_RTC, KBF_RTC, KBF_LCD, KBF_CLOCK, KBF_BATT, KBF_PWR, KBF_LOCKS, KBF_CHG};
-_Static_assert(sizeof(kb_byte_field) == EECONFIG_KB_DATA_SIZE, "one field per kb datablock byte");
-_Static_assert(KBF_COUNT <= 8 && KBF_CHG == (1u << (KBF_COUNT - 1)), "every field a bit of a uint8_t mask");
+ * battery, power mode, the lock lights, the charging light, the battery
+ * readout. A layout change there must change this table. */
+static const uint16_t kb_byte_field[] = {KBF_BT,  KBF_RTC,   KBF_RTC,   KBF_LCD, KBF_CLOCK,
+                                         KBF_BATT, KBF_PWR, KBF_LOCKS, KBF_CHG, KBF_BVIEW};
+/* The element count, not sizeof: a uint16_t array's bytes are twice it. */
+_Static_assert(sizeof(kb_byte_field) / sizeof(kb_byte_field[0]) == EECONFIG_KB_DATA_SIZE, "one field per kb datablock byte");
+_Static_assert(KBF_COUNT <= 16 && KBF_BVIEW == (1u << (KBF_COUNT - 1)), "every field a bit of a uint16_t mask");
 
 /* Called by drivers/eeprom/eeprom_wear_leveling.c's eeprom_write_block() just
  * before wear_leveling_write(), which skips the write when nothing changes. */
 void eeprom_wear_leveling_write_hook(uint32_t addr, const void *buf, size_t len) {
     const uint8_t *b = (const uint8_t *)buf;
-    uint8_t        w = FW_OTHER, mask = 0;
+    uint8_t        w = FW_OTHER;
+    uint16_t       mask = 0;
     if (addr >= KB_START && addr < KB_START + EECONFIG_KB_DATA_SIZE) {
         w = FW_KB;
         for (size_t i = 0; i < len && addr + i < KB_START + EECONFIG_KB_DATA_SIZE; i++) {
@@ -57,7 +61,7 @@ void flash_stats_session(void) {
     session_writer = pending_writer;
     sessions[session_writer]++;
     if (session_writer == FW_KB) {
-        uint8_t m = pending_mask;
+        uint16_t m = pending_mask;
         if (m == 0) {
             if (kb_unknown < UINT16_MAX) kb_unknown++;
         } else if (m & (m - 1u)) {
@@ -140,8 +144,8 @@ bool flash_stats_fill(uint8_t page, uint8_t *out28) {
             PUT32(last_erase_ms);                                        /* 26 */
             PUT16(WEAR_LEVELING_BACKING_SIZE);                           /* 28: an erase is all of it */
             break;
-        case 3:   /* P2a: the fields after page 1's six; the rest zero */
-            for (uint8_t i = KBF_PAGE1; i < KBF_COUNT; i++) PUT16(kb_field_sessions[i]);   /* 4 */
+        case 3:   /* P2a and P4: the fields after page 1's six; the rest zero */
+            for (uint8_t i = KBF_PAGE1; i < KBF_COUNT; i++) PUT16(kb_field_sessions[i]);   /* 6 */
             break;
         default:
             return false;

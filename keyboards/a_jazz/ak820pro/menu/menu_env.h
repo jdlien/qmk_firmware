@@ -26,6 +26,8 @@ void     env_power_set(uint8_t m);      /* power_set_mode() */
 uint8_t  env_clock_mode(void);          /* enum display_clock_mode: 0 24H, 1 12H, 2 OFF, 3 DATE */
 void     env_clock_set(uint8_t m);      /* display_set_clock_mode() + kb_eeconfig_set_clock_mode() */
 void     env_health_reset(void);        /* health_reset() + display_debug_refresh() */
+bool     env_batt_hours(void);          /* P4: the dashboard's battery in hours of use, not percent */
+void     env_batt_hours_set(bool h);    /* kb_eeconfig_set_batt_hours(): draw_battery() reads it there */
 
 /* P1b's primitives (menu_edit.c's): each one QMK or board call in
  * menu_glue.c; the host's fakes copy their semantics. QMK's mode and HSV

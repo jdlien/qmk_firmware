@@ -41,6 +41,7 @@
 #define MT_I_CONN       "\x9c\x9d"   /* Connection; in blue, a slot advertising (P3) */
 #define MT_I_WAIT       "\x9e\x9f"   /* P3: a slot linking, in grey (the hourglass) */
 #define MT_I_FAIL       "\xa0\xa1"   /* P3: a slot failed, in red (the circled X) */
+#define MT_I_BATT       "\xa2"       /* P4: Battery */
 
 /* A line as a slot paints it: `lead` pixels, then `cells` glyph cells (the
  * string, padded with spaces, codes the face hasn't shown as '?'), then

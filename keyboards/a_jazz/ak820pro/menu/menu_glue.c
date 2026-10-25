@@ -62,6 +62,10 @@ void env_health_reset(void) {
     health_reset();
     display_debug_refresh();
 }
+/* P4: the battery readout. The dashboard reads the setting each time it
+ * composes the text, so the menu's close (the staged restore) shows it. */
+bool env_batt_hours(void) { return kb_eeconfig_get_batt_hours(); }
+void env_batt_hours_set(bool h) { kb_eeconfig_set_batt_hours(h); }
 
 /* P1b's primitives (menu_edit.c sequences them): one QMK or board call each. */
 void env_rgb_get(env_rgb_t *c) {
