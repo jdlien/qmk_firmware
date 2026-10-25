@@ -49,7 +49,7 @@ bool     env_effect_two_tone(uint8_t mode);         /* the mode uses speed as it
 /* The bootloader item: Fn+Esc's path (the splash, 1.5 s, reset_keyboard());
  * and whether the battery is in its reserve, when it refuses (flash.sh's
  * rule: power_lights_cut()). */
-void     env_bootloader(void);
+bool     env_bootloader(void);   /* false: a key's release couldn't be sent over the radio: not entered */
 bool     env_reserve(void);
 #define  ENV_UNKNOWN 0xFFFFu
 typedef struct {

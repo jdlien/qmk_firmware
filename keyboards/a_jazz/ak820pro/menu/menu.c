@@ -221,7 +221,7 @@ static uint8_t saved_row(uint8_t node) {
 enum { T_TOP = 1, T_POWER, T_CLOCK, T_DIAG, T_HELP, T_ABOUT, T_TOPIC0, T_RESET = T_TOPIC0 + 4,
        T_SAVED = 16, T_CANCELLED, T_RESET_DONE, T_HINT, T_HINT_BACK,
        T_LIGHT, T_SCREEN, T_EFFECT, T_BRIGHT, T_HUE, T_SAT, T_SPEED, T_SECOND, T_LIGHTS,   /* 21-29: P1b */
-       T_BOOT };                                                                            /* 30 */
+       T_BOOT, T_BOOT_BUSY };                                                               /* 30-31 */
 _Static_assert(T_RESET == 11, "the title ids: the design's table");
 
 static uint8_t screen_title(void) {
@@ -270,6 +270,7 @@ static const char *title_text(uint8_t id) {
         case T_SECOND:     return "Second color";
         case T_LIGHTS:     return "Lights";
         case T_BOOT:       return "Bootloader";
+        case T_BOOT_BUSY:  return "Try again";   /* a key's release didn't go over the radio */
         default: break;
     }
     if (id >= T_TOPIC0 && id < T_TOPIC0 + 4) return menu_help_titles[id - T_TOPIC0];
@@ -533,6 +534,9 @@ static void bar_state(uint8_t *count, uint8_t *top) {
     if (is_topic(f->node)) *count = topic_lines(f->node);
     else if (f->node == N_ABOUT) *count = 8;
     else *count = row_count(f->node);
+    /* A list pages by 8, so its last page's top can pass count - 8 (nine rows:
+     * 8); the thumb sits at the end then (codex: it was drawn off the panel). */
+    if (*count > MENU_ROWS && *top > *count - MENU_ROWS) *top = (uint8_t)(*count - MENU_ROWS);
 }
 static uint16_t bar_sig(void) {
     uint8_t count, top;
@@ -1122,6 +1126,13 @@ void menu_tick(uint32_t now, uint32_t idle_ms) {
         moved    = true;
     }
     if (moved) ms_retarget();
+}
+
+void menu_bootloader_refused(uint32_t now) {
+    if (!depth) return;
+    flash(T_BOOT_BUSY, now);
+    retitle(now);
+    ms_retarget();
 }
 
 uint8_t menu_screen_id(void) { return depth ? (uint8_t)(16u + cur()->node) : 0; }

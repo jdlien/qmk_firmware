@@ -136,7 +136,9 @@ void menu_ops_task(uint32_t now) {
                 case MENU_DIAG_HEALTH: (void)env_po_event(PO_EV_DIAG_HEALTH); return;
                 case MENU_DIAG_CAMERA: (void)env_po_event(PO_EV_DIAG_CAMERA); return;
                 case MENU_CLOSE:       (void)env_po_event(PO_EV_CLOSE); return;
-                case MENU_BOOTLOADER:  env_bootloader(); return;   /* resets: does not return on the board */
+                case MENU_BOOTLOADER:   /* resets, and doesn't return, unless a release couldn't be sent */
+                    if (!env_bootloader()) menu_bootloader_refused(now);
+                    return;
                 case MENU_NONE:        break;
             }
         } else {

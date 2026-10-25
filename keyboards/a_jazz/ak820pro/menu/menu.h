@@ -28,6 +28,7 @@ menu_result_t menu_input(int8_t turns, mi_latch_t latch, uint32_t now);
 void          menu_tick(uint32_t now, uint32_t idle_ms);  /* each pass: the latched model and the title */
 uint8_t       menu_screen_id(void);                       /* op 27 sub 5, byte 14: 16 + the node showing */
 uint8_t       menu_cursor(void);                          /* byte 15: the cursor, a topic's top line, the confirm's page */
+void          menu_bootloader_refused(uint32_t now);      /* env_bootloader() couldn't release the keys: "Try again" */
 
 /* The palette: these defaults, and on dev builds op 27 sub 13 changes one
  * live (JD tunes colours on the panel without a flash a shade). */

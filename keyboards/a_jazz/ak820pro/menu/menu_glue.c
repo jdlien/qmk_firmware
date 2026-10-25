@@ -88,16 +88,26 @@ void    env_lcd_set(uint8_t level, bool save) {
 uint8_t     env_effects(void) { return rgb_effects_n; }
 uint8_t     env_effect_mode(uint8_t i) { return i < rgb_effects_n ? rgb_effects[i].mode : 0; }
 const char *env_effect_name(uint8_t i) { return i < rgb_effects_n ? rgb_effects[i].name : ""; }
-/* The bootloader item: exactly Fn+Esc's path (ak820pro.c, QK_BOOT): the
- * notice, held long enough to read, then QMK's clean reset into the ROM. Never
- * the direct jump to SN32_BOOTLOADER_ADDRESS: it made flashing unreliable
- * (the comment at QK_BOOT, 2026-08-31). */
-void env_bootloader(void) {
+/* The bootloader item: the raw-HID jump's preparation (hid_protocol.c,
+ * HC_BOOTLOADER; codex on the item: over BT clear_keyboard()'s releases are
+ * frames the main loop pumps, so pump them and see them ACKed, or a key stays
+ * down at the host through the flash), then exactly Fn+Esc's path (ak820pro.c,
+ * QK_BOOT): the notice, held long enough to read, then QMK's clean reset into
+ * the ROM. Never the direct jump to SN32_BOOTLOADER_ADDRESS: it made flashing
+ * unreliable (the comment at QK_BOOT, 2026-08-31). The raw-HID path's 2 s
+ * idle guard isn't copied: the knob's click is input activity. */
+bool env_bootloader(void) {
+    clear_keyboard();
+    bool queued = ch582_is_usb() || ch582_send_releases();   /* fresh, on every attempt */
+    if (!queued || !ch582_tx_drain(500)) return false;
     display_bootloader_splash();
     wait_ms(1500);
-    reset_keyboard();
+    reset_keyboard();   /* does not return */
+    return true;
 }
-bool env_reserve(void) { return power_lights_cut(); }
+/* flash.sh's rule exactly: on battery AND the RGB cut fired (the cut stays
+ * latched a few seconds after power arrives). */
+bool env_reserve(void) { return battery_on_battery() && power_lights_cut(); }
 bool        env_effect_two_tone(uint8_t mode) {
 #ifdef ENABLE_RGB_MATRIX_ALPHAS_MODS
     return mode == RGB_MATRIX_ALPHAS_MODS;   /* alpha_mods_anim.h: hsv.h += speed */
