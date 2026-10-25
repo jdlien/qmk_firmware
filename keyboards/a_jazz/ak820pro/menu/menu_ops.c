@@ -290,7 +290,8 @@ bool menu_ops_op27(uint8_t *d, uint32_t now) {
     if (sub == 14) {   /* P1b's edit, read: [6] open, [7] its field (ME_*), [8] the live value, [9] the saved one,
                         * [10..11] the external writes that cancelled an edit (the board's exit gates); P2a:
                         * [12] the lock lights' live level, [13] the charging light's, [14] the force bits;
-                        * P3: [15] the link (env_link()), [16] the pairing facts */
+                        * P3: [15] the link (env_link()), [16] the pairing facts; [17] the knob
+                        * decoder's state (its pins at rest: ENCODER_REST_PINS_EQUAL's check) */
         memset(&d[5], 0, 27);
         d[5] = MI_OK;
         d[6] = me_active() ? 1u : 0u;
@@ -303,6 +304,7 @@ bool menu_ops_op27(uint8_t *d, uint32_t now) {
         d[14] = env_ind_forced();
         d[15] = env_link();
         d[16] = env_bt_pair_facts();
+        d[17] = env_knob_state();
         return true;
     }
     if (sub == 16) {   /* P3's bench: [5] a link byte (ENV_LINK_* packed), or 0xFF for the live one; [6] the

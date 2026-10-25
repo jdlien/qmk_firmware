@@ -220,6 +220,10 @@ uint16_t env_po_event(po_event_t ev) { return display_po_event(ev); }
 bool     env_wake_notice_take(void) { return display_wake_notice_take(); }
 bool     env_wake_held(void) { return display_wake_held(); }
 #ifdef AK820_DEV_HOOKS
+/* The knob's rest states, read on the board (ENCODER_REST_PINS_EQUAL assumes
+ * the pins agree at rest: 00 or 11). drivers/encoder/encoder_quadrature.c. */
+uint8_t encoder_quadrature_state(uint8_t index);
+uint8_t env_knob_state(void) { return encoder_quadrature_state(0); }
 void    env_lost_inject(void) { lcd_blit_lost_inject(); }
 bool    env_batt_dirty(void) { return display_batt_dirty(); }
 bool    env_logo_stale(void) { return display_logo_stale(); }

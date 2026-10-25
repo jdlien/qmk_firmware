@@ -87,6 +87,7 @@ void     env_bt_pair_cancel(void);      /* bt_ui_pair_cancel(): a click that sen
 enum { ENV_PF_WAITING = 1, ENV_PF_RETRYING = 2, ENV_PF_CONFIRMED = 4, ENV_PF_SEL_LOST = 8 };
 uint8_t  env_bt_pair_facts(void);
 void     env_bt_standin(uint8_t link, uint8_t facts);   /* op 27 sub 16 (dev): link 0xFF is the live one */
+uint8_t  env_knob_state(void);   /* op 27 sub 14 (dev): the knob decoder's state, its pins at rest (A bit 0, B bit 1) */
 uint32_t env_build_hash(void);          /* AK820_BUILD_HASH: 8 hex digits */
 bool     env_build_dirty(void);
 uint32_t env_build_token(void);

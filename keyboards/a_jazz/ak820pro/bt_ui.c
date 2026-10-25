@@ -191,11 +191,16 @@ void bt_pair_hold_task(void) {
         /* Not while the select is still being sent: a bounce's own 5B 32 says
          * CONNECTED, and A6 51 then would replace the bounce and pair the
          * bounce slot (codex on P3's design). A select whose retries ran out
-         * unanswered gets no pair at all: the module may be on another slot. */
+         * unanswered gets no pair at all: the module may be on another slot.
+         * Sent once the select is out, A6 51 queues behind it, so the module
+         * pairs the slot it was just told. Sent even if the link reads
+         * advertising by then: a 5B names no slot, and one the old slot sent
+         * as the select went out would otherwise drop the pair (codex on P3's
+         * code); a second A6 51 is what stock sends anyway. */
         ch582_conn_state_t st  = ch582_get_conn_state();
         ch582_select_t     sel = ch582_select_state();
-        if (wireless_mode != WL_MODE_BT || sel == CH582_SEL_LOST || (st == CH582_CONN_PAIRING && ch582_pair_confirmed())) {
-            menu_pair_armed = false;   /* off BT; lost; or already advertising: pairable, nothing to send */
+        if (wireless_mode != WL_MODE_BT || sel == CH582_SEL_LOST) {
+            menu_pair_armed = false;   /* off BT, or lost */
         } else if (sel == CH582_SEL_ACKED &&
                    (st != CH582_CONN_LINKING || timer_elapsed(menu_pair_timer) >= BT_MENU_PAIR_WAIT_MS)) {
             menu_pair_armed = false;
