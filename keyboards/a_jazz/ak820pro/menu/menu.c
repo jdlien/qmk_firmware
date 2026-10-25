@@ -976,9 +976,18 @@ static void open_editor(uint8_t node, uint32_t now) {
     ms_set_layout(is_hue_editor(node) ? &L_HUE : &L_RANGE, false);
 }
 
+/* A 0-255 value as its percentage (fmt_value's rounding), and the value
+ * that shows a percentage: pct_of(val_of_pct(p)) == p for every p. */
+static int16_t pct_of(int16_t v) { return (int16_t)((v * 100 + 127) / 255); }
+static int16_t val_of_pct(int16_t p) { return (int16_t)((p * 255 + 50) / 100); }
+
 /* A turn in an editor: the field's next value, previewed. Fast (the mockup's
  * rule, codex's predicate): two or more detents in one input, or one within
- * 90 ms of the editor's last turn. A range clamps; a hue wraps. */
+ * 90 ms of the editor's last turn. A range clamps; a hue wraps. A slow
+ * detent is the finest step the value shows (JD, 10-25: "micro-adjustments
+ * by one value/percent"): a hue's unit, a level, or the next percentage of
+ * a 0-255 value; a fast one is 8% (as fast as the old 20 of 255) or 12 hue
+ * units. The Screen's 24 levels are the panel's own: one a detent. */
 static void edit_turn(int8_t turns, uint32_t now) {
     bool fast = turns >= 2 || turns <= -2 || (ft_have && (uint32_t)(now - ft_last) < 90u);
     ft_have   = true;
@@ -986,13 +995,17 @@ static void edit_turn(int8_t turns, uint32_t now) {
     uint8_t node = cur()->node;
     int16_t v    = me_value();
     if (is_hue_editor(node))
-        v = (int16_t)((v + turns * (fast ? 12 : 3)) & 255);
-    else {
-        /* P2a's indicators: 1% a detent, 5 fast (JD: "1-100 in 1% increments"). */
-        int16_t max = e_range_max(), step = node == N_SCREEN ? 1 : is_ind_editor(node) ? (fast ? 5 : 1) : (fast ? 20 : 5);
-        v = (int16_t)(v + turns * step);
+        v = (int16_t)((v + turns * (fast ? 12 : 1)) & 255);
+    else if (node == N_SCREEN || is_ind_editor(node)) {   /* levels: the Screen's 0-23, the indicators' 0-100 */
+        int16_t max = e_range_max();
+        v = (int16_t)(v + turns * (node == N_SCREEN || !fast ? 1 : 8));
         if (v < 0) v = 0;
         if (v > max) v = max;
+    } else {   /* a 0-255 value shown as a percentage */
+        int16_t p = (int16_t)(pct_of(v) + turns * (fast ? 8 : 1));
+        if (p < 0) p = 0;
+        if (p > 100) p = 100;
+        v = val_of_pct(p);
     }
     me_preview((uint8_t)v);
     ms_retarget();
