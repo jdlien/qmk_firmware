@@ -65,9 +65,9 @@ static const char *const power_short[4] = {"Always on", "Balanced", "Saver", "Li
  * 12h:ss = 12H (1), 12h = 12H_HM (5), Date = DATE (3), Off = OFF (2). Each
  * row but Off shows a live example of its format (clock_example()). */
 #define CLOCK_ROWS 6
-static const char *const clock_full[CLOCK_ROWS] = {"24h", "24h", "12h", "12h", "Date", "Off"};
+static const char *const clock_full[CLOCK_ROWS] = {"24h:ss", "24h", "12h:ss", "12h", "Date", "Off"};   /* JD: as Fn+C names them */
 static const uint8_t     clock_enum[CLOCK_ROWS] = {0, 4, 1, 5, 3, 2};
-static const char *const clock_short_by_enum[CLOCK_ROWS] = {"24h", "12h", "Off", "Date", "24h", "12h"};
+static const char *const clock_short_by_enum[CLOCK_ROWS] = {"24h:ss", "12h:ss", "Off", "Date", "24h", "12h"};
 /* A Clock row's index (0-5), or -1. */
 static int8_t clk_row(uint8_t node) {
     if (node >= N_CLK0 && node <= N_CLK3) return (int8_t)(node - N_CLK0);
@@ -755,16 +755,16 @@ static const char *clock_example(uint8_t row, char *buf) {   /* buf: 24 */
 static uint16_t clock_sig(const row_t *x, uint8_t row) {
     env_time_t t;
     uint8_t    mode = clock_enum[row];
-    uint32_t   tick = 0x7Fu;
-    bool       wide = false;
-    if (env_clock_now(&t)) {
-        if (row == 4u) tick = (uint32_t)t.month * 32u + t.day;
-        else if (mode == 0u || mode == 1u) tick = (uint32_t)t.hours * 3600u + t.minutes * 60u + t.seconds;
-        else tick = (uint32_t)t.hours * 60u + t.minutes;
-        if (mode == 1u) wide = t.hours % 12u == 0u || t.hours % 12u >= 10u;
-    }
-    return (uint16_t)(0x2000u | ((uint16_t)row << 10) | (wide ? 0x200u : 0u) | ((tick & 0x7Fu) << 2) |
-                      (x->bullet ? 2u : 0u) | (x->lit ? 1u : 0u));
+    uint16_t   bits = (uint16_t)((x->bullet ? 2u : 0u) | (x->lit ? 1u : 0u));
+    /* Unset: the row field 7, which no valid example's has, so the clock's
+     * first valid time always repaints (codex: a fixed tick aliased one). */
+    if (!env_clock_now(&t)) return (uint16_t)(0x2000u | (7u << 10) | ((uint16_t)row << 2) | bits);
+    uint32_t tick;
+    if (row == 4u) tick = (uint32_t)t.month * 32u + t.day;
+    else if (mode == 0u || mode == 1u) tick = (uint32_t)t.hours * 3600u + t.minutes * 60u + t.seconds;
+    else tick = (uint32_t)t.hours * 60u + t.minutes;
+    bool wide = mode == 1u && (t.hours % 12u == 0u || t.hours % 12u >= 10u);
+    return (uint16_t)(0x2000u | ((uint16_t)row << 10) | (wide ? 0x200u : 0u) | ((tick & 0x7Fu) << 2) | bits);
 }
 
 static uint16_t row_sig(const row_t *x) {
