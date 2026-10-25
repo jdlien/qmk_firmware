@@ -689,14 +689,23 @@ static bool row_split(uint8_t s) {
  * (P3) has cells 0-1 as a chunk of their own between the lead and cells 2-9. */
 static uint8_t l_chunks(uint8_t s) { return (s == S_SEP || s == S_BAR) ? 1 : is_row(s) ? (row_split(s) ? 4 : 3) : 2; }
 static uint8_t rows_per_piece(void) { return (uint8_t)(MB_PASS_BYTES / (CHUNK_MAX * 2u)); }   /* 4 */
+/* A split row's cells 2-9 are narrower, so their pieces take 5 pixel rows: 3
+ * pieces, not 4, which pays for the icon's own piece. Each piece costs about
+ * a pass whatever its size: the top level's white icons (JD, 10-25) added 8
+ * pieces, ~100 ms, to its repaint until this. */
+#define SPLIT_W (HALF_W - 2u * MT_CELL_W)   /* 48 */
+static uint8_t rows_per_split(void) { return (uint8_t)(MB_PASS_BYTES / (SPLIT_W * 2u)); }   /* 5 */
 static uint8_t l_pieces(uint8_t s, uint8_t c) {
     if (s == S_SEP || s == S_BAR || (is_row(s) && c == 0)) return 1;   /* a row's lead: every pixel row at once */
-    if (is_row(s) && c == 1 && row_split(s)) return 1;                 /* the icon's two cells: every row at once too */
-    uint8_t r = rows_per_piece();
+    const bool split = is_row(s) && row_split(s);
+    if (split && c == 1) return 1;                                     /* the icon's two cells: every row at once too */
+    uint8_t r = split && c == 2 ? rows_per_split() : rows_per_piece();
     return (uint8_t)((MT_CELL_H + r - 1u) / r);
 }
 _Static_assert(MB_PASS_BYTES / (CHUNK_MAX * 2u) >= 1 && (MB_PASS_BYTES / (CHUNK_MAX * 2u)) * ((CHUNK_MAX + 7u) / 8u) <= BITS_MAX,
                "a half-row piece: whole pixel rows, its bits in the buffer");
+_Static_assert(MB_PASS_BYTES / (SPLIT_W * 2u) <= MT_CELL_H && (MB_PASS_BYTES / (SPLIT_W * 2u)) * ((SPLIT_W + 7u) / 8u) <= BITS_MAX,
+               "a split row's cells 2-9: whole pixel rows, its bits in the buffer");
 _Static_assert(ROW_LEAD * MT_CELL_H * 2u <= MB_PASS_BYTES && ROW_LEAD <= 8u && MT_CELL_H <= BITS_MAX, "a row's lead: one piece");
 _Static_assert(2u * MT_CELL_W * MT_CELL_H * 2u <= MB_PASS_BYTES && ((2u * MT_CELL_W + 7u) / 8u) * MT_CELL_H <= BITS_MAX,
                "a row's icon (two cells): one piece");
@@ -724,9 +733,9 @@ static ms_paint_t text_piece(const char *cells, uint16_t y, bool row, uint8_t cu
         w  = (uint16_t)(2u * MT_CELL_W);
     } else {                               /* [4, 64), [64, 125); split: [16, 64) */
         c0 = k == 1 ? (uint16_t)(lead + (split ? 2u * MT_CELL_W : 0u)) : (uint16_t)(lead + HALF_W);
-        w  = k == 1 ? (uint16_t)(HALF_W - (split ? 2u * MT_CELL_W : 0u)) : (uint16_t)(HALF_W + 1u);
+        w  = k == 1 ? (uint16_t)(split ? SPLIT_W : HALF_W) : (uint16_t)(HALF_W + 1u);
     }
-    const uint8_t  rpp  = rows_per_piece();
+    const uint8_t  rpp  = split && c == 2 ? rows_per_split() : rows_per_piece();   /* as l_pieces() */
     const bool     all  = lc || ic;        /* one piece, every pixel row */
     const uint8_t  r0   = all ? 0 : (uint8_t)(p * rpp);
     const uint8_t  rows = all ? MT_CELL_H : (uint8_t)(r0 + rpp > MT_CELL_H ? MT_CELL_H - r0 : rpp);
