@@ -184,13 +184,16 @@ static void about_line(uint8_t line, char *out, size_t sz) {
     }
 }
 
-/* --- The list geometry (C8): 0 the title, 1 the separator, 2-9 the rows, 10
- * the scrollbar. A row is one slot of two chunks (half rows, JD: by
- * efficiency); every text slot is x 3-124 (a pad pixel, 20 cells, x 124). */
+/* --- The list geometry (C8): 0 the title, 1 the separator, 2 the scrollbar,
+ * 3-10 the rows. The scrollbar's slot comes before the rows so a page step
+ * shows the new position first, then the text flows in (JD, 10-24: it moved
+ * only after all the text, a second or two). A row is one slot of two chunks
+ * (half rows, JD: by efficiency); every text slot is x 3-124 (a pad pixel,
+ * 20 cells, x 124). */
 #define S_TITLE 0
 #define S_SEP   1
-#define S_ROW0  2
-#define S_BAR   10
+#define S_BAR   2
+#define S_ROW0  3
 #define ROW_Y0  15
 #define ROW_H   14
 #define TEXT_W  122
@@ -256,9 +259,9 @@ static void row_text(const row_t *x, char *out) {
              x->node == N_CAMERA || x->node == N_RESET || is_topic(x->node))
         value = ">";
     size_t at = 0;
-    if (x->node >= N_POW0 && x->node <= N_CLK3) {   /* an option: the saved one's bullet in cell 0 */
+    if (x->node >= N_POW0 && x->node <= N_CLK3) {   /* an option: the saved one's bullet in cell 0, a space after it */
         out[0] = x->bullet ? MT_BULLET[0] : ' ';
-        at     = 1;
+        at     = 2;                                  /* JD, 10-24: the dot needed room; in line with "‹ Back" */
     }
     size_t ln = strlen(label), vn = strlen(value);
     if (at + ln > 20) ln = 20 - at;
@@ -350,7 +353,10 @@ static ms_paint_t l_paint(uint8_t s, uint8_t c, uint8_t p) {
     }
     row_t x = row_at((uint8_t)(s - S_ROW0));
     row_text(&x, cells);
-    uint16_t fg = x.kind == RK_ITEM ? (x.lit ? MENU_LIT : MENU_DIM) : MENU_WHITE;
+    uint16_t fg = x.kind != RK_ITEM ? MENU_WHITE
+                : x.lit              ? MENU_LIT
+                : (x.node == N_BACK || x.node == N_EXIT) ? MENU_LEAVE
+                                     : MENU_DIM;
     return text_piece(cells, (uint16_t)(ROW_Y0 + (s - S_ROW0) * ROW_H), c, p, fg);
 }
 

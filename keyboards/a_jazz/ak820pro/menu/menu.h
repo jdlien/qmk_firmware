@@ -32,6 +32,7 @@ uint8_t       menu_cursor(void);                          /* byte 15: the cursor
 #define MENU_ROWS      8
 #define MENU_LIT       0xFF94u   /* the selected row, #FFF2A0 (JD, 10-24: lit text) */
 #define MENU_DIM       0xCE59u   /* the other rows, #C8C8C8 */
+#define MENU_LEAVE     0xE410u   /* "‹ Back" and Exit, not selected: light red, #E08080 (JD's idea, 10-24, to judge on the panel) */
 #define MENU_WHITE     0xFFFFu   /* titles, pages */
 #define MENU_GREY      0x632Cu   /* the separator, #646464 */
 #define MENU_TRACK     0x4228u   /* the scrollbar's track, #464646 */
