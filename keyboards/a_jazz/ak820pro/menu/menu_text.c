@@ -7,7 +7,7 @@
 #include "../graphics/res/font_small_mono.h"
 
 _Static_assert(MT_CELL_W == FONT_MONO_W && MT_CELL_H == FONT_MONO_H, "menu_text.h's cell is the face's");
-_Static_assert(FONT_MONO_XFIRST == 0x80 && FONT_MONO_N - FONT_MONO_ASCII == 30, "menu_text.h's MT_LSAQUO..MT_I_CONN");
+_Static_assert(FONT_MONO_XFIRST == 0x80 && FONT_MONO_N - FONT_MONO_ASCII == 34, "menu_text.h's MT_LSAQUO..MT_I_FAIL");
 
 static const uint8_t *glyph(uint8_t code) {
     if (code >= FONT_MONO_FIRST && code < FONT_MONO_FIRST + FONT_MONO_ASCII) return font_small_mono[code - FONT_MONO_FIRST];
