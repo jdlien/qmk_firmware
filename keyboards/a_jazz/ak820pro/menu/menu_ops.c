@@ -28,8 +28,16 @@ static uint8_t losses_seen;
 enum { MK_NONE = 0, MK_FIXTURE, MK_MENU };
 static uint8_t menu_kind   = MK_NONE;
 static uint8_t report_kind = MK_FIXTURE;   /* op 27 sub 5's: the last session's, kept after it closes */
-static void kind_for_new_session(uint8_t k) {
+/* Returns the reporting kind to put back if the opener is refused (codex:
+ * a refused opener left sub 5 reporting the refused kind). */
+static uint8_t kind_for_new_session(uint8_t k) {
+    uint8_t prev = report_kind;
     if (po_session() == SESSION_NONE) menu_kind = report_kind = k;
+    return prev;
+}
+static void kind_refused(uint8_t prev) {
+    report_kind = prev;
+    if (po_session() == SESSION_NONE) menu_kind = MK_NONE;
 }
 
 bool menu_enabled(void) {
@@ -43,10 +51,11 @@ bool menu_enabled(void) {
 bool menu_physical(mi_control_t c, bool pressed, bool fn, uint32_t now) {
     switch (mi_physical(c, pressed, fn, menu_enabled(), po_session(), now)) {
         case MI_FORWARD:  return true;
-        case MI_OPENER:
-            kind_for_new_session(armed ? MK_FIXTURE : MK_MENU);
-            (void)env_po_event(PO_EV_OPENER);
+        case MI_OPENER: {
+            uint8_t prev = kind_for_new_session(armed ? MK_FIXTURE : MK_MENU);
+            if (env_po_event(PO_EV_OPENER) & PO_ACT_REFUSED) kind_refused(prev);
             return false;
+        }
         case MI_CONSUMED: return false;
     }
     return true;
@@ -335,10 +344,13 @@ bool menu_ops_op27(uint8_t *d, uint32_t now) {
         case 11:    /* the same, the menu (P1a): sub 4 exactly but the kind */
             st = mi_begin(MI_KIND_OPENER, &seq);
             if (st != MI_OK) break;
-            kind_for_new_session(sub == 4 ? MK_FIXTURE : MK_MENU);
-            mi_finish(env_po_event(po_session() == SESSION_OPEN ? PO_EV_CLOSE : PO_EV_OPENER) & PO_ACT_REFUSED
-                          ? MI_ST_REFUSED : MI_ST_DONE);
+        {
+            uint8_t  prev = kind_for_new_session(sub == 4 ? MK_FIXTURE : MK_MENU);
+            uint16_t a    = env_po_event(po_session() == SESSION_OPEN ? PO_EV_CLOSE : PO_EV_OPENER);
+            if (a & PO_ACT_REFUSED) kind_refused(prev);
+            mi_finish(a & PO_ACT_REFUSED ? MI_ST_REFUSED : MI_ST_DONE);
             break;
+        }
         case 6:     /* arm or disarm */
             if (d[5] > 1) { st = MI_BAD; break; }
             st = mi_begin(MI_KIND_ARM, &seq);

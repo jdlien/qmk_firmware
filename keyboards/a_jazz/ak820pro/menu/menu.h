@@ -46,5 +46,5 @@ uint32_t menu_compose_max_ticks(bool reset);           /* a text piece's composi
 #define MENU_GREY      0x632Cu   /* the separator, #646464 */
 #define MENU_TRACK     0x4228u   /* the scrollbar's track, #464646 */
 #define MENU_FLASH_MS  1300u
-#define MENU_HINT_FROM 4000u     /* the hint after 4 s idle, for 1 s in every 5 */
-#define MENU_HINT_EVERY 5000u
+#define MENU_HINT_FROM 4000u     /* the hints after 4 s idle: "Turn + Click Knob" 1 s, */
+#define MENU_HINT_EVERY 6000u    /* then "Hold to Go Back" 1 s (JD, 10-24), every 6 s */

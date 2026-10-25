@@ -129,7 +129,7 @@ static uint8_t saved_row(uint8_t node) {
 
 /* --- Titles ------------------------------------------------------------------ */
 enum { T_TOP = 1, T_POWER, T_CLOCK, T_DIAG, T_HELP, T_ABOUT, T_TOPIC0, T_RESET = T_TOPIC0 + 4,
-       T_SAVED = 16, T_CANCELLED, T_RESET_DONE, T_HINT };
+       T_SAVED = 16, T_CANCELLED, T_RESET_DONE, T_HINT, T_HINT_BACK };
 _Static_assert(T_RESET == 11, "the title ids: the design's table");
 
 static uint8_t screen_title(void) {
@@ -158,6 +158,7 @@ static const char *title_text(uint8_t id) {
         case T_CANCELLED:  return "Cancelled";
         case T_RESET_DONE: return "Counters reset";
         case T_HINT:       return "Turn + Click Knob";
+        case T_HINT_BACK:  return "Hold to Go Back";   /* JD, 10-24: the hold isn't obvious */
         default: break;
     }
     if (id >= T_TOPIC0 && id < T_TOPIC0 + 4) return menu_help_titles[id - T_TOPIC0];
@@ -599,7 +600,10 @@ menu_result_t menu_input(int8_t turns, mi_latch_t latch, uint32_t now) {
 static uint8_t want_title(uint32_t now, uint32_t idle_ms) {
     if (flash_id && (uint16_t)((uint16_t)now - flash_t0) < MENU_FLASH_MS) return flash_id;
     flash_id = 0;
-    if (is_list(cur()->node) && idle_ms >= MENU_HINT_FROM && idle_ms % MENU_HINT_EVERY >= MENU_HINT_FROM) return T_HINT;
+    if (is_list(cur()->node) && idle_ms >= MENU_HINT_FROM) {
+        uint32_t ph = idle_ms % MENU_HINT_EVERY;   /* 4 s the title, 1 s each hint */
+        if (ph >= MENU_HINT_FROM) return ph < MENU_HINT_FROM + 1000u ? T_HINT : T_HINT_BACK;
+    }
     return screen_title();
 }
 static void retitle(uint32_t now) { title_id = want_title(now, last_idle); }
