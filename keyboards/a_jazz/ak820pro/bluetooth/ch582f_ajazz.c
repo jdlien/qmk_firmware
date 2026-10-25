@@ -160,6 +160,14 @@ static volatile bool    pair_confirmed = false;
  * design: a pair sent then pairs the wrong slot, and conn_state stays the
  * optimistic LINKING). */
 static volatile bool    select_acked = false;
+/* A select frame (A6 0x30-0x35) was given up unACKed or refused by a full
+ * queue since ch582_set_profile(), and no frame of the requested slot has
+ * been ACKed after it: the module may never have been told. The menu's pair
+ * waits for every select frame to be out and fails closed on this (codex,
+ * P3's second verify: a stale 5B 32 retires the select's retry, the target's
+ * frame gives up, and A6 51 behind it pairs the old slot). Read-only for the
+ * driver's own state machine. */
+static volatile bool    select_tx_failed = false;
 /* Detailed connection state for the LCD indicator (superset of the two bools). */
 static volatile ch582_conn_state_t conn_state = CH582_CONN_IDLE;
 /* When conn_state last became CH582_CONN_LINKING, for the 5A promotion window
@@ -1267,6 +1275,11 @@ bool ch582_prof_fill(uint8_t page, uint8_t *out28) {
 
 static inline uint8_t tx_next(uint8_t i) { return (uint8_t)((i + 1) % CH582_TXQ_LEN); }
 
+/* A select (A6 0x30-0x35: a BT slot or the dongle), not a pair or a poll. */
+static inline bool is_select_frame(const uint8_t *data, uint8_t len) {
+    return len >= 3 && data[0] == 0xA6 && data[1] >= CH582_PROFILE_PEER_24G && data[1] <= CH582_PROFILE_PAIR_24G;
+}
+
 /* Drop the head frame (ACKed or given up) and stop waiting on it. */
 static void ch582_tx_pop(void) {
     if (tx_head != tx_tail) tx_head = tx_next(tx_head);
@@ -1317,6 +1330,7 @@ static void ch582_tx_pump(void) {
         tx_stat_timeout++;
         if (++tx_retries > CH582_TX_MAX_RETRIES) {                          /* give up, move on */
             tx_stat_giveup++;
+            if (is_select_frame(tx_q[tx_head].data, tx_q[tx_head].len)) select_tx_failed = true;
             ch582_tx_pop();
             return;
         }
@@ -1459,7 +1473,13 @@ static void ch582_tx_ack(void) {
 #ifdef AK820_DEV_HOOKS
     if (r91_ack_window && !tx_in_flight) r91_acks++;   /* the 91's, if it has one */
 #endif
-    if (tx_in_flight) ch582_tx_pop();
+    if (tx_in_flight) {
+        /* The requested slot's select delivered: an earlier failure is
+         * behind it (frames resolve in order). */
+        if (is_select_frame(tx_q[tx_head].data, tx_q[tx_head].len) && tx_q[tx_head].data[1] == requested_profile)
+            select_tx_failed = false;
+        ch582_tx_pop();
+    }
 }
 
 void ch582_send_command(uint8_t cmd, const uint8_t *params, uint8_t param_len) {
@@ -1514,7 +1534,12 @@ void ch582_send_command(uint8_t cmd, const uint8_t *params, uint8_t param_len) {
     }
 
     uint8_t nxt = tx_next(tx_tail);
-    if (nxt == tx_head) { tx_stat_drop++; return; }  /* queue full -> DROPPED KEYSTROKE */
+    if (nxt == tx_head) {   /* queue full -> DROPPED KEYSTROKE */
+        tx_stat_drop++;
+        if (cmd == 0xA6 && param_len >= 1 && params[0] >= CH582_PROFILE_PEER_24G && params[0] <= CH582_PROFILE_PAIR_24G)
+            select_tx_failed = true;
+        return;
+    }
 
     ch582_tx_frame_t *f = &tx_q[tx_tail];
     uint16_t sum = cmd;
@@ -1549,6 +1574,7 @@ void ch582_set_profile(ch582_profile_t profile) {
     pa.kind             = PA_NONE;  /* a new selection supersedes any pending action */
     pair_confirmed      = false;
     select_acked        = false;
+    select_tx_failed    = false;
     requested_profile   = param;
     connect_requested   = true;
     usb_mode            = false;
@@ -1632,6 +1658,7 @@ void ch582_cancel_connect(void) {
     usb_mode          = true;
     pair_confirmed    = false;
     select_acked      = false;
+    select_tx_failed  = false;
     conn_state        = CH582_CONN_IDLE;
     LOCKCHAN_LINK_LOST();
 }
@@ -1664,12 +1691,21 @@ bool ch582_pair_retrying(void) {
     return pa.kind == PA_PAIR;
 }
 
+/* A select frame still queued or awaiting its ACK. */
+static bool select_frame_queued(void) {
+    for (uint8_t i = tx_head; i != tx_tail; i = tx_next(i))
+        if (is_select_frame(tx_q[i].data, tx_q[i].len)) return true;
+    return false;
+}
+
 ch582_select_t ch582_select_state(void) {
-    /* Still going out: a bounce, a select retry, or the cold-boot retry
-     * (connect_requested && !module_alive, which resends on its own clock). */
-    if (pa.kind == PA_BOUNCE || pa.kind == PA_SELECT || (connect_requested && !module_alive))
+    /* Still going out: a bounce, a select retry, the cold-boot retry
+     * (connect_requested && !module_alive, which resends on its own clock),
+     * or a select frame not yet ACKed or given up. Lost: no answer counted,
+     * or the last select frame never got through (select_tx_failed). */
+    if (pa.kind == PA_BOUNCE || pa.kind == PA_SELECT || (connect_requested && !module_alive) || select_frame_queued())
         return CH582_SEL_PENDING;
-    return select_acked ? CH582_SEL_ACKED : CH582_SEL_LOST;
+    return select_acked && !select_tx_failed ? CH582_SEL_ACKED : CH582_SEL_LOST;
 }
 
 uint8_t ch582_get_battery(void) {
