@@ -670,11 +670,14 @@ static uint16_t l_sig(uint8_t s) {
     return row_sig(&x);
 }
 static bool    is_row(uint8_t s) { return s >= S_ROW0; }
-/* P3: a row whose cells 0-1 take a colour of their own (the saved option's
- * green box; the current slot's status icon): 0 for none. Read from the row's
- * content, so it follows the signature (the state is its val, the saved
- * option or current slot its bullet). */
+/* P3: a row whose cells 0-1 take a colour of their own (the top level's icons
+ * in white; the saved option's green box; the current slot's status icon): 0
+ * for none. Read from the row's content, so it follows the signature (the
+ * icon is its node's, the state its val, the saved option or current slot its
+ * bullet). */
 static uint16_t row_icon_colour(const row_t *x) {
+    if (x->kind != RK_ITEM && x->kind != RK_VALUE) return 0u;
+    if (icon_of(x->node)) return pal[MP_WHITE];   /* JD, 10-25: white, lit or not, "so they pop" */
     if (x->kind != RK_ITEM || !x->bullet || !is_option(x->node)) return 0u;
     return x->node >= N_BT0 && x->node <= N_BT2 ? link_colour[x->val % 5u] : MENU_SAVED;
 }
