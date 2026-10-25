@@ -65,6 +65,29 @@ static const char *label_of(uint8_t node) {
     return "";
 }
 
+/* --- The palette ------------------------------------------------------------- */
+#if defined(AK820_DEV_HOOKS) || defined(MENU_HOST_TEST)
+static uint16_t pal[MP_N] = {MENU_LIT, MENU_DIM, MENU_LEAVE, MENU_WHITE, MENU_GREY, MENU_TRACK};
+bool menu_set_color(uint8_t i, uint16_t c) {
+    if (i >= MP_N) return false;
+    pal[i] = c;
+    return true;
+}
+static uint32_t compose_max;
+uint32_t menu_compose_max_ticks(bool reset) {
+    uint32_t m = compose_max;
+    if (reset) compose_max = 0;
+    return m;
+}
+#    define COMPOSE_T0() uint32_t ct0_ = mb_now_ticks()
+#    define COMPOSE_T1() do { uint32_t d_ = mb_now_ticks() - ct0_; if (d_ > compose_max) compose_max = d_; } while (0)
+#else
+static const uint16_t pal[MP_N] = {MENU_LIT, MENU_DIM, MENU_LEAVE, MENU_WHITE, MENU_GREY, MENU_TRACK};
+#    define COMPOSE_T0() ((void)0)
+#    define COMPOSE_T1() ((void)0)
+#endif
+uint16_t menu_color(uint8_t i) { return i < MP_N ? pal[i] : 0; }
+
 /* --- State ------------------------------------------------------------------ */
 
 typedef struct { uint8_t node, cursor, top; } frame_t;
@@ -318,6 +341,7 @@ _Static_assert(MB_PASS_BYTES / (HALF_W * 2u) >= 1 && (MB_PASS_BYTES / (HALF_W * 
 
 /* One piece of a 20-cell text slot at y: chunk c's half, piece p's rows. */
 static ms_paint_t text_piece(const char *cells, uint16_t y, uint8_t c, uint8_t p, uint16_t fg) {
+    COMPOSE_T0();
     mt_line_t      l    = {cells, 20, 1, 1, false, false};
     const uint8_t  rpp  = rows_per_piece();
     const uint8_t  r0   = (uint8_t)(p * rpp);
@@ -325,13 +349,14 @@ static ms_paint_t text_piece(const char *cells, uint16_t y, uint8_t c, uint8_t p
     const uint16_t c0   = (uint16_t)(c * HALF_W);
     uint8_t        bits[BITS_MAX];
     mt_bits(&l, c0, HALF_W, r0, rows, bits, (HALF_W + 7u) / 8u);
+    COMPOSE_T1();
     return mb_mono(bits, (HALF_W + 7u) / 8u, (uint16_t)(3u + c0), (uint16_t)(y + r0), HALF_W, rows, fg, 0)
                ? MS_PAINT_DONE : MS_PAINT_FAILED;
 }
 
 static ms_paint_t l_paint(uint8_t s, uint8_t c, uint8_t p) {
     char cells[21];
-    if (s == S_SEP) return mb_fill(4, 14, 123, 14, MENU_GREY) ? MS_PAINT_DONE : MS_PAINT_FAILED;
+    if (s == S_SEP) return mb_fill(4, 14, 123, 14, pal[MP_GREY]) ? MS_PAINT_DONE : MS_PAINT_FAILED;
     if (s == S_BAR) {
         uint8_t count, top;
         bar_state(&count, &top);
@@ -340,8 +365,8 @@ static ms_paint_t l_paint(uint8_t s, uint8_t c, uint8_t p) {
         uint16_t th = (uint16_t)((BAR_H * MENU_ROWS + count / 2u) / count);
         if (th < 6) th = 6;
         uint16_t ty = (uint16_t)(BAR_Y0 + ((uint32_t)(BAR_H - th) * top + (count - MENU_ROWS) / 2u) / (count - MENU_ROWS));
-        if (!mb_fill(BAR_X, BAR_Y0, BAR_X, BAR_Y0 + BAR_H - 1, MENU_TRACK)) return MS_PAINT_FAILED;
-        return mb_fill(BAR_X, ty, BAR_X, (uint16_t)(ty + th - 1u), MENU_WHITE) ? MS_PAINT_DONE : MS_PAINT_FAILED;
+        if (!mb_fill(BAR_X, BAR_Y0, BAR_X, BAR_Y0 + BAR_H - 1, pal[MP_TRACK])) return MS_PAINT_FAILED;
+        return mb_fill(BAR_X, ty, BAR_X, (uint16_t)(ty + th - 1u), pal[MP_WHITE]) ? MS_PAINT_DONE : MS_PAINT_FAILED;
     }
     if (s == S_TITLE) {
         memset(cells, ' ', 20);
@@ -349,14 +374,14 @@ static ms_paint_t l_paint(uint8_t s, uint8_t c, uint8_t p) {
         const char *tt = title_text(title_id);
         size_t      n  = strlen(tt);
         memcpy(cells, tt, n > 20 ? 20 : n);
-        return text_piece(cells, 0, c, p, MENU_WHITE);
+        return text_piece(cells, 0, c, p, pal[MP_WHITE]);
     }
     row_t x = row_at((uint8_t)(s - S_ROW0));
     row_text(&x, cells);
-    uint16_t fg = x.kind != RK_ITEM ? MENU_WHITE
-                : x.lit              ? MENU_LIT
-                : (x.node == N_BACK || x.node == N_EXIT) ? MENU_LEAVE
-                                     : MENU_DIM;
+    uint16_t fg = x.kind != RK_ITEM ? pal[MP_WHITE]
+                : x.lit              ? pal[MP_LIT]
+                : (x.node == N_BACK || x.node == N_EXIT) ? pal[MP_LEAVE]
+                                     : pal[MP_DIM];
     return text_piece(cells, (uint16_t)(ROW_Y0 + (s - S_ROW0) * ROW_H), c, p, fg);
 }
 
@@ -383,7 +408,7 @@ static ms_paint_t c_paint(uint8_t s, uint8_t c, uint8_t p) {
     cells[20]      = '\0';
     const char *ln = c_lines[confirm_page & 1u][s - 2u];
     memcpy(cells, ln, strlen(ln));
-    return text_piece(cells, c_y[s - 2u], c, p, MENU_WHITE);
+    return text_piece(cells, c_y[s - 2u], c, p, pal[MP_WHITE]);
 }
 static const ms_layout_t L_CONFIRM = {6, c_sig, c_chunks, c_pieces, c_paint, 0, 0};
 

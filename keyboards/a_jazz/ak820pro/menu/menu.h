@@ -28,11 +28,20 @@ void          menu_tick(uint32_t now, uint32_t idle_ms);  /* each pass: the latc
 uint8_t       menu_screen_id(void);                       /* op 27 sub 5, byte 14: 16 + the node showing */
 uint8_t       menu_cursor(void);                          /* byte 15: the cursor, a topic's top line, the confirm's page */
 
+/* The palette: these defaults, and on dev builds op 27 sub 13 changes one
+ * live (JD tunes colours on the panel without a flash a shade). */
+enum { MP_LIT = 0, MP_DIM, MP_LEAVE, MP_WHITE, MP_GREY, MP_TRACK, MP_N };
+uint16_t menu_color(uint8_t i);
+#if defined(AK820_DEV_HOOKS) || defined(MENU_HOST_TEST)
+bool     menu_set_color(uint8_t i, uint16_t rgb565);   /* false: no such colour */
+uint32_t menu_compose_max_ticks(bool reset);           /* a text piece's composition (op 27 sub 12) */
+#endif
+
 /* For the host tests' expected frames. */
 #define MENU_ROWS      8
 #define MENU_LIT       0xFF94u   /* the selected row, #FFF2A0 (JD, 10-24: lit text) */
 #define MENU_DIM       0xCE59u   /* the other rows, #C8C8C8 */
-#define MENU_LEAVE     0xE410u   /* "‹ Back" and Exit, not selected: light red, #E08080 (JD's idea, 10-24, to judge on the panel) */
+#define MENU_LEAVE     0xFCD3u   /* "‹ Back" and Exit, not selected: light red, #FF9A9A (JD, 10-24: #E08080 too dim) */
 #define MENU_WHITE     0xFFFFu   /* titles, pages */
 #define MENU_GREY      0x632Cu   /* the separator, #646464 */
 #define MENU_TRACK     0x4228u   /* the scrollbar's track, #464646 */

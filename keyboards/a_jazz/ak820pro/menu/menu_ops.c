@@ -260,6 +260,29 @@ bool menu_ops_op27(uint8_t *d, uint32_t now) {
         op27_meas(d);
         return true;
     }
+    if (sub == 12) {   /* a menu text piece's time, in us: [6] window, [8] expansion, [10] sends, [12] the whole, [14] composition; arg 1 resets */
+        bool     reset = d[5] == 1;
+        uint16_t t[4];
+        env_mono_timing(t, reset);
+        uint32_t comp = menu_compose_max_ticks(reset);
+        memset(&d[5], 0, 27);
+        d[5] = MI_OK;
+        for (uint8_t i = 0; i < 4; i++) put16(&d[6 + 2 * i], ticks_to_us16(t[i]));
+        put16(&d[14], ticks_to_us16(comp));
+        return true;
+    }
+    if (sub == 13) {   /* a menu colour, live: [5] the palette index, [6..7] RGB565; the menu repaints */
+        uint8_t  i = d[5];
+        uint16_t c = (uint16_t)(d[6] | (d[7] << 8));
+        bool     ok = menu_set_color(i, c);
+        if (ok && OWNER_MENU_OPEN() && menu_kind == MK_MENU) {
+            menu_invalidate();
+            ms_retarget();
+        }
+        memset(&d[5], 0, 27);
+        d[5] = ok ? MI_OK : MI_BAD;
+        return true;
+    }
     switch (sub) {
         case 0: {   /* the fixture's paint */
             uint8_t p = d[5], n = d[6];
