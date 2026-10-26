@@ -248,6 +248,7 @@ enum { CK_OK = 1, CK_JUMP = 2 };   /* set; a read that wasn't the last's time on
 _Static_assert(1 + CLOCK_ROWS <= MENU_ROWS, "the Clock page is one screen: its examples are slots S_ROW0 + 1-5");
 _Static_assert(sizeof pg == sizeof(env_about_t), "the Clock's time shares About's 12 B");
 static uint32_t ft_last;                    /* P1b: the editor's last turn, ms (32-bit: the backstop is 180 s) */
+static bool     was_failed;                 /* P5b: prof_write_failed() at the last tick, so its rise says so */
 static bool     ft_have;                    /* a turn in this editor yet */
 static uint8_t  model_link, model_pf;       /* P3: env_link() and env_bt_pair_facts(), latched as the model */
 
@@ -1870,6 +1871,12 @@ void menu_tick(uint32_t now, uint32_t idle_ms) {
      * repaint, which the rows' signatures don't carry. Here, outside the
      * scheduler's scans, as the Clock's jump below. */
     if (prof_take_changed()) ms_invalidate_all();
+    /* A profile write failed where no click shows it (the active slot's,
+     * deferred to kb_eeconfig's settle; codex): "Save failed" when the latch
+     * rises, here or at the next open. A click's own failure flashed it too. */
+    bool failed = prof_write_failed();
+    if (failed && !was_failed) flash(T_SAVE_FAILED, now);
+    was_failed = failed;
     /* P3: the Connection screens follow the slider. Its BT screens off BT, or
      * the off-BT page on BT: back to the top level, the cursor on Connection,
      * whose value shows the new link. P5b: a host restore pops the profile

@@ -23,6 +23,7 @@
 #include "indicator_levels.h"
 #include "sleep.h"
 #include "profiles.h"
+#include "param_overlay.h"   /* P5b: the keys' name, kept from the RGB poll */
 #include "eeprom.h"
 #include "wear_leveling.h"
 #include "wear_leveling_efl_config.h"   /* WEAR_LEVELING_LOGICAL_SIZE, eeprom.h's TOTAL_EEPROM_BYTE_COUNT */
@@ -176,6 +177,10 @@ void menu_prof_key(bool next) {
         char    name[PROF_NAME + 1];
         (void)prof_slot(slot, rec);
         prof_name(slot, rec, name);
+        /* The load moved the lighting: the poll's next pass would post its
+         * own readout over the name (codex, P5b's review). A fresh baseline
+         * takes the change, as at the menu's close. */
+        param_status_reprime();
         display_set_param_status(name);
     } else
         display_set_param_status(st == PROF_INVALID ? "No profiles" : "Busy");

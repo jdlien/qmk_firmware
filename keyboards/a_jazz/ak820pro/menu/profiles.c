@@ -322,19 +322,21 @@ bool prof_take_changed(void) {
 }
 
 /* The pending active slot, written now: dropped if the block isn't
- * formatted (an aborted restore left it so; the first save formats it). */
-static void write_active(void) {
+ * formatted (an aborted restore left it so; the first save formats it). A
+ * failure latches as any profile write's (wr()), and the menu says "Save
+ * failed" when it sees the latch set (codex, P5b's review: it was silent). */
+static uint8_t write_active(void) {
     bool    c = false;
     uint8_t a = active_byte();
     pend      = 0u;
-    if (prof_formatted()) (void)wr8(PROF_OFF_ACTIVE, a, &c);
+    return !prof_formatted() || wr8(PROF_OFF_ACTIVE, a, &c) ? PROF_OK : PROF_WRITE_FAILED;
 }
 
 void prof_tick(void) {
     if (prof_restore_open() && --tx_left == 0u) tx_close();   /* aborted: the block stays unformatted */
     /* After kb_eeconfig's settled write (it runs just before this in the
      * 10 Hz block), never in a recovery or a restore. */
-    if (pend && !env_settings_pending() && writable() == PROF_OK) write_active();
+    if (pend && !env_settings_pending() && writable() == PROF_OK) (void)write_active();
 }
 
 #ifdef MENU_HOST_TEST
@@ -387,7 +389,8 @@ static uint8_t commit(void) {
  *   4  the live record                     -> [4..30] it (fields PF_LIVE), [31] status
  *   5  apply one:     [4..30] a record     -> [31] status (PROF_OK_EFFECT_SKIPPED: an effect this build lacks)
  *   6  flush                               -> [4] status: kb_eeconfig's and the RGB config's deferred writes now,
- *                                             and the pending active slot's (P5b)
+ *                                             and the pending active slot's (P5b): WRITE_FAILED if it failed or
+ *                                             the latch holds it
  * 4, 5 and 6 cancel an open preview first. Dev builds: 0x40 save the live
  * settings to slot [4] -> [5] status, [6] 1 when the wear-leveling layer
  * consolidated; 0x41 delete slot [4] -> [5] status. The subs that write the
@@ -486,8 +489,11 @@ bool prof_hid(uint8_t *d) {
                 return true;
             }
             env_settings_flush();
-            if (pend && writable() == PROF_OK) write_active();
             d[4] = PROF_OK;
+            if (pend) {   /* the choice durable too, or the failure said (codex: it answered OK either way) */
+                uint8_t st = writable();
+                d[4] = st == PROF_OK ? write_active() : st;
+            }
             return true;
 #if defined(AK820_DEV_HOOKS) || defined(MENU_HOST_TEST)
         case 0x40:

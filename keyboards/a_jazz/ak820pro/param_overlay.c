@@ -160,7 +160,8 @@ static void fmt_speed(char *buf, size_t n, uint8_t sp) {
 static bool status_primed = false;
 
 /* At the menu's close: the next poll records a fresh baseline, so a change
- * made while the overlays were suppressed doesn't surface afterwards. */
+ * made while the overlays were suppressed doesn't surface afterwards. And
+ * after a profile key's load (P5b), whose name the poll would overwrite. */
 void param_status_reprime(void) {
     status_primed  = false;
     param_force_kc = KC_NO;
