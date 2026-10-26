@@ -28,6 +28,7 @@
 #include "wear_leveling.h"
 #include "wear_leveling_efl_config.h"   /* WEAR_LEVELING_LOGICAL_SIZE, eeprom.h's TOTAL_EEPROM_BYTE_COUNT */
 #include "dynamic_keymap.h"                  /* P5d: the macros' start, for the block's assert */
+#include "nvm_eeprom_eeconfig_internal.h"    /* EECONFIG_SIZE, which VIA's end is counted from */
 #include "nvm_eeprom_via_internal.h"         /* VIA_EEPROM_CONFIG_END */
 #include "encoder.h"                         /* NUM_ENCODERS */
 
