@@ -216,7 +216,18 @@ static uint8_t  title_id;                   /* the latched title: a screen's, a 
 static uint8_t  flash_id;                   /* 0 none */
 static uint16_t flash_t0;                   /* 16-bit ms */
 static uint8_t  confirm_page;               /* Reset counters: 0 the question, 1 done */
-static env_about_t snap;                    /* About's, frozen while it shows */
+/* Page-scoped: About's snapshot, frozen while it shows, or the Clock list's
+ * time, read once an RTC second (clock_now()). The two never show together,
+ * and each is taken as its page opens. */
+static union {
+    env_about_t snap;
+    struct {
+        env_time_t t;
+        uint16_t   tick;   /* env_rtc_tick() at the read */
+        uint8_t    ok, have;   /* not bools: About's bytes would be no bool's */
+    } clk;
+} pg;
+_Static_assert(sizeof pg == sizeof(env_about_t), "the Clock's time shares About's 12 B");
 static uint32_t ft_last;                    /* P1b: the editor's last turn, ms (32-bit: the backstop is 180 s) */
 static bool     ft_have;                    /* a turn in this editor yet */
 static uint8_t  model_link, model_pf;       /* P3: env_link() and env_bt_pair_facts(), latched as the model */
@@ -466,28 +477,28 @@ static void about_line(uint8_t line, char *out, size_t sz) {
             snprintf(out, sz, "%s, 0x%08lx", env_build_flavour(), (unsigned long)env_build_token());
             break;
         case 2: {
-            uint32_t m = snap.uptime_s / 60u, d = m / 1440u, h = (m / 60u) % 24u;
+            uint32_t m = pg.snap.uptime_s / 60u, d = m / 1440u, h = (m / 60u) % 24u;
             if (d) snprintf(out, sz, "Up %lud %luh %lum", (unsigned long)d, (unsigned long)h, (unsigned long)(m % 60u));
             else   snprintf(out, sz, "Up %luh %lum", (unsigned long)h, (unsigned long)(m % 60u));
             break;
         }
         case 3:
-            if (snap.batt_pm == ENV_UNKNOWN) snprintf(out, sz, "Battery -");
-            else snprintf(out, sz, "Battery %u.%u%%", snap.batt_pm / 10u, snap.batt_pm % 10u);
+            if (pg.snap.batt_pm == ENV_UNKNOWN) snprintf(out, sz, "Battery -");
+            else snprintf(out, sz, "Battery %u.%u%%", pg.snap.batt_pm / 10u, pg.snap.batt_pm % 10u);
             break;
         case 4:
-            if (snap.pack_mv == ENV_UNKNOWN) snprintf(out, sz, "Pack -");
-            else snprintf(out, sz, "Pack %u mV", snap.pack_mv);
+            if (pg.snap.pack_mv == ENV_UNKNOWN) snprintf(out, sz, "Pack -");
+            else snprintf(out, sz, "Pack %u mV", pg.snap.pack_mv);
             break;
         case 5:
-            if (snap.left_min == ENV_UNKNOWN) snprintf(out, sz, "Left -");
-            else snprintf(out, sz, "Left %uh of use", snap.left_min / 60u);
+            if (pg.snap.left_min == ENV_UNKNOWN) snprintf(out, sz, "Left -");
+            else snprintf(out, sz, "Left %uh of use", pg.snap.left_min / 60u);
             break;
         case 6:
-            snprintf(out, sz, "Mode %s", power_full[snap.mode & 3u]);
+            snprintf(out, sz, "Mode %s", power_full[pg.snap.mode & 3u]);
             break;
         default: {
-            uint8_t tr = snap.link & 3u, slot = (snap.link >> 2) & 3u, st = (snap.link >> 4) & 7u;
+            uint8_t tr = pg.snap.link & 3u, slot = (pg.snap.link >> 2) & 3u, st = (pg.snap.link >> 4) & 7u;
             const char *s = st < 5 ? link_state[st] : "?";
             if (tr == ENV_LINK_USB) snprintf(out, sz, "Link USB");
             else if (tr == ENV_LINK_24G) snprintf(out, sz, "Link 2.4G %s", s);
@@ -725,6 +736,20 @@ static uint32_t batt_key(const row_t *x) {
     uint32_t h = ready && b.left_min < 600u ? (b.left_min < 60u ? 10u : b.left_min / 60u) : 15u;
     return 0x10000u | (uint32_t)b.pct << 4 | h;
 }
+/* The Clock list's time: one RTC read an RTC second. rtc_get_time() decodes
+ * through newlib's localtime_r, costly on this core, and each scan called it
+ * for every example row: passes of 23 ms on the board (22ec0d3d). A host's
+ * set between seconds shows at the next. */
+static bool clock_now(env_time_t *t) {
+    uint16_t k = env_rtc_tick();
+    if (!pg.clk.have || k != pg.clk.tick) {
+        pg.clk.ok   = env_clock_now(&pg.clk.t);
+        pg.clk.tick = k;
+        pg.clk.have = true;
+    }
+    *t = pg.clk.t;
+    return pg.clk.ok;
+}
 /* The Clock's examples (10-25): the format each row's mode shows, at the
  * RTC's time now. */
 static const char *clock_example(uint8_t row, char *buf) {   /* buf: 24 */
@@ -733,7 +758,7 @@ static const char *clock_example(uint8_t row, char *buf) {   /* buf: 24 */
     env_time_t t;
     uint8_t    mode   = clock_enum[row];
     bool       twelve = mode == 1u || mode == 5u, secs = mode == 0u || mode == 1u;
-    if (!env_clock_now(&t)) return row == 4u ? "--- --, ----" : secs ? "--:--:--" : "--:--";
+    if (!clock_now(&t)) return row == 4u ? "--- --, ----" : secs ? "--:--:--" : "--:--";
     unsigned hh = t.hours;
     if (twelve) {
         hh %= 12u;
@@ -758,7 +783,7 @@ static uint16_t clock_sig(const row_t *x, uint8_t row) {
     uint16_t   bits = (uint16_t)((x->bullet ? 2u : 0u) | (x->lit ? 1u : 0u));
     /* Unset: the row field 7, which no valid example's has, so the clock's
      * first valid time always repaints (codex: a fixed tick aliased one). */
-    if (!env_clock_now(&t)) return (uint16_t)(0x2000u | (7u << 10) | ((uint16_t)row << 2) | bits);
+    if (!clock_now(&t)) return (uint16_t)(0x2000u | (7u << 10) | ((uint16_t)row << 2) | bits);
     uint32_t tick;
     if (row == 4u) tick = (uint32_t)t.month * 32u + t.day;
     else if (mode == 0u || mode == 1u) tick = (uint32_t)t.hours * 3600u + t.minutes * 60u + t.seconds;
@@ -1244,7 +1269,7 @@ static void show(bool to_confirm, bool from_confirm, uint32_t now) {
 }
 
 static void open_about(uint32_t now) {
-    env_about(&snap);
+    env_about(&pg.snap);
     push(N_ABOUT, 0);
     retitle(now);
     /* A new snapshot: About's rows repaint whatever their signature (a
@@ -1336,6 +1361,7 @@ static menu_result_t activate(uint32_t now) {
         case N_POWER:
         case N_CLOCK:
         case N_BATT:
+            if (node == N_CLOCK) pg.clk.have = false;   /* About's bytes: read afresh */
             push(node, saved_row(node));
             show(false, false, now);
             return MENU_NONE;

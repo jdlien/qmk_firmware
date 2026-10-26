@@ -68,6 +68,7 @@ bool env_clock_now(env_time_t *t) {
     *t = (env_time_t){r.hours, r.minutes, r.seconds, r.day, r.month, r.year};
     return true;
 }
+uint16_t env_rtc_tick(void) { return (uint16_t)rtc_get_seconds(); }
 /* P4: the battery readout. The dashboard reads the setting each time it
  * composes the text, so the menu's close (the staged restore) shows it. */
 bool env_batt_hours(void) { return kb_eeconfig_get_batt_hours(); }

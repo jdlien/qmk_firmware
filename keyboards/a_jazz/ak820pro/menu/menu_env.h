@@ -30,6 +30,7 @@ void     env_health_reset(void);        /* health_reset() + display_debug_refres
  * while it isn't set. */
 typedef struct { uint8_t hours, minutes, seconds, day, month; uint16_t year; } env_time_t;
 bool     env_clock_now(env_time_t *t);
+uint16_t env_rtc_tick(void);            /* rtc_get_seconds(), low 16 bits: it moves with the time's second */
 bool     env_batt_hours(void);          /* P4: the dashboard's battery in hours of use, not percent */
 /* P4: what the readout is made of: the level (0xFF unknown), on battery, the
  * time left (minutes of use; 0xFFFF none), the average's minutes on battery
