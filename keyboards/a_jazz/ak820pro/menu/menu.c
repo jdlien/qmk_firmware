@@ -2153,15 +2153,18 @@ void menu_tick(uint32_t now, uint32_t idle_ms) {
         uint8_t k = rn;
         rn &= (uint8_t)~(RN_ENTER | RN_ESC | RN_EDITED);
         if (cur()->node == N_PRENAME) {
+            if (k & RN_EDITED) {
+                /* The name's line repaints: its signature's hash can repeat
+                 * ("cd", "da"), so it's invalidated too, first, whatever
+                 * else came in the same pass (a refused Enter keeps the
+                 * page: codex's verify). */
+                ms_invalidate_rows(2, 1);
+                moved = true;
+            }
             if (k & RN_ENTER) (void)rename_commit(now);
             else if (k & RN_ESC) {
                 flash(T_CANCELLED, now);
                 (void)pop(now);
-            } else {
-                /* The name's line repaints: its signature's hash can repeat
-                 * ("cd", "da"), so it's invalidated too (codex). */
-                ms_invalidate_rows(2, 1);
-                moved = true;
             }
         }
     }
