@@ -224,9 +224,11 @@ static union {
     struct {
         env_time_t t;
         uint16_t   tick;   /* env_rtc_tick() at the read */
-        uint8_t    ok, have;   /* not bools: About's bytes would be no bool's */
+        uint8_t    have;   /* not bools: About's bytes would be no bool's */
+        uint8_t    st;     /* CK_* */
     } clk;
 } pg;
+enum { CK_OK = 1, CK_JUMP = 2, CK_ODD = 4 };   /* set; not the last read's time on; which jump */
 _Static_assert(sizeof pg == sizeof(env_about_t), "the Clock's time shares About's 12 B");
 static uint32_t ft_last;                    /* P1b: the editor's last turn, ms (32-bit: the backstop is 180 s) */
 static bool     ft_have;                    /* a turn in this editor yet */
@@ -736,19 +738,34 @@ static uint32_t batt_key(const row_t *x) {
     uint32_t h = ready && b.left_min < 600u ? (b.left_min < 60u ? 10u : b.left_min / 60u) : 15u;
     return 0x10000u | (uint32_t)b.pct << 4 | h;
 }
+/* b is a's time dt seconds on, on a's day unless that passed midnight. */
+static bool clock_follows(const env_time_t *a, const env_time_t *b, uint16_t dt) {
+    uint32_t sa = (uint32_t)a->hours * 3600u + a->minutes * 60u + a->seconds;
+    uint32_t sb = (uint32_t)b->hours * 3600u + b->minutes * 60u + b->seconds;
+    if (sb != (sa + dt) % 86400u) return false;
+    return sb < sa || (a->day == b->day && a->month == b->month && a->year == b->year);
+}
 /* The Clock list's time: one RTC read an RTC second. rtc_get_time() decodes
  * through newlib's localtime_r, costly on this core, and each scan called it
  * for every example row: passes of 23 ms on the board (22ec0d3d). A host's
- * set between seconds shows at the next. */
+ * set between seconds shows at the next. A read that doesn't follow the last
+ * by the seconds counted (a set) is a jump: its 7-bit ticks could equal what
+ * the rows show (codex: 02:07:59, a set, then 04:15:00 kept 02:07), so
+ * clock_sig() gives the jump's second signatures of its own. */
 static bool clock_now(env_time_t *t) {
     uint16_t k = env_rtc_tick();
     if (!pg.clk.have || k != pg.clk.tick) {
-        pg.clk.ok   = env_clock_now(&pg.clk.t);
+        env_time_t was = pg.clk.t;
+        bool       had = pg.clk.have && (pg.clk.st & CK_OK);
+        uint8_t    st  = (uint8_t)((env_clock_now(&pg.clk.t) ? CK_OK : 0u) | (pg.clk.have ? pg.clk.st & CK_ODD : 0u));
+        if (had && (st & CK_OK) && !clock_follows(&was, &pg.clk.t, (uint16_t)(k - pg.clk.tick)))
+            st = (uint8_t)((st ^ CK_ODD) | CK_JUMP);   /* consecutive jumps alternate */
+        pg.clk.st   = st;
         pg.clk.tick = k;
         pg.clk.have = true;
     }
     *t = pg.clk.t;
-    return pg.clk.ok;
+    return pg.clk.st & CK_OK;
 }
 /* The Clock's examples (10-25): the format each row's mode shows, at the
  * RTC's time now. */
@@ -782,8 +799,12 @@ static uint16_t clock_sig(const row_t *x, uint8_t row) {
     uint8_t    mode = clock_enum[row];
     uint16_t   bits = (uint16_t)((x->bullet ? 2u : 0u) | (x->lit ? 1u : 0u));
     /* Unset: the row field 7, which no valid example's has, so the clock's
-     * first valid time always repaints (codex: a fixed tick aliased one). */
+     * first valid time always repaints (codex: a fixed tick aliased one). A
+     * jump's second: the field 5 or 6, so the rows repaint whole, then again
+     * at the next second's. */
     if (!clock_now(&t)) return (uint16_t)(0x2000u | (7u << 10) | ((uint16_t)row << 2) | bits);
+    if (pg.clk.st & CK_JUMP)
+        return (uint16_t)(0x2000u | ((pg.clk.st & CK_ODD) ? 6u << 10 : 5u << 10) | ((uint16_t)row << 2) | bits);
     uint32_t tick;
     if (row == 4u) tick = (uint32_t)t.month * 32u + t.day;
     else if (mode == 0u || mode == 1u) tick = (uint32_t)t.hours * 3600u + t.minutes * 60u + t.seconds;
