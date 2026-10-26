@@ -27,6 +27,9 @@
 #include "eeprom.h"
 #include "wear_leveling.h"
 #include "wear_leveling_efl_config.h"   /* WEAR_LEVELING_LOGICAL_SIZE, eeprom.h's TOTAL_EEPROM_BYTE_COUNT */
+#include "dynamic_keymap.h"                  /* P5d: the macros' start, for the block's assert */
+#include "nvm_eeprom_via_internal.h"         /* VIA_EEPROM_CONFIG_END */
+#include "encoder.h"                         /* NUM_ENCODERS */
 
 /* --- menu_backend.h ------------------------------------------------------------ */
 
@@ -146,13 +149,21 @@ bool env_bootloader(void) {
 bool env_reserve(void) { return battery_on_battery() && power_lights_cut(); }
 
 /* P5a, the settings profiles (menu/profiles.c). The block is the EEPROM's top
- * 110 B, and the dynamic keymap's macros end below it (config.h). Its writes
+ * 218 B (P5d's eight slots), and the dynamic keymap's macros end below it
+ * (config.h): their start is nvm_dynamic_keymap.c's, computed the same way
+ * here, and their size config.h's. Its writes
  * call wear_leveling_write() for the status QMK's EEPROM wrapper discards;
  * they skip eeprom_wear_leveling_write_hook(), so flash_stats counts them as
  * FW_OTHER's, which they are. The ranges profiles.c checks a record against
  * are the firmware's own. */
-_Static_assert(PROF_BASE + PROF_BLOCK_SIZE == TOTAL_EEPROM_BYTE_COUNT, "the profile block is the EEPROM's top 110 B");
-_Static_assert(DYNAMIC_KEYMAP_EEPROM_MAX_ADDR == PROF_BASE - 1, "the macros end just below the profile block");
+_Static_assert(PROF_BASE + PROF_BLOCK_SIZE == TOTAL_EEPROM_BYTE_COUNT, "the profile block is the EEPROM's top 218 B");
+#if !defined(VIA_ENABLE) || !defined(ENCODER_MAP_ENABLE) || defined(DYNAMIC_KEYMAP_EEPROM_ADDR) || \
+    defined(DYNAMIC_KEYMAP_ENCODER_EEPROM_ADDR) || defined(DYNAMIC_KEYMAP_MACRO_EEPROM_ADDR)
+#    error "the macros' start below is nvm_dynamic_keymap.c's for VIA with the encoder map, nothing overridden"
+#endif
+#define PROF_MACRO_ADDR (VIA_EEPROM_CONFIG_END + DYNAMIC_KEYMAP_LAYER_COUNT * MATRIX_ROWS * MATRIX_COLS * 2 + \
+                         DYNAMIC_KEYMAP_LAYER_COUNT * NUM_ENCODERS * 2 * 2)
+_Static_assert(PROF_MACRO_ADDR + DYNAMIC_KEYMAP_MACRO_EEPROM_SIZE == PROF_BASE, "the macros end just below the profile block");
 _Static_assert(DISPLAY_CLOCK_MODE_COUNT == 6 && POWER_MODE_COUNT == 4 && KB_BATT_VIEW_PERCENT == 1 && KB_BATT_VIEW_HOURS == 2,
                "profiles.c's ranges");
 void env_prof_read(uint16_t addr, void *dst, uint8_t n) { eeprom_read_block(dst, (const void *)(uintptr_t)addr, n); }

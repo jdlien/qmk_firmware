@@ -272,11 +272,16 @@
 // The battery row in whole percent. Define BATTERY_SHOW_TENTHS for tenths
 // ("85.9%"), the view the 2026-09-28 drain test was calibrated with.
 #define EECONFIG_KB_DATA_VERSION 7   // 7: the battery readout (P4); 6: the LCD level 0-100 (P2b); 5: the indicator levels (P2a)
-// The settings profiles' block (P5a, plans/SETTINGS-PROFILES-PLAN.md): the
-// emulated EEPROM's top 110 B, 914-1023, out of VIA's macro buffer, which
-// shrinks from 237 B to 127 B (VIA asks the firmware for its size). Nothing
-// else moves. menu/menu_glue.c asserts it against menu/profiles.h.
-#define DYNAMIC_KEYMAP_EEPROM_MAX_ADDR 913
+// The settings profiles' block (P5a, plans/SETTINGS-PROFILES-PLAN.md; P5d's
+// eight slots): the emulated EEPROM's top 218 B, 806-1023, out of VIA's
+// macro buffer, which shrinks from 237 B to 19 B (VIA asks the firmware for
+// its size): the 16 macros' terminators and two or three characters. JD's
+// call (10-26), who uses none. QMK refuses a buffer under 100 B when it
+// derives the size from DYNAMIC_KEYMAP_EEPROM_MAX_ADDR (nvm_dynamic_keymap.c:
+// "something is wrong"), so the size is set here and the maximum keeps its
+// default, which nothing else reads. Nothing else moves. menu/menu_glue.c
+// asserts the macros end where the block starts.
+#define DYNAMIC_KEYMAP_MACRO_EEPROM_SIZE 19
 
 // Debounce eeconfig flushes from RGB adjustment. Without this QMK writes MCU
 // flash on every single step (~8/s while a key is held), which is both needless

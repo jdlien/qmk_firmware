@@ -42,15 +42,16 @@ enum {
     N_BATT, N_BV0, N_BV1,                                       /* 45-47: P4, Battery and its two readouts */
     N_CLK4, N_CLK5,                                             /* 48-49: the Clock's rows 5-6 (rows: clock_enum[]) */
     N_PROFILES,                                                 /* 50: P5b, the settings profiles (plans/SETTINGS-PROFILES-PLAN.md) */
-    N_PSLOT0, N_PSLOT1, N_PSLOT2, N_PSLOT3,                     /* 51-54: a slot's row, and as a frame its page */
-    N_PLOAD, N_PSAVE, N_PDELETE,                                /* 55-57: its actions; as frames, Save's and Delete's
+    N_PSLOT,                                                    /* 51: a saved slot's row, its slot in val; as a frame
+                                                                 * its page, its slot in pslot (P5d: one node, eight slots) */
+    N_PNEW,                                                     /* 52: P5d, Profiles' last row: Save new */
+    N_PLOAD, N_PSAVE, N_PDELETE,                                /* 53-55: its actions; as frames, Save's and Delete's
                                                                  * confirms, the slot in the cursor */
     N_COUNT
 };
 _Static_assert(N_COUNT <= 63, "a row's node is 6 bits");
 _Static_assert(MENU_HELP_TOPICS == 4, "Help's four topics");
-_Static_assert(N_PSLOT3 - N_PSLOT0 + 1 == PROF_SLOTS, "a node a slot");
-static bool is_pslot(uint8_t node) { return node >= N_PSLOT0 && node <= N_PSLOT3; }
+static bool is_pslot(uint8_t node) { return node == N_PSLOT; }
 
 /* The top level's order (P4, JD 10-25): Battery under Clock, and
  * Diagnostics under Bootloader on page two. P5b (JD, 10-25): Profiles is
@@ -66,7 +67,9 @@ static const uint8_t help_rows[]  = {N_BACK, N_TOPIC0, N_TOPIC1, N_TOPIC2, N_TOP
 static const uint8_t power_rows[] = {N_BACK, N_POW0, N_POW1, N_POW2, N_POW3};
 static const uint8_t clock_rows[] = {N_BACK, N_CLK0, N_CLK1, N_CLK2, N_CLK3, N_CLK4, N_CLK5};
 static const uint8_t batt_rows[]  = {N_BACK, N_BV0, N_BV1};   /* P4 */
-static const uint8_t prof_rows[]  = {N_BACK, N_PSLOT0, N_PSLOT1, N_PSLOT2, N_PSLOT3};   /* P5b */
+/* P5d: Profiles' rows are Back, the saved slots in slot order, then Save
+ * new (row_count(), row_node()), no empty slot shown (JD, 10-26: "just a
+ * 'Save New' makes more sense than finite grayed out unused slots"). */
 static const uint8_t pslot_rows[] = {N_BACK, N_PLOAD, N_PSAVE, N_PDELETE};
 /* A slot page's summary: three lines under its actions (Decided 10), as the
  * Battery page places its notes. */
@@ -182,6 +185,7 @@ static const char *label_of(uint8_t node) {
         case N_PLOAD:  return "Load";
         case N_PSAVE:  return "Save current here";
         case N_PDELETE: return "Delete";
+        case N_PNEW:   return "+ Save new";   /* P5d: the `+` in the check box's cells, the names' column */
         default: break;
     }
     if (node >= N_BT0 && node <= N_BT2) return slot_names[node - N_BT0];
@@ -254,13 +258,15 @@ static uint32_t ft_last;                    /* P1b: the editor's last turn, ms (
  * 0.55 ms a pass with every slot empty: this core's main loop has a few MHz
  * under the row ISR. So it's read at most every 128 ms, and at once after a
  * click or a host's write; a key's load or a live change shows within the
- * 128 ms. pfs: bits 0-3 the valid slots, 4-6 the active one (7 none), 7 its
- * `*`. pfs_flags: PFS_STALE, PFS_FAILED (prof_write_failed() at the last
- * tick, so its rise says so) and, bits 2-7, the 128 ms tick of the last
- * read. A row's first need after it's stale reads it afresh, so nothing is
- * read on pages without these rows. */
+ * 128 ms. pfs (P5d's eight slots): bits 0-7 the valid slots, 8-11 the
+ * active one (15 none), 12 its `*`. pfs_flags: PFS_STALE, PFS_FAILED
+ * (prof_write_failed() at the last tick, so its rise says so) and, bits
+ * 2-7, the 128 ms tick of the last read. A row's first need after it's
+ * stale reads it afresh, so nothing is read on pages without these rows. */
 enum { PFS_STALE = 1, PFS_FAILED = 2, PFS_TICKS = 0xFC };
-static uint8_t  pfs, pfs_flags = PFS_STALE;
+static uint16_t pfs;
+static uint8_t  pfs_flags = PFS_STALE;
+static uint8_t  pslot;                      /* P5d: the open slot page's slot (the stack holds one at most) */
 static bool     ft_have;                    /* a turn in this editor yet */
 static uint8_t  model_link, model_pf;       /* P3: env_link() and env_bt_pair_facts(), latched as the model */
 
@@ -301,11 +307,7 @@ static const uint8_t *rows_of(uint8_t node, uint8_t *n) {
         case N_LIGHT: *n = sizeof light_rows; return light_rows;
         case N_IND:   *n = sizeof ind_rows;   return ind_rows;
         case N_CONN:  *n = sizeof conn_rows;  return conn_rows;
-        case N_PROFILES: *n = sizeof prof_rows; return prof_rows;   /* P5b */
-        case N_PSLOT0:
-        case N_PSLOT1:
-        case N_PSLOT2:
-        case N_PSLOT3: *n = sizeof pslot_rows; return pslot_rows;
+        case N_PSLOT: *n = sizeof pslot_rows; return pslot_rows;   /* P5b; Profiles' own: row_count(), row_node() */
         default:      *n = 0;                 return 0;
     }
 }
@@ -316,9 +318,12 @@ static uint8_t effects(void) {
     uint8_t n = env_effects();
     return n > 15 ? 15 : n;
 }
+static uint8_t pfs_saved(void);
+static uint8_t pfs_nth(uint8_t k);
 static uint8_t row_count(uint8_t node) {
     if (node == N_EFFECT) return (uint8_t)(1u + effects());
     if (node == N_LIGHTS) return 3;
+    if (node == N_PROFILES) return (uint8_t)(2u + pfs_saved());   /* P5d: Back, the saved slots, Save new */
     uint8_t n;
     (void)rows_of(node, &n);
     return n;
@@ -329,6 +334,15 @@ static uint8_t row_node(uint8_t node, uint8_t i, uint8_t *val) {
         if (!i) return N_BACK;
         *val = (uint8_t)(i - 1u);
         return node == N_EFFECT ? N_EFFOPT : N_LTSOPT;
+    }
+    if (node == N_PROFILES) {   /* P5d: row i the (i - 1)th saved slot, its slot in val; then Save new */
+        if (!i) return N_BACK;
+        uint8_t s = pfs_nth((uint8_t)(i - 1u));
+        if (s < PROF_SLOTS) {
+            *val = s;
+            return N_PSLOT;
+        }
+        return i == 1u + pfs_saved() ? N_PNEW : N_NONE;
     }
     uint8_t        n;
     const uint8_t *r = rows_of(node, &n);
@@ -408,8 +422,9 @@ enum { T_TOP = 1, T_POWER, T_CLOCK, T_DIAG, T_HELP, T_ABOUT, T_TOPIC0, T_RESET =
        T_PAIRING, T_NOW_BT1, T_NOW_BT2, T_NOW_BT3,                                          /* 36-39: P3 */
        T_ALREADY_BT1, T_ALREADY_BT2, T_ALREADY_BT3, T_PAIR_STOPPED,                         /* 40-43 */
        T_BATT,                                                                              /* 44: P4 */
-       T_PROFILES, T_PSLOT0, T_PSAVE = T_PSLOT0 + PROF_SLOTS, T_PDELETE,                    /* 45-51: P5b; a slot's page's title is its name */
-       T_LOADED, T_LOADED_NOFX, T_DELETED, T_PBUSY, T_SAVE_FAILED };                        /* 52-56 */
+       T_PROFILES, T_PSLOT0, T_PSAVE = T_PSLOT0 + PROF_SLOTS, T_PDELETE,                    /* 45-55: P5b; a slot's page's title is its name */
+       T_LOADED, T_LOADED_NOFX, T_DELETED, T_PBUSY, T_SAVE_FAILED,                          /* 56-60 */
+       T_PFULL };                                                                           /* 61: P5d */
 _Static_assert(T_RESET == 11, "the title ids: the design's table");
 
 static uint8_t screen_title(void) {
@@ -442,7 +457,7 @@ static uint8_t screen_title(void) {
         case N_PSAVE:  return T_PSAVE;
         case N_PDELETE: return T_PDELETE;
         default:      return is_topic(n)   ? (uint8_t)(T_TOPIC0 + (n - N_TOPIC0))
-                             : is_pslot(n) ? (uint8_t)(T_PSLOT0 + (n - N_PSLOT0))
+                             : is_pslot(n) ? (uint8_t)(T_PSLOT0 + pslot)
                                            : T_TOP;
     }
 }
@@ -493,6 +508,7 @@ static const char *title_text(uint8_t id) {
         case T_DELETED:    return "Deleted";
         case T_PBUSY:      return "Busy, try again";      /* a recovery, or a host restore open */
         case T_SAVE_FAILED: return "Save failed";         /* a write failed: none more until a reboot */
+        case T_PFULL:      return "Full: delete one";     /* P5d: Save new, every slot saved */
         default: break;
     }
     if (id >= T_TOPIC0 && id < T_TOPIC0 + 4) return menu_help_titles[id - T_TOPIC0];
@@ -570,21 +586,39 @@ static void about_line(uint8_t line, char *out, size_t sz) {
 
 /* --- P5b: the profiles' snapshot ------------------------------------------ */
 
-static uint8_t pfs_get(void) {
+static uint16_t pfs_get(void) {
     if (pfs_flags & PFS_STALE) {
-        uint8_t rec[PROF_REC], a = prof_active_rec(rec), v = 0;
+        uint8_t rec[PROF_REC], a = prof_active_rec(rec), v = prof_valid_mask();
         bool    star = a < PROF_SLOTS && prof_differs(rec);
-        for (uint8_t s = 0; s < PROF_SLOTS; s++)
-            if (s == a || prof_slot(s, rec)) v |= (uint8_t)(1u << s);
-        pfs       = (uint8_t)(v | ((a < PROF_SLOTS ? a : 7u) << 4) | (star ? 0x80u : 0u));
+        pfs        = (uint16_t)(v | ((uint16_t)(a < PROF_SLOTS ? a : 15u) << 8) | (star ? 0x1000u : 0u));
         pfs_flags &= (uint8_t)~PFS_STALE;
     }
     return pfs;
 }
+_Static_assert(PROF_SLOTS == 8u, "pfs: a byte of valid slots");
 static bool    pfs_valid(uint8_t s) { return (pfs_get() >> s) & 1u; }
-static uint8_t pfs_active(void) {   /* 0-3, or 0xFF none */
-    uint8_t a = (uint8_t)((pfs_get() >> 4) & 7u);
+static uint8_t pfs_active(void) {   /* 0-7, or 0xFF none */
+    uint8_t a = (uint8_t)((pfs_get() >> 8) & 15u);
     return a < PROF_SLOTS ? a : 0xFFu;
+}
+static bool pfs_star(void) { return (pfs_get() & 0x1000u) != 0u; }
+/* P5d's list: how many are saved; the kth saved slot (0xFF none); a slot's
+ * place among the saved ones before it, so a saved slot's row is 1 + that. */
+static uint8_t pfs_saved(void) {
+    uint8_t n = 0;
+    for (uint8_t v = (uint8_t)pfs_get(); v; v &= (uint8_t)(v - 1u)) n++;
+    return n;
+}
+static uint8_t pfs_nth(uint8_t k) {
+    uint8_t v = (uint8_t)pfs_get();
+    for (uint8_t s = 0; s < PROF_SLOTS; s++)
+        if (((v >> s) & 1u) && !k--) return s;
+    return 0xFFu;
+}
+static uint8_t pfs_rank(uint8_t slot) {
+    uint8_t v = (uint8_t)(pfs_get() & ((1u << slot) - 1u)), n = 0;
+    for (; v; v &= (uint8_t)(v - 1u)) n++;
+    return n;
 }
 
 /* --- The list geometry (C8): 0 the title, 1 the separator, 2 the scrollbar,
@@ -702,6 +736,7 @@ static row_t row_at(uint8_t r) {
     if (is_pslot(f->node) && r >= PSUM_ROW0 && r < PSUM_ROW0 + PSUM_LINES) {   /* P5b: the summary; not selectable */
         x.kind = RK_PNOTE;
         x.node = f->node;
+        x.val  = pslot;
         x.line = (uint8_t)(r - PSUM_ROW0);
         return x;
     }
@@ -721,12 +756,11 @@ static row_t row_at(uint8_t r) {
     else if (x.node == N_PROFILES) {   /* P5b: the active slot (15 none) in val, its `*` in line (row_sig's bit 2) */
         uint8_t a = pfs_active();
         x.val  = a < PROF_SLOTS ? a : 15u;
-        x.line = a < PROF_SLOTS && (pfs_get() & 0x80u) ? 1u : 0u;
-    } else if (is_pslot(x.node)) {   /* a slot: saved (val 1) or empty; the active one's check */
-        uint8_t s = (uint8_t)(x.node - N_PSLOT0);
-        x.val    = pfs_valid(s) ? 1u : 0u;
-        x.bullet = pfs_active() == s;
-    }
+        x.line = a < PROF_SLOTS && pfs_star() ? 1u : 0u;
+    } else if (x.node == N_PSLOT) {   /* P5d: a saved slot, its slot in val (row_node()); the active one's check */
+        x.val    = val;
+        x.bullet = pfs_active() == val;
+    } else if (x.node == N_PNEW) x.val = pfs_saved() >= PROF_SLOTS ? 1u : 0u;   /* P5d: 1 every slot saved, greyed */
     else if (x.node == N_EFFOPT || x.node == N_LTSOPT) x.val = val;
     else if (value_which(x.node) >= 0) {
         x.kind = RK_VALUE;
@@ -738,10 +772,10 @@ static row_t row_at(uint8_t r) {
 
 /* --- P5b's text: a slot's name, the top level's value, a slot's summary ------ */
 
-/* A slot's row: its name, or "Profile n" for an empty slot (a deleted one's
- * bytes stay) or a nameless one. out: PROF_NAME + 1. */
-static const char *pslot_label(uint8_t node, char *out) {
-    uint8_t rec[PROF_REC], s = (uint8_t)(node - N_PSLOT0);
+/* A slot's name, or "Profile n" for an empty slot (a deleted one's bytes
+ * stay) or a nameless one. out: PROF_NAME + 1. */
+static const char *pslot_label(uint8_t s, char *out) {
+    uint8_t rec[PROF_REC];
     if (!prof_slot(s, rec)) rec[PR_FIELDS] = 0;
     prof_name(s, rec, out);
     return out;
@@ -833,7 +867,7 @@ static void row_text(const row_t *x, char *out) {
         return;
     }
     if (x->kind == RK_PNOTE) {
-        prof_summary((uint8_t)(x->node - N_PSLOT0), x->line, out);
+        prof_summary(x->val, x->line, out);
         return;
     }
     if (x->kind == RK_VALUE) {
@@ -857,7 +891,7 @@ static void row_text(const row_t *x, char *out) {
     const char *label = x->node == N_EFFOPT   ? env_effect_name(x->val)
                       : x->node == N_LTSOPT   ? (x->val ? "On" : "Off")
                       : x->node == N_PAIRNOW  ? pair_labels[x->val % 3u]
-                      : is_pslot(x->node)     ? pslot_label(x->node, nm)   /* P5b */
+                      : x->node == N_PSLOT    ? pslot_label(x->val, nm)   /* P5b */
                                               : label_of(x->node);
     const char *value = "";
     if (x->node == N_POWER) value = power_short[x->val & 3u];
@@ -868,7 +902,8 @@ static void row_text(const row_t *x, char *out) {
     else if (x->node >= N_BT0 && x->node <= N_BT2) value = link_words[x->val % 5u];
     else if (x->node == N_BV0 || x->node == N_BV1) value = batt_preview(x->node == N_BV1, buf);   /* P4 */
     else if (x->node == N_PROFILES) value = prof_value(x, buf);           /* P5b */
-    else if (is_pslot(x->node)) value = x->val ? MT_TRI_R : "empty";      /* a saved slot opens its page */
+    else if (x->node == N_PSLOT) value = MT_TRI_R;                        /* a saved slot opens its page */
+    else if (x->node == N_PNEW) value = x->val ? "Full" : "";            /* P5d */
     else if (x->node == N_DIAG || x->node == N_HELP || x->node == N_ABOUT || x->node == N_HEALTH ||
              x->node == N_CAMERA || x->node == N_RESET || is_topic(x->node) || x->node == N_LIGHT || x->node == N_BOOT ||
              x->node == N_IND)
@@ -1009,7 +1044,7 @@ static uint16_t row_sig(const row_t *x) {
         case RK_PNOTE: {   /* P5b: 0xC800 | line << 9 | the record's crc << 1 (equal crc, equal text); 0xCE00 | line << 1
                             * empty. Bit 0 stays clear: a row's bit 0 is its lit bit, which the scheduler reads. The
                             * crc byte read raw: the snapshot vouched for the record this pass */
-            uint8_t s = (uint8_t)(x->node - N_PSLOT0), crc;
+            uint8_t s = x->val, crc;
             if (!pfs_valid(s)) return (uint16_t)(0xCE00u | ((uint16_t)x->line << 1));
             env_prof_read((uint16_t)(PROF_BASE + PROF_REC_OFF(s) + PR_CRC), &crc, 1);
             return (uint16_t)(0xC800u | ((uint16_t)(x->line & 3u) << 9) | ((uint16_t)crc << 1));
@@ -1170,7 +1205,7 @@ static ms_paint_t l_paint(uint8_t s, uint8_t c, uint8_t p) {
     uint16_t fg = x.kind != RK_ITEM && x.kind != RK_VALUE ? pal[MP_WHITE]   /* a page's text, About's lines */
                 : x.lit              ? pal[MP_LIT]
                 : (x.node == N_BACK || x.node == N_EXIT) ? pal[MP_LEAVE]
-                : is_pslot(x.node) && !x.val ? pal[MP_GREY]   /* P5b: an empty slot, greyed */
+                : x.node == N_PNEW && x.val ? pal[MP_GREY]   /* P5d: Save new, every slot saved */
                                      : pal[MP_DIM];
     /* The cursor (JD, 10-24): in the lit row's lead, in its own colour. */
     return text_piece(cells, (uint16_t)(ROW_Y0 + (s - S_ROW0) * ROW_H), true, x.lit ? (uint8_t)MT_CURSOR[0] : 0u,
@@ -1516,6 +1551,10 @@ static menu_result_t pop(uint32_t now) {
     uint8_t from = cur()->node;
     if (is_editor(from) || is_preview(from)) me_cancel();   /* never leave an edit open (a no-op once saved) */
     depth--;
+    if (from == N_PSLOT && pfs_valid(pslot)) {   /* P5d: back on its row, wherever a host's write moved it */
+        cur()->cursor = (uint8_t)(1u + pfs_rank(pslot));
+        cur()->top    = (uint8_t)(cur()->cursor / MENU_ROWS * MENU_ROWS);
+    }
     if (is_editor(from)) {   /* back to its list: a layout change, both ways (ms_set_layout's clear) */
         retitle(now);
         ms_set_layout(&L_LIST, false);
@@ -1691,30 +1730,42 @@ static menu_result_t activate(uint32_t now) {
                 ms_retarget();
                 return MENU_NONE;
             }
-            uint8_t a = pfs_active();
-            push(N_PROFILES, (uint8_t)(1u + (a < PROF_SLOTS ? a : 0u)));
-            enter_named(S_ROW0 + 1u, PROF_SLOTS, now);
+            uint8_t a = pfs_active();   /* P5d: on the active slot's row, else the first (Save new, none saved) */
+            push(N_PROFILES, (uint8_t)(1u + (a < PROF_SLOTS ? pfs_rank(a) : 0u)));
+            enter_named(S_ROW0 + 1u, MENU_ROWS - 1u, now);
             return MENU_NONE;
         }
-        case N_PSLOT0:
-        case N_PSLOT1:
-        case N_PSLOT2:
-        case N_PSLOT3: {
-            uint8_t rec[PROF_REC], s = (uint8_t)(node - N_PSLOT0);
-            if (prof_slot(s, rec)) {   /* a saved slot: its page, on Load */
-                push(node, 1);
-                enter_named(S_ROW0 + PSUM_ROW0, PSUM_LINES, now);
+        case N_PSLOT: {   /* a saved slot: its page, on Load */
+            uint8_t rec[PROF_REC];
+            if (!prof_slot(val, rec)) {   /* emptied since the snapshot (the host's): the list as it now is */
+                retitle(now);
+                ms_retarget();
                 return MENU_NONE;
             }
-            /* An empty one saves at once, as Profile n, and becomes the
-             * active one; this page stays, the check moving (Decided 3). */
-            prof_outcome(prof_save(s, NULL), T_SAVED, now);
+            pslot = val;
+            push(N_PSLOT, 1);
+            enter_named(S_ROW0 + PSUM_ROW0, PSUM_LINES, now);
+            return MENU_NONE;
+        }
+        case N_PNEW: {   /* P5d: the live settings into the first free slot as Profile n, which becomes the active one */
+            uint8_t s = prof_free_slot();
+            if (s >= PROF_SLOTS) {
+                flash(T_PFULL, now);
+            } else {
+                uint8_t st = prof_save(s, NULL);
+                prof_outcome(st, T_SAVED, now);
+                pfs_flags |= PFS_STALE;
+                if (st == PROF_OK) {   /* the cursor on its row; the rows below it move down one */
+                    f->cursor = (uint8_t)(1u + pfs_rank(s));
+                    f->top    = (uint8_t)(f->cursor / MENU_ROWS * MENU_ROWS);
+                }
+            }
             retitle(now);
             ms_retarget();
             return MENU_NONE;
         }
         case N_PLOAD: {   /* commits like a choice: back to Profiles, where the check moves */
-            uint8_t st = prof_load((uint8_t)(f->node - N_PSLOT0));
+            uint8_t st = prof_load(pslot);
             if (st == PROF_OK || st == PROF_OK_EFFECT_SKIPPED) {
                 model_clock = env_clock_mode();   /* the latched model, as a choice's commit sets it */
                 prof_outcome(st, T_LOADED, now);
@@ -1728,7 +1779,7 @@ static menu_result_t activate(uint32_t now) {
         }
         case N_PSAVE:
         case N_PDELETE:   /* overwriting and deleting ask first (Decided 5) */
-            push(node, (uint8_t)(f->node - N_PSLOT0));
+            push(node, pslot);
             show(true, false, now);
             return MENU_NONE;
         case N_EXIT:
@@ -1968,6 +2019,7 @@ uint8_t menu_cursor(void) {
     if (f->node == N_PAIRING) return (uint8_t)(f->cursor << 4 | pair_phase(f->cursor));   /* P3: the slot and the phase */
     if (f->node == N_CONNINFO) return 0;   /* one page: not Reset's or Bootloader's confirm_page (codex) */
     if (f->node == N_PSAVE || f->node == N_PDELETE) return f->cursor;   /* P5b: the slot */
+    if (f->node == N_PSLOT) return (uint8_t)(pslot << 4 | f->cursor);  /* P5d: the slot and the row */
     if (is_confirm(f->node)) return confirm_page;
     if (is_editor(f->node)) return me_value();   /* P1b: an editor's value */
     return f->cursor;

@@ -15,9 +15,10 @@
 #define PROF_BVIEW_PERCENT 1u   /* KB_BATT_VIEW_PERCENT */
 #define PROF_BVIEW_HOURS   2u   /* KB_BATT_VIEW_HOURS */
 
-/* A restore's transaction (3 B): the host's token; the pages received (bits
- * 0-4), the open bit, and the write-failure latch; a countdown in 10 Hz
- * ticks, 5 s without a page aborting it.
+/* A restore's transaction (3 B): the host's token; the pages received, in
+ * order (bits 0-4, a count: P5d's nine pages outgrew P5a's five bits of a
+ * mask, and RAM has no byte to spare), the open bit, and the write-failure
+ * latch; a countdown in 10 Hz ticks, 5 s without a page aborting it.
  * The latch (codex, P5a's review): wear_leveling_write() updates its RAM
  * cache BEFORE it programs the flash, so after a failed write the cache
  * holds bytes the flash may not. A retry of the same bytes would then be
@@ -29,11 +30,12 @@
 #define TX_OPEN    0x80u
 #define TX_FAILED  0x40u
 #define TX_CHANGED 0x20u
-#define TX_PAGES   0x1Fu
+#define TX_PAGES   0x1Fu   /* the count of pages received in order */
 #define TX_TICKS   50u
+_Static_assert(PROF_PAGES <= TX_PAGES, "the pages' count fits its five bits");
 static uint8_t tx_token, tx_state, tx_left;
 /* The active slot's choice still to be written (P5b), 1 B: 0 none, else
- * 0x80 | the slot (0-3), or 0xFF for no slot. The menu's Load, Save and
+ * 0x80 | the slot (0-7), or 0xFF for no slot. The menu's Load, Save and
  * Delete and the Next and Previous keys all set it here, one writer and one
  * rule: it rides kb_eeconfig's settle (env_settings_touch()) and prof_tick()
  * writes it once that write is done, so a run of presses costs one write and
@@ -116,7 +118,7 @@ static bool wr(uint8_t off, const void *src, uint8_t n, bool *consolidated) {
 }
 static bool wr8(uint8_t off, uint8_t v, bool *consolidated) { return wr(off, &v, 1, consolidated); }
 
-bool prof_formatted(void) { return rd8(PROF_OFF_MAGIC) == PROF_MAGIC_V1; }
+bool prof_formatted(void) { return rd8(PROF_OFF_MAGIC) == PROF_MAGIC_V2; }
 
 bool prof_slot(uint8_t slot, uint8_t *rec) {
     if (slot >= PROF_SLOTS || !prof_formatted()) {
@@ -125,6 +127,26 @@ bool prof_slot(uint8_t slot, uint8_t *rec) {
     }
     rd(PROF_REC_OFF(slot), rec, PROF_REC);
     return prof_rec_valid(rec);
+}
+
+/* P5d: a bit a valid slot, the magic read once (the menu's snapshot reads
+ * this every 128 ms: prof_slot()'s own magic read a slot made it 18 reads). */
+uint8_t prof_valid_mask(void) {
+    uint8_t rec[PROF_REC], v = 0;
+    if (!prof_formatted()) return 0;
+    for (uint8_t s = 0; s < PROF_SLOTS; s++) {
+        rd(PROF_REC_OFF(s), rec, PROF_REC);
+        if (prof_rec_valid(rec)) v |= (uint8_t)(1u << s);
+    }
+    return v;
+}
+_Static_assert(PROF_SLOTS <= 8u, "a mask's byte");
+
+uint8_t prof_free_slot(void) {
+    uint8_t v = prof_valid_mask();
+    for (uint8_t s = 0; s < PROF_SLOTS; s++)
+        if (!((v >> s) & 1u)) return s;
+    return 0xFFu;
 }
 
 /* The active byte as it will be: the pending choice, else the block's. */
@@ -149,7 +171,7 @@ void prof_name(uint8_t slot, const uint8_t *rec, char *out) {
         out[PROF_NAME] = '\0';
     } else {
         memcpy(out, "Profile ", 8);
-        out[8] = (char)('1' + (slot & 3u));
+        out[8] = (char)('1' + (slot & 7u));
         out[9] = '\0';
     }
 }
@@ -160,7 +182,7 @@ void prof_name(uint8_t slot, const uint8_t *rec, char *out) {
 static bool format(bool *consolidated) {
     for (uint8_t s = 0; s < PROF_SLOTS; s++)
         if (!wr8(PROF_REC_OFF(s) + PR_STATE, PS_EMPTY, consolidated)) return false;
-    return wr8(PROF_OFF_ACTIVE, 0xFFu, consolidated) && wr8(PROF_OFF_MAGIC, PROF_MAGIC_V1, consolidated);
+    return wr8(PROF_OFF_ACTIVE, 0xFFu, consolidated) && wr8(PROF_OFF_MAGIC, PROF_MAGIC_V2, consolidated);
 }
 
 /* Never inside a deep sleep's recovery (a menu can be open in its first
@@ -385,7 +407,7 @@ static uint8_t page_len(uint8_t p) {
 static uint8_t commit(void) {
     bool    c = false;
     uint8_t rec[PROF_REC];
-    if ((tx_state & TX_PAGES) != TX_PAGES) return PROF_INCOMPLETE;
+    if ((tx_state & TX_PAGES) != PROF_PAGES) return PROF_INCOMPLETE;
     uint8_t a = rd8(PROF_OFF_ACTIVE);
     for (uint8_t s = 0; s < PROF_SLOTS; s++) {
         rd(PROF_REC_OFF(s), rec, PROF_REC);
@@ -396,23 +418,28 @@ static uint8_t commit(void) {
         }
     }
     if (a >= PROF_SLOTS) a = 0xFFu;
-    return wr8(PROF_OFF_ACTIVE, a, &c) && wr8(PROF_OFF_MAGIC, PROF_MAGIC_V1, &c) ? PROF_OK : PROF_WRITE_FAILED;
+    return wr8(PROF_OFF_ACTIVE, a, &c) && wr8(PROF_OFF_MAGIC, PROF_MAGIC_V2, &c) ? PROF_OK : PROF_WRITE_FAILED;
 }
 
 /* The report in place: [0] SET_VALUE, [1] 0x13, [2] 0x10, [3] the sub; VIA
- * echoes it back. A block page is 26 B at [6..31], so the block is five.
+ * echoes it back. A block page is 26 B at [6..31], so the block is nine.
  *   0  read page p:   [4] p                -> [5] status, [6..31] its bytes (zero past the block's end); the
  *                                             active byte as it will be, a pending choice included (P5b)
  *   1  begin:         [5] token            -> [6] status: aborts an open restore, writes the magic to 0 (a torn
- *                                             restore reads as four empty slots), and opens one
+ *                                             restore reads as eight empty slots), and opens one
  *   2  write page p:  [4] p, [5] token, [6..31] -> [6] status: straight into the block, the magic's byte
- *                                             masked (the host never writes it); the page marked received
+ *                                             masked (the host never writes it). In order (P5d): page p
+ *                                             only once 0 to p - 1 are in (PROF_BAD before), a page again
+ *                                             as often as it likes
  *   3  commit:        [5] token            -> [6] status (commit(), above); the transaction closes either way
  *   4  the live record                     -> [4..30] it (fields PF_LIVE), [31] status
  *   5  apply one:     [4..30] a record     -> [31] status (PROF_OK_EFFECT_SKIPPED: an effect this build lacks)
  *   6  flush                               -> [4] status: kb_eeconfig's and the RGB config's deferred writes now,
  *                                             and the pending active slot's (P5b): WRITE_FAILED if it failed, or
  *                                             while the latch holds (any profile write failed since the boot)
+ *   7  the geometry (P5d)                  -> [4] slots, [5] a record's bytes, [6] pages, [7] a page's bytes,
+ *                                             [8] the magic. P5a's and P5b's builds answer it unhandled: the
+ *                                             host takes them for four slots, five pages, magic 0xA1
  * 4, 5 and 6 cancel an open preview first. Dev builds: 0x40 save the live
  * settings to slot [4] -> [5] status, [6] 1 when the wear-leveling layer
  * consolidated; 0x41 delete slot [4] -> [5] status. The subs that write the
@@ -456,8 +483,9 @@ bool prof_hid(uint8_t *d) {
                 d[6] = PROF_TOKEN;
                 return true;
             }
-            if (p >= PROF_PAGES || env_recovering()) {
-                d[6] = p >= PROF_PAGES ? PROF_BAD : PROF_BUSY;
+            uint8_t got = tx_state & TX_PAGES;
+            if (p >= PROF_PAGES || p > got || env_recovering()) {
+                d[6] = p >= PROF_PAGES || p > got ? PROF_BAD : PROF_BUSY;
                 return true;
             }
             uint8_t skip = p == 0u ? 1u : 0u;   /* the magic: the firmware writes it, at the commit */
@@ -467,8 +495,8 @@ bool prof_hid(uint8_t *d) {
                 d[6] = PROF_WRITE_FAILED;
                 return true;
             }
-            tx_state |= (uint8_t)(1u << p);
-            tx_left   = TX_TICKS;
+            if (p == got) tx_state++;   /* the count, bits 0-4: the next page in order */
+            tx_left = TX_TICKS;
             d[6]      = PROF_OK;
             return true;
         }
@@ -517,6 +545,14 @@ bool prof_hid(uint8_t *d) {
              * pending choice is gone (codex, both rounds). The cache can't
              * vouch for the flash until a reboot. */
             d[4] = prof_write_failed() ? PROF_WRITE_FAILED : PROF_OK;
+            return true;
+        case 7:
+            memset(&d[4], 0, 28);
+            d[4] = PROF_SLOTS;
+            d[5] = PROF_REC;
+            d[6] = PROF_PAGES;
+            d[7] = PROF_PAGE;
+            d[8] = PROF_MAGIC_V2;
             return true;
 #if defined(AK820_DEV_HOOKS) || defined(MENU_HOST_TEST)
         case 0x40:

@@ -1,31 +1,33 @@
 // Copyright 2026 JD Lien
 // SPDX-License-Identifier: GPL-2.0-or-later
 //
-// Settings profiles (plans/SETTINGS-PROFILES-PLAN.md): four slots of the
-// menu's settings in the top 110 B of the emulated EEPROM, and HC_PROFILES,
+// Settings profiles (plans/SETTINGS-PROFILES-PLAN.md): eight slots of the
+// menu's settings in the top 218 B of the emulated EEPROM, and HC_PROFILES,
 // the host's backup and restore. P5a: the store and the command; P5b: what
-// the menu's pages (menu.c) and the Next and Previous keys need; Rename is
-// P5c's. Everything it touches goes through
+// the menu's pages (menu.c) and the Next and Previous keys need; P5d (JD,
+// 10-26: "8 feels about right"): eight slots, not four, and the list's Save
+// new; Rename is P5c's. Everything it touches goes through
 // menu_env.h, so the host tests run it on their fakes.
 #pragma once
 
 #include <stdbool.h>
 #include <stdint.h>
 
-#define PROF_BLOCK_SIZE 110u
-#define PROF_BASE       (1024u - PROF_BLOCK_SIZE)   /* 914: menu_glue.c asserts it's TOTAL_EEPROM_BYTE_COUNT - 110 */
-#define PROF_SLOTS      4u
+#define PROF_BLOCK_SIZE 218u
+#define PROF_BASE       (1024u - PROF_BLOCK_SIZE)   /* 806: menu_glue.c asserts it's TOTAL_EEPROM_BYTE_COUNT - 218 */
+#define PROF_SLOTS      8u
 #define PROF_REC        27u
-#define PROF_MAGIC_V1   0xA1u
-#define PROF_PAGE       26u   /* HC_PROFILES' page: [6..31] of the report */
-#define PROF_PAGES      5u    /* 4 x 26 + 6 */
+#define PROF_MAGIC_V2   0xA2u   /* P5d's eight slots; P5a's four were 0xA1 (hostagent/ak820profiles.py converts) */
+#define PROF_PAGE       26u     /* HC_PROFILES' page: [6..31] of the report */
+#define PROF_PAGES      9u      /* 8 x 26 + 10 */
 #define PROF_NAME       12u
 
-/* The block: the magic, the active slot (0xFF none), four records. */
+/* The block: the magic, the active slot (0xFF none), eight records. */
 enum { PROF_OFF_MAGIC = 0, PROF_OFF_ACTIVE = 1, PROF_OFF_REC = 2 };
 #define PROF_REC_OFF(slot) ((uint8_t)(PROF_OFF_REC + (slot) * PROF_REC))
-_Static_assert(PROF_OFF_REC + PROF_SLOTS * PROF_REC == PROF_BLOCK_SIZE, "the block is its header and four records");
-_Static_assert((PROF_PAGES - 1u) * PROF_PAGE < PROF_BLOCK_SIZE && PROF_PAGES * PROF_PAGE >= PROF_BLOCK_SIZE, "five pages cover it");
+_Static_assert(PROF_OFF_REC + PROF_SLOTS * PROF_REC == PROF_BLOCK_SIZE, "the block is its header and eight records");
+_Static_assert(PROF_BLOCK_SIZE <= 255u, "the block's offsets are a byte");
+_Static_assert((PROF_PAGES - 1u) * PROF_PAGE < PROF_BLOCK_SIZE && PROF_PAGES * PROF_PAGE >= PROF_BLOCK_SIZE, "nine pages cover it");
 
 /* A record's bytes. The crc covers bytes 1-25, not the state, so a Delete or
  * a save's commit (the state alone) never invalidates it. */
@@ -55,6 +57,8 @@ bool    prof_formatted(void);
 uint8_t prof_active(void);                          /* 0-3; 0xFF none, or the slot isn't valid. A pending choice counts */
 uint8_t prof_active_rec(uint8_t *rec);              /* the same, its record in rec (PROF_REC) when valid */
 bool    prof_slot(uint8_t slot, uint8_t *rec);      /* the slot's record; true when valid */
+uint8_t prof_valid_mask(void);                      /* P5d: bit s set when slot s holds a valid record */
+uint8_t prof_free_slot(void);                       /* P5d: the first slot without a valid record; 0xFF all saved */
 void    prof_name(uint8_t slot, const uint8_t *rec, char *out);   /* PROF_NAME + 1: the name, or "Profile n" */
 bool    prof_differs(const uint8_t *rec);           /* the live settings differ in a field it holds: the menu's `*` */
 uint8_t prof_step(bool next, uint8_t *slot);        /* the Next or Previous key's load; PROF_INVALID: none saved */
