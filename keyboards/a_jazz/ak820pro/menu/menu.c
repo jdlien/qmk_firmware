@@ -930,15 +930,17 @@ static const char *prof_value(const row_t *x, char *buf) {
 }
 /* A slot's summary (Decided 6 and 10; the content is to be worked out on the
  * panel): the effect and its speed (an Alphas/Mods' second colour as its
- * offset); the hue, saturation and brightness as the editors show them; the
- * screen and the clock. out: 20 cells of spaces. */
+ * offset); the bulb, then the hue, saturation and brightness as the editors
+ * show them; the screen and the clock. The bulb by the LEDs' line, not the
+ * effect's, leaving the first line's icon cells empty under the actions'
+ * (JD, 10-26); the text in one column from cell 2 (every effect's name
+ * fits: the dashboard's band holds 12). out: 20 cells of spaces. */
 static void prof_summary(uint8_t slot, uint8_t line, char *out) {
     uint8_t rec[PROF_REC];
     char    b[24];
     size_t  n;
     if (!prof_slot(slot, rec)) return;
     if (line == 0u) {
-        memcpy(out, icon_of(N_LIGHT), 2);
         if (!(rec[PR_FIELDS] & PF_LIGHTING)) return;
         if (!rec[PR_RGB_ON]) {
             memcpy(out + 2, "Lights off", 10);
@@ -953,11 +955,12 @@ static void prof_summary(uint8_t slot, uint8_t line, char *out) {
             snprintf(b, sizeof b, "%u%%", (unsigned)((rec[PR_SPEED] * 100u + 127u) / 255u));
         size_t vn = strlen(b);
         memcpy(out + 20 - vn, b, vn);
-        const char *name = fx >= 0 ? env_effect_name((uint8_t)fx) : "Unknown effect";
+        const char *name = fx >= 0 ? env_effect_name((uint8_t)fx) : "Unknown";   /* an effect this build lacks */
         n = strlen(name);
         if (n > 20u - 2u - vn - 1u) n = 20u - 2u - vn - 1u;
         memcpy(out + 2, name, n);
     } else if (line == 1u) {
+        memcpy(out, icon_of(N_LIGHT), 2);
         if (!(rec[PR_FIELDS] & PF_LIGHTING)) return;
         snprintf(b, sizeof b, "H:%u S:%u%% B:%u%%", (unsigned)((rec[PR_HUE] * 360u) / 256u),
                  (unsigned)((rec[PR_SAT] * 100u + 127u) / 255u), (unsigned)((rec[PR_VAL] * 100u + 127u) / 255u));
