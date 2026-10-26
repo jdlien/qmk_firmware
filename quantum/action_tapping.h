@@ -38,6 +38,9 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 uint16_t get_record_keycode(keyrecord_t *record, bool update_layer_cache);
 uint16_t get_event_keycode(keyevent_t event, bool update_layer_cache);
 void     action_tapping_process(keyrecord_t record);
+bool     action_tapping_idle(void);   /* no tapping key held, nothing queued */
+#else
+static inline bool action_tapping_idle(void) { return true; }
 #endif
 
 uint16_t get_tapping_term(uint16_t keycode, keyrecord_t *record);

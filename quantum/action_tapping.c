@@ -141,6 +141,13 @@ static void waiting_buffer_scan_tap(void);
 static void debug_tapping_key(void);
 static void debug_waiting_buffer(void);
 
+/** \brief Nothing held and nothing queued: no tapping key, the waiting buffer
+ * empty. Additive (ak820pro: the menu's Rename takes the keyboard only from
+ * a quiet state, so no queued tap-hold or held key lands inside it). */
+bool action_tapping_idle(void) {
+    return IS_NOEVENT(tapping_key.event) && waiting_buffer_head == waiting_buffer_tail;
+}
+
 /** \brief Action Tapping Process
  *
  * FIXME: Needs doc

@@ -113,6 +113,8 @@ static void op27_poll(void) {
  * the gated display housekeeping (C2). */
 void menu_ops_task(uint32_t now) {
     (void)ms_ops();   /* a DMA op that ended is settled within a pass, under any owner (C10) */
+    /* P5c: Rename's capture, under any owner (its DRAIN outlives the menu) */
+    menu_rename_task(menu_kind == MK_MENU && po_owner() == PANEL_MENU && po_session() == SESSION_OPEN, now);
     if (env_wake_notice_take()) (void)env_po_event(PO_EV_WAKE_RELEASED);
     mi_tick(now);
     op27_poll();

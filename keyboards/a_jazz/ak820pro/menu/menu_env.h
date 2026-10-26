@@ -88,6 +88,13 @@ void     env_settings_flush(void);
  * write still to come (a deep sleep's DSB_FLASH). */
 void     env_settings_touch(void);
 bool     env_settings_pending(void);
+/* P5c, Rename's capture: the debounced matrix idle (the knob masked) and
+ * QMK's tapping holding nothing; the one-shots cleared; the default layer's
+ * keycode at a position; a Shift held, by the default layer's keycodes. */
+bool     env_keys_idle(void);
+void     env_clear_oneshots(void);
+uint16_t env_default_keycode(uint8_t row, uint8_t col);
+bool     env_shift_held(void);
 #define  ENV_UNKNOWN 0xFFFFu
 typedef struct {
     uint32_t uptime_s;

@@ -31,6 +31,8 @@
 #include "nvm_eeprom_eeconfig_internal.h"    /* EECONFIG_SIZE, which VIA's end is counted from */
 #include "nvm_eeprom_via_internal.h"         /* VIA_EEPROM_CONFIG_END */
 #include "encoder.h"                         /* NUM_ENCODERS */
+#include "action_tapping.h"                  /* P5c: action_tapping_idle() */
+#include "keymap_common.h"                  /* keymap_key_to_keycode() */
 
 /* --- menu_backend.h ------------------------------------------------------------ */
 
@@ -352,12 +354,53 @@ bool menu_pre_process(uint16_t keycode, keyrecord_t *record) {
     if (e->type == ENCODER_CW_EVENT && e->key.col == 0) c = MI_CW;
     else if (e->type == ENCODER_CCW_EVENT && e->key.col == 0) c = MI_CCW;
     else if (e->type == KEY_EVENT && e->key.row == KNOB_ROW && e->key.col == KNOB_COL) c = MI_KNOB;
+    else if (e->type == KEY_EVENT) return !menu_key(e->key.row, e->key.col, e->pressed, timer_read32());   /* P5c: Rename's */
     else return true;
 
-    bool fn  = (layer_state & (((layer_state_t)1 << WINFN) | ((layer_state_t)1 << MACFN))) != 0;
+    /* P5c: through Rename, Fn reads as up whatever layer_state says: a
+     * toggled or latched Fn layer from before it would make a click the
+     * menu's close (Fn's own press is swallowed in the capture). */
+    bool fn = !menu_renaming() && (layer_state & (((layer_state_t)1 << WINFN) | ((layer_state_t)1 << MACFN))) != 0;
     bool fwd = menu_physical(c, e->pressed, fn, timer_read32());
     if (c != MI_KNOB) detent_swallowed = !fwd;
     return fwd;
+}
+
+/* P5c, Rename's capture (menu.c). */
+_Static_assert(MENU_KC_A == KC_A && MENU_KC_A + 25u == KC_Z && MENU_KC_1 == KC_1 && MENU_KC_1 + 9u == KC_0 &&
+                   MENU_KC_ENTER == KC_ENTER && MENU_KC_ESCAPE == KC_ESCAPE && MENU_KC_BSPC == KC_BACKSPACE &&
+                   MENU_KC_SPACE == KC_SPACE && MENU_KC_MINUS == KC_MINUS && MENU_KC_MINUS + 11u == KC_SLASH &&
+                   MENU_KC_KP_ENTER == KC_KP_ENTER && MENU_KC_LSHIFT == KC_LEFT_SHIFT && MENU_KC_RSHIFT == KC_RIGHT_SHIFT,
+               "menu.h's keycodes are QMK's");
+bool env_keys_idle(void) {
+    for (uint8_t r = 0; r < MATRIX_ROWS; r++) {
+        matrix_row_t row = matrix_get_row(r);
+        if (r == KNOB_ROW) row &= ~((matrix_row_t)1 << KNOB_COL);
+        if (row) return false;
+    }
+    return action_tapping_idle();
+}
+void env_clear_oneshots(void) {
+#ifndef NO_ACTION_ONESHOT
+    clear_oneshot_mods();
+    reset_oneshot_layer();
+#endif
+}
+uint16_t env_default_keycode(uint8_t row, uint8_t col) {
+    keypos_t k = {.col = col, .row = row};
+    return keymap_key_to_keycode(get_highest_layer(default_layer_state), k);
+}
+bool env_shift_held(void) {
+    uint8_t layer = get_highest_layer(default_layer_state);
+    for (uint8_t r = 0; r < MATRIX_ROWS; r++) {
+        matrix_row_t row = matrix_get_row(r);
+        for (uint8_t col = 0; row && col < MATRIX_COLS; col++, row >>= 1) {
+            if (!(row & 1u)) continue;
+            uint16_t kc = keymap_key_to_keycode(layer, (keypos_t){.col = col, .row = r});
+            if (kc == KC_LEFT_SHIFT || kc == KC_RIGHT_SHIFT) return true;
+        }
+    }
+    return false;
 }
 
 #ifdef ENCODER_MAP_ENABLE

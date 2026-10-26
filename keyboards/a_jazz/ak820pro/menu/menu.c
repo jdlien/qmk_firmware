@@ -47,6 +47,7 @@ enum {
     N_PNEW,                                                     /* 52: P5d, Profiles' last row: Save new */
     N_PLOAD, N_PSAVE, N_PDELETE,                                /* 53-55: its actions; as frames, Save's and Delete's
                                                                  * confirms, the slot in the cursor */
+    N_PRENAME,                                                  /* 56: P5c, Rename; as a frame its page, the slot in the cursor */
     N_COUNT
 };
 _Static_assert(N_COUNT <= 63, "a row's node is 6 bits");
@@ -70,7 +71,7 @@ static const uint8_t batt_rows[]  = {N_BACK, N_BV0, N_BV1};   /* P4 */
 /* P5d: Profiles' rows are Back, the saved slots in slot order, then Save
  * new (row_count(), row_node()), no empty slot shown (JD, 10-26: "just a
  * 'Save New' makes more sense than finite grayed out unused slots"). */
-static const uint8_t pslot_rows[] = {N_BACK, N_PLOAD, N_PSAVE, N_PDELETE};
+static const uint8_t pslot_rows[] = {N_BACK, N_PLOAD, N_PSAVE, N_PRENAME, N_PDELETE};   /* P5c: Rename before Delete */
 /* A slot page's summary: three lines under its actions (Decided 10), as the
  * Battery page places its notes. */
 #define PSUM_ROW0  5u
@@ -185,6 +186,7 @@ static const char *label_of(uint8_t node) {
         case N_PLOAD:  return "Load";
         case N_PSAVE:  return "Save current here";
         case N_PDELETE: return "Delete";
+        case N_PRENAME: return "Rename";   /* P5c */
         case N_PNEW:   return "+ Save new";   /* P5d: the `+` in the check box's cells, the names' column */
         default: break;
     }
@@ -246,11 +248,12 @@ static union {
         uint8_t    have;   /* not bools: About's bytes would be no bool's */
         uint8_t    st;     /* CK_* */
     } clk;
+    char name[PROF_NAME];   /* P5c: Rename's name, NUL-padded, its length strnlen()'s */
 } pg;
 enum { CK_OK = 1, CK_JUMP = 2 };   /* set; a read that wasn't the last's time on, for menu_tick() */
 #define CLOCK_EXAMPLES 5u          /* the Clock page's rows 1-5 (Off has none) */
 _Static_assert(1 + CLOCK_ROWS <= MENU_ROWS, "the Clock page is one screen: its examples are slots S_ROW0 + 1-5");
-_Static_assert(sizeof pg == sizeof(env_about_t), "the Clock's time shares About's 12 B");
+_Static_assert(sizeof pg == sizeof(env_about_t), "the Clock's time and Rename's name share About's 12 B");
 static uint32_t ft_last;                    /* P1b: the editor's last turn, ms (32-bit: the backstop is 180 s) */
 /* P5b: the profiles as the rows show them. Each row read the store itself
  * at every scan, a crc or two a time: 1.8 ms a pass more on the top level
@@ -375,10 +378,10 @@ static bool is_ind_editor(uint8_t node) { return node == N_LOCKS || node == N_CH
 static bool is_editor(uint8_t node) { return node == N_SCREEN || (node >= N_BRIGHT && node <= N_SPEED) || is_ind_editor(node); }
 static bool is_confirm(uint8_t node) {   /* the confirm geometry's pages */
     return node == N_RESET || node == N_BOOT || node == N_CONNINFO || node == N_PAIRING || node == N_PSAVE ||
-           node == N_PDELETE;
+           node == N_PDELETE || node == N_PRENAME;
 }
 static bool is_prof_screen(uint8_t node) {   /* P5b: a host restore pops these */
-    return node == N_PROFILES || is_pslot(node) || node == N_PSAVE || node == N_PDELETE;
+    return node == N_PROFILES || is_pslot(node) || node == N_PSAVE || node == N_PDELETE || node == N_PRENAME;
 }
 static bool is_hue_editor(uint8_t node) { return node == N_HUE || (node == N_SPEED && two_tone()); }
 static uint8_t field_of(uint8_t node) {
@@ -430,7 +433,8 @@ enum { T_TOP = 1, T_POWER, T_CLOCK, T_DIAG, T_HELP, T_ABOUT, T_TOPIC0, T_RESET =
        T_BATT,                                                                              /* 44: P4 */
        T_PROFILES, T_PSLOT0, T_PSAVE = T_PSLOT0 + PROF_SLOTS, T_PDELETE,                    /* 45-55: P5b; a slot's page's title is its name */
        T_LOADED, T_LOADED_NOFX, T_DELETED, T_PBUSY, T_SAVE_FAILED,                          /* 56-60 */
-       T_PFULL };                                                                           /* 61: P5d */
+       T_PFULL,                                                                             /* 61: P5d */
+       T_PRENAME, T_RENAMED };                                                              /* 62-63: P5c */
 _Static_assert(T_RESET == 11, "the title ids: the design's table");
 
 static uint8_t screen_title(void) {
@@ -462,6 +466,7 @@ static uint8_t screen_title(void) {
         case N_PROFILES: return T_PROFILES;   /* P5b */
         case N_PSAVE:  return T_PSAVE;
         case N_PDELETE: return T_PDELETE;
+        case N_PRENAME: return T_PRENAME;
         default:      return is_topic(n)   ? (uint8_t)(T_TOPIC0 + (n - N_TOPIC0))
                              : is_pslot(n) ? (uint8_t)(T_PSLOT0 + pslot)
                                            : T_TOP;
@@ -515,6 +520,8 @@ static const char *title_text(uint8_t id) {
         case T_PBUSY:      return "Busy, try again";      /* a recovery, or a host restore open */
         case T_SAVE_FAILED: return "Save failed";         /* a write failed: none more until a reboot */
         case T_PFULL:      return "Full: delete one";     /* P5d: Save new, every slot saved */
+        case T_PRENAME:    return "Rename profile";       /* P5c */
+        case T_RENAMED:    return "Renamed";
         default: break;
     }
     if (id >= T_TOPIC0 && id < T_TOPIC0 + 4) return menu_help_titles[id - T_TOPIC0];
@@ -542,7 +549,7 @@ static const char *title_icon(uint8_t id) {
         case T_PAIRING: return icon_of(N_CONN);
         case T_BATT:   return icon_of(N_BATT);
         default:       return id >= T_LIGHT && id <= T_LIGHTS        ? icon_of(N_LIGHT)
-                            : id >= T_PROFILES && id <= T_PDELETE ? icon_of(N_PROFILES)   /* P5b */
+                            : (id >= T_PROFILES && id <= T_PDELETE) || id == T_PRENAME ? icon_of(N_PROFILES)   /* P5b */
                                                                    : "";
     }
 }
@@ -588,6 +595,90 @@ static void about_line(uint8_t line, char *out, size_t sz) {
             break;
         }
     }
+}
+
+/* --- P5c: Rename's capture --------------------------------------------------- */
+
+/* rn: the capture's state in bits 0-1 (plans/SETTINGS-PROFILES-PLAN.md,
+ * "Rename"); the keys menu_key() took, for menu_tick(): Enter, Esc, an
+ * edit of the name. 1 B. */
+enum { RN_OFF = 0, RN_WAIT = 1, RN_CAPTURE = 2, RN_DRAIN = 3, RN_STATE = 3, RN_ENTER = 4, RN_ESC = 8, RN_EDITED = 16 };
+static uint8_t rn;
+static void          rename_open(uint8_t slot, uint32_t now);   /* below, with the confirms */
+static uint16_t      rename_sig(uint8_t i);
+static void          rename_line(uint8_t i, char *out, size_t sz);
+static menu_result_t rename_commit(uint32_t now);
+
+/* A key's character: US QWERTY's, the board seeing keycodes, not the host's
+ * layout. 0: not a character. */
+static char key_char(uint16_t kc, bool shift) {
+    static const char digits[2][11] = {"1234567890", "!@#$%^&*()"};
+    static const char punct[2][13]  = {"-=[]\\\0;'`,./", "_+{}|\0:\"~<>?"};   /* 0x2D-0x38; 0x32 non-US # */
+    if (kc >= MENU_KC_A && kc < MENU_KC_A + 26u) return (char)((shift ? 'A' : 'a') + (kc - MENU_KC_A));
+    if (kc >= MENU_KC_1 && kc < MENU_KC_1 + 10u) return digits[shift][kc - MENU_KC_1];
+    if (kc == MENU_KC_SPACE) return ' ';
+    if (kc >= MENU_KC_MINUS && kc < MENU_KC_MINUS + 12u) return punct[shift][kc - MENU_KC_MINUS];
+    return 0;
+}
+
+bool menu_renaming(void) {
+    uint8_t st = rn & RN_STATE;
+    return st == RN_WAIT || st == RN_CAPTURE;
+}
+
+/* Every key event but the knob's (menu_glue.c's menu_pre_process()). In
+ * WAIT nothing is taken: a key held at the open goes on to QMK, up and all.
+ * In CAPTURE all of them are: a press is a character, Backspace, Enter or
+ * Esc, by the default layer's keycode at its position and Shift read from
+ * the matrix; a release is nothing. In DRAIN all of them too, so no release
+ * of a key pressed in CAPTURE reaches QMK alone. */
+bool menu_key(uint8_t row, uint8_t col, bool pressed, uint32_t now) {
+    uint8_t st = rn & RN_STATE;
+    if (st == RN_DRAIN) return true;
+    if (st != RN_CAPTURE) return false;
+    if (!pressed) return true;
+    mi_note_input(now);   /* typing is the menu's input here: the idle close waits on it */
+    uint16_t kc  = env_default_keycode(row, col);
+    size_t   len = strnlen(pg.name, PROF_NAME);
+    if (kc == MENU_KC_ENTER || kc == MENU_KC_KP_ENTER) {
+        rn |= RN_ENTER;
+    } else if (kc == MENU_KC_ESCAPE) {
+        rn |= RN_ESC;
+    } else if (kc == MENU_KC_BSPC) {
+        if (len) {
+            pg.name[len - 1u] = '\0';
+            rn |= RN_EDITED;
+        }
+    } else {
+        char c = key_char(kc, env_shift_held());
+        if (c && len < PROF_NAME) {
+            pg.name[len] = c;
+            rn |= RN_EDITED;
+        }
+    }
+    return true;
+}
+
+/* Each pass, any owner, after the scan's events. The capture ends whenever
+ * Rename's page isn't the menu's showing one: a commit, a cancel, the idle
+ * close, a loss, a restore's pop. WAIT moves on once the keys are all up and
+ * QMK's tapping holds nothing, clearing the one-shots then, so none lands on
+ * the first key typed. */
+void menu_rename_task(bool showing, uint32_t now) {
+    (void)now;
+    uint8_t st      = rn & RN_STATE;
+    bool    on_page = showing && depth && cur()->node == N_PRENAME;
+    if (!on_page && (st == RN_WAIT || st == RN_CAPTURE)) {
+        st = st == RN_CAPTURE ? RN_DRAIN : RN_OFF;   /* WAIT took nothing, so nothing to drain */
+        rn &= (uint8_t)~(RN_ENTER | RN_ESC | RN_EDITED);
+    }
+    if (st == RN_WAIT && env_keys_idle()) {
+        env_clear_oneshots();
+        st = RN_CAPTURE;
+    } else if (st == RN_DRAIN && env_keys_idle()) {
+        st = RN_OFF;
+    }
+    rn = (uint8_t)((rn & ~RN_STATE) | st);
 }
 
 /* --- P5b: the profiles' snapshot ------------------------------------------ */
@@ -1313,6 +1404,7 @@ static uint16_t c_sig(uint8_t s) {
     if (s == 1) return 1;
     uint8_t n = cur()->node;
     if (n == N_CONNINFO) return (uint16_t)(0x8000u | (uint16_t)(s - 2u));
+    if (n == N_PRENAME) return rename_sig((uint8_t)(s - 2u));   /* P5c */
     if (n == N_PSAVE || n == N_PDELETE)   /* P5b: the slot's (its name repaints at the layout change) */
         return (uint16_t)((n == N_PSAVE ? 0x300u : 0x400u) | ((uint16_t)cur()->cursor << 4) | (uint16_t)(s - 2u));
     if (n == N_PAIRING) {
@@ -1332,6 +1424,7 @@ static ms_paint_t c_paint(uint8_t s, uint8_t c, uint8_t p) {
     if (node == N_CONNINFO) snprintf(buf, sizeof buf, "%s", info_lines[i]);
     else if (node == N_PAIRING) pair_line(cur()->cursor, pair_phase(cur()->cursor), i, buf, sizeof buf);
     else if (node == N_PSAVE || node == N_PDELETE) pconfirm_line(node, cur()->cursor, i, buf, sizeof buf);
+    else if (node == N_PRENAME) rename_line(i, buf, sizeof buf);   /* P5c */
     else snprintf(buf, sizeof buf, "%s", (node == N_BOOT ? boot_lines : c_lines)[confirm_page & 1u][i]);
     size_t n = strlen(buf);
     memcpy(cells, buf, n > 20 ? 20 : n);
@@ -1828,6 +1921,9 @@ static menu_result_t activate(uint32_t now) {
             ms_retarget();
             return MENU_NONE;
         }
+        case N_PRENAME:   /* P5c: its page, the name as it is; the keys wait until they're all up */
+            rename_open(pslot, now);
+            return MENU_NONE;
         case N_PSAVE:
         case N_PDELETE:   /* overwriting and deleting ask first (Decided 5) */
             if (node == N_PSAVE) pv_show(PV_LIVE);   /* P5e: Save's confirm shows what it would save */
@@ -1884,6 +1980,52 @@ static menu_result_t pconfirm_click(uint32_t now) {
     retitle(now);
     ms_set_layout(&L_LIST, false);
     return MENU_NONE;
+}
+
+/* P5c: Rename's page, on the confirm layout: the name and its cursor, then
+ * the keys. The name's line signs a hash of the name (a collision delays a
+ * repaint to the name's next change). */
+static void rename_open(uint8_t slot, uint32_t now) {
+    uint8_t rec[PROF_REC];
+    memset(pg.name, 0, sizeof pg.name);
+    if (prof_slot(slot, rec) && (rec[PR_FIELDS] & PF_NAME)) memcpy(pg.name, &rec[PR_NAME], PROF_NAME);
+    /* WAIT, from off or from a DRAIN still running (a key held since the last
+     * Rename): it waits for the same quiet, letting that key's release go on
+     * to QMK, which for a press it never saw does nothing. */
+    rn = RN_WAIT;
+    push(N_PRENAME, slot);
+    show(true, false, now);
+}
+static uint16_t rename_sig(uint8_t i) {
+    if (i) return (uint16_t)(0x0600u | i);
+    uint16_t h = 0x811Cu;
+    for (uint8_t k = 0; k < PROF_NAME && pg.name[k]; k++) h = (uint16_t)((h ^ (uint8_t)pg.name[k]) * 0x0193u);
+    return (uint16_t)(0x5000u | ((uint16_t)strnlen(pg.name, PROF_NAME) << 8) | (h & 0xFFu));
+}
+static void rename_line(uint8_t i, char *out, size_t sz) {
+    static const char *const keys[3] = {"Type a name", "Enter, click: save", "Esc, hold: cancel"};
+    if (i) {
+        snprintf(out, sz, "%s", keys[(i - 1u) % 3u]);
+        return;
+    }
+    size_t n = strnlen(pg.name, PROF_NAME);
+    memcpy(out, pg.name, n);
+    out[n]      = '_';   /* the cursor, at the end */
+    out[n + 1u] = '\0';
+}
+/* Enter or the knob's click: the name written, its trailing spaces dropped
+ * (an empty name: "Profile n" again); back to the slot's page. */
+static menu_result_t rename_commit(uint32_t now) {
+    size_t n = strnlen(pg.name, PROF_NAME);
+    while (n && pg.name[n - 1u] == ' ') pg.name[--n] = '\0';
+    uint8_t st = prof_rename(cur()->cursor, pg.name);
+    prof_outcome(st, T_RENAMED, now);
+    if (st == PROF_BUSY) {   /* a deep sleep's recovery, a few passes: the page and the name kept, to try again */
+        retitle(now);
+        ms_retarget();
+        return MENU_NONE;
+    }
+    return pop(now);
 }
 
 /* P3: leaving the Pairing page, a click or a hold: while it's starting,
@@ -1973,12 +2115,13 @@ menu_result_t menu_input(int8_t turns, mi_latch_t latch, uint32_t now) {
         }
         if (f->node == N_PAIRING) return pair_leave(now);
         if (f->node == N_PSAVE || f->node == N_PDELETE) return pconfirm_click(now);   /* P5b */
+        if (f->node == N_PRENAME) return rename_commit(now);                          /* P5c */
         return pop(now);   /* a topic, About, Connection off BT: back */
     }
     if (latch == MI_LATCH_BACK) {   /* pop() cancels an editor's or a previewing choice's edit */
         if (f->node == N_PAIRING) return pair_leave(now);   /* the same as a click (the mockup's "Click or hold: stop") */
         if (is_choice(f->node) || is_editor(f->node) || ((f->node == N_RESET || f->node == N_BOOT) && confirm_page == 0) ||
-            f->node == N_PSAVE || f->node == N_PDELETE)
+            f->node == N_PSAVE || f->node == N_PDELETE || f->node == N_PRENAME)
             flash(T_CANCELLED, now);
         return pop(now);
     }
@@ -2005,6 +2148,18 @@ void menu_tick(uint32_t now, uint32_t idle_ms) {
      * cancelled the open edit also pops it, with "Cancelled". */
     uint8_t pend  = me_take_pending();
     bool    moved = sync_model();   /* Fn+B, Fn+C, while the menu shows */
+    if (rn & (RN_ENTER | RN_ESC | RN_EDITED)) {   /* P5c: Rename's keys, taken in menu_key() */
+        uint8_t k = rn;
+        rn &= (uint8_t)~(RN_ENTER | RN_ESC | RN_EDITED);
+        if (cur()->node == N_PRENAME) {
+            if (k & RN_ENTER) (void)rename_commit(now);
+            else if (k & RN_ESC) {
+                flash(T_CANCELLED, now);
+                (void)pop(now);
+            } else
+                moved = true;   /* the name's line repaints (its signature) */
+        }
+    }
     if (pend && pv < PROF_SLOTS && me_field() != ME_PROFILE) {
         /* P5e: an external write rolled the preview back, or changed the
          * live settings a Load made a slot's (codex: pv stayed that slot,
@@ -2096,6 +2251,7 @@ uint8_t menu_cursor(void) {
     if (f->node == N_CONNINFO) return 0;   /* one page: not Reset's or Bootloader's confirm_page (codex) */
     if (f->node == N_PSAVE || f->node == N_PDELETE) return f->cursor;   /* P5b: the slot */
     if (f->node == N_PSLOT) return (uint8_t)(pslot << 4 | f->cursor);  /* P5d: the slot and the row */
+    if (f->node == N_PRENAME) return (uint8_t)((rn & RN_STATE) << 4 | f->cursor);   /* P5c: the capture's state, the slot */
     if (is_confirm(f->node)) return confirm_page;
     if (is_editor(f->node)) return me_value();   /* P1b: an editor's value */
     return f->cursor;
@@ -2105,4 +2261,4 @@ uint8_t menu_cursor(void) {
  * adding a device on a computer takes longer than 24 s, and the idle time
  * dates from the last knob input, so a page that turned connected after that
  * would close the moment it did (codex). A close leaves pairing running. */
-bool menu_long_wait(void) { return depth && cur()->node == N_PAIRING; }
+bool menu_long_wait(void) { return depth && (cur()->node == N_PAIRING || cur()->node == N_PRENAME); }   /* P5c: Rename too */

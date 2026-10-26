@@ -348,6 +348,28 @@ uint8_t prof_save(uint8_t slot, bool *consolidated) {
     return st;
 }
 
+/* P5c: the name, and the crc; the state empty first and saved last, each in
+ * its own write, as a save's (a cut between leaves the slot empty, never a
+ * name the crc doesn't cover). The fields byte too when it lacked the name
+ * bit (a restored record's). The active slot doesn't move. */
+uint8_t prof_rename(uint8_t slot, const char *name) {
+    bool    c = false;
+    uint8_t rec[PROF_REC], st = slot < PROF_SLOTS ? writable() : PROF_BAD;
+    if (st != PROF_OK) return st;
+    if (!prof_slot(slot, rec)) return PROF_INVALID;
+    bool had = (rec[PR_FIELDS] & PF_NAME) != 0u;
+    memset(&rec[PR_NAME], 0, PROF_NAME);
+    for (uint8_t i = 0; i < PROF_NAME && name[i]; i++) rec[PR_NAME + i] = (uint8_t)name[i];
+    rec[PR_FIELDS] |= PF_NAME;
+    rec[PR_CRC] = body_crc(rec);
+    if (!prof_rec_valid(rec)) return PROF_INVALID;   /* a character outside 0x20-0x7E */
+    uint8_t o = PROF_REC_OFF(slot), from = had ? PR_NAME : PR_FIELDS;
+    if (!wr8(o + PR_STATE, PS_EMPTY, &c) || !wr((uint8_t)(o + from), &rec[from], (uint8_t)(PROF_REC - from), &c) ||
+        !wr8(o + PR_STATE, PS_SAVED_V1, &c))
+        return PROF_WRITE_FAILED;
+    return PROF_OK;
+}
+
 uint8_t prof_delete(uint8_t slot) {
     bool    c  = false;
     uint8_t st = slot < PROF_SLOTS ? writable() : PROF_BAD;

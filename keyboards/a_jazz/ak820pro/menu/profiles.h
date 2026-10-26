@@ -70,6 +70,7 @@ uint8_t prof_apply(const uint8_t *rec, bool live);  /* PROF_OK, or PROF_OK_EFFEC
 void    prof_preview(uint8_t slot, const env_rgb_t *base, uint8_t base_lcd);   /* P5e: unsaved, over the live settings */
 uint8_t prof_save(uint8_t slot, bool *consolidated);   /* the live settings, keeping a valid slot's name; it becomes active */
 uint8_t prof_delete(uint8_t slot);
+uint8_t prof_rename(uint8_t slot, const char *name);   /* P5c: up to PROF_NAME chars, NUL-padded; "" for "Profile n" */
 uint8_t prof_load(uint8_t slot);
 bool    prof_restore_open(void);                    /* an HC_PROFILES restore: the menu's writes wait */
 bool    prof_write_failed(void);                    /* a write failed: none more until a reboot (profiles.c) */

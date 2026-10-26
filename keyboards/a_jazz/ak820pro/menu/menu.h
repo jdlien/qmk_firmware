@@ -31,6 +31,26 @@ uint8_t       menu_cursor(void);                          /* byte 15: the cursor
 void          menu_bootloader_refused(uint32_t now);      /* env_bootloader() couldn't release the keys: "Try again" */
 bool          menu_long_wait(void);                       /* P3: the Pairing page starting or advertising: the backstop */
 
+/* P5c, Rename (plans/SETTINGS-PROFILES-PLAN.md, "Rename"): the one page that
+ * takes typing. menu_key() sees every key event but the knob's, before QMK
+ * does: true, Rename swallowed it. menu_rename_task() runs each pass, under
+ * any owner: the capture's moves (WAIT to CAPTURE once the keys are quiet,
+ * CAPTURE to DRAIN when the page goes, DRAIN to off once they're up). */
+bool menu_key(uint8_t row, uint8_t col, bool pressed, uint32_t now);
+bool menu_renaming(void);                                 /* WAIT or CAPTURE: the knob reads Fn as up */
+void menu_rename_task(bool showing, uint32_t now);
+/* QMK's basic keycodes Rename reads (HID usages; menu_glue.c checks them). */
+#define MENU_KC_A        0x04u   /* to Z, 0x1D */
+#define MENU_KC_1        0x1Eu   /* to 0, 0x27 */
+#define MENU_KC_ENTER    0x28u
+#define MENU_KC_ESCAPE   0x29u
+#define MENU_KC_BSPC     0x2Au
+#define MENU_KC_SPACE    0x2Cu
+#define MENU_KC_MINUS    0x2Du   /* to the slash, 0x38 */
+#define MENU_KC_KP_ENTER 0x58u
+#define MENU_KC_LSHIFT   0xE1u
+#define MENU_KC_RSHIFT   0xE5u
+
 /* The palette: these colours, const on every build (dev's live tuning, op 27
  * sub 13, retired 10-25 for the settings profiles' RAM). */
 enum { MP_LIT = 0, MP_DIM, MP_LEAVE, MP_WHITE, MP_GREY, MP_TRACK, MP_CURSOR, MP_N };
