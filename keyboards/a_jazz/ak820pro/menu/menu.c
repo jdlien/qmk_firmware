@@ -248,15 +248,19 @@ enum { CK_OK = 1, CK_JUMP = 2 };   /* set; a read that wasn't the last's time on
 _Static_assert(1 + CLOCK_ROWS <= MENU_ROWS, "the Clock page is one screen: its examples are slots S_ROW0 + 1-5");
 _Static_assert(sizeof pg == sizeof(env_about_t), "the Clock's time shares About's 12 B");
 static uint32_t ft_last;                    /* P1b: the editor's last turn, ms (32-bit: the backstop is 180 s) */
-static bool     was_failed;                 /* P5b: prof_write_failed() at the last tick, so its rise says so */
-/* P5b: the profiles as the rows show them, read once a pass at most. Each
- * row read the store itself at every scan, its crcs repeated several times a
- * pass: 1.8 ms a pass more on the top level with a profile active (the
- * board, 10-26). Bits 0-3 the valid slots, 4-6 the active one (7 none), 7
- * its `*`. menu_tick() and an input mark it stale (pfs_stale); a row's
- * first need in the pass reads it afresh, so nothing is read on pages
- * without these rows. */
-static uint8_t  pfs, pfs_stale = 1;
+/* P5b: the profiles as the rows show them. Each row read the store itself
+ * at every scan, a crc or two a time: 1.8 ms a pass more on the top level
+ * with a profile active (the board, 10-26). Read once a pass, it still cost
+ * 0.55 ms a pass with every slot empty: this core's main loop has a few MHz
+ * under the row ISR. So it's read at most every 128 ms, and at once after a
+ * click or a host's write; a key's load or a live change shows within the
+ * 128 ms. pfs: bits 0-3 the valid slots, 4-6 the active one (7 none), 7 its
+ * `*`. pfs_flags: PFS_STALE, PFS_FAILED (prof_write_failed() at the last
+ * tick, so its rise says so) and, bits 2-7, the 128 ms tick of the last
+ * read. A row's first need after it's stale reads it afresh, so nothing is
+ * read on pages without these rows. */
+enum { PFS_STALE = 1, PFS_FAILED = 2, PFS_TICKS = 0xFC };
+static uint8_t  pfs, pfs_flags = PFS_STALE;
 static bool     ft_have;                    /* a turn in this editor yet */
 static uint8_t  model_link, model_pf;       /* P3: env_link() and env_bt_pair_facts(), latched as the model */
 
@@ -567,13 +571,13 @@ static void about_line(uint8_t line, char *out, size_t sz) {
 /* --- P5b: the profiles' snapshot ------------------------------------------ */
 
 static uint8_t pfs_get(void) {
-    if (pfs_stale) {
+    if (pfs_flags & PFS_STALE) {
         uint8_t rec[PROF_REC], a = prof_active_rec(rec), v = 0;
         bool    star = a < PROF_SLOTS && prof_differs(rec);
         for (uint8_t s = 0; s < PROF_SLOTS; s++)
             if (s == a || prof_slot(s, rec)) v |= (uint8_t)(1u << s);
         pfs       = (uint8_t)(v | ((a < PROF_SLOTS ? a : 7u) << 4) | (star ? 0x80u : 0u));
-        pfs_stale = 0;
+        pfs_flags &= (uint8_t)~PFS_STALE;
     }
     return pfs;
 }
@@ -1797,7 +1801,7 @@ menu_result_t menu_input(int8_t turns, mi_latch_t latch, uint32_t now) {
      * where it is: only its bullet follows the model. */
     bool changed = sync_model();
     last_idle    = 0;
-    pfs_stale    = 1;   /* P5b: a click may write a slot; the store is read afresh */
+    pfs_flags   |= PFS_STALE;   /* P5b: a click may write a slot; the store is read afresh */
     /* An editor or a previewing choice whose edit an external write has
      * already rolled back takes no more input: menu_tick() pops it with
      * "Cancelled" (codex, P1b's code review: a click queued behind the write
@@ -1900,14 +1904,18 @@ void menu_tick(uint32_t now, uint32_t idle_ms) {
     /* P5b: the host wrote the block (a restore, the dev hooks): the names
      * repaint, which the rows' signatures don't carry. Here, outside the
      * scheduler's scans, as the Clock's jump below. */
-    pfs_stale = 1;   /* the profiles' snapshot, once a pass at most */
-    if (prof_take_changed()) ms_invalidate_all();
+    if (prof_take_changed()) {
+        ms_invalidate_all();
+        pfs_flags |= PFS_STALE;
+    }
+    uint8_t tk = (uint8_t)((now >> 7) << 2) & PFS_TICKS;   /* the profiles' snapshot: every 128 ms */
+    if ((pfs_flags & PFS_TICKS) != tk) pfs_flags = (uint8_t)((pfs_flags & ~PFS_TICKS) | tk | PFS_STALE);
     /* A profile write failed where no click shows it (the active slot's,
      * deferred to kb_eeconfig's settle; codex): "Save failed" when the latch
      * rises, here or at the next open. A click's own failure flashed it too. */
     bool failed = prof_write_failed();
-    if (failed && !was_failed) flash(T_SAVE_FAILED, now);
-    was_failed = failed;
+    if (failed && !(pfs_flags & PFS_FAILED)) flash(T_SAVE_FAILED, now);
+    pfs_flags = (uint8_t)(failed ? pfs_flags | PFS_FAILED : pfs_flags & ~PFS_FAILED);
     /* P3: the Connection screens follow the slider. Its BT screens off BT, or
      * the off-BT page on BT: back to the top level, the cursor on Connection,
      * whose value shows the new link. P5b: a host restore pops the profile
