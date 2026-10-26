@@ -249,6 +249,14 @@ _Static_assert(1 + CLOCK_ROWS <= MENU_ROWS, "the Clock page is one screen: its e
 _Static_assert(sizeof pg == sizeof(env_about_t), "the Clock's time shares About's 12 B");
 static uint32_t ft_last;                    /* P1b: the editor's last turn, ms (32-bit: the backstop is 180 s) */
 static bool     was_failed;                 /* P5b: prof_write_failed() at the last tick, so its rise says so */
+/* P5b: the profiles as the rows show them, read once a pass at most. Each
+ * row read the store itself at every scan, its crcs repeated several times a
+ * pass: 1.8 ms a pass more on the top level with a profile active (the
+ * board, 10-26). Bits 0-3 the valid slots, 4-6 the active one (7 none), 7
+ * its `*`. menu_tick() and an input mark it stale (pfs_stale); a row's
+ * first need in the pass reads it afresh, so nothing is read on pages
+ * without these rows. */
+static uint8_t  pfs, pfs_stale = 1;
 static bool     ft_have;                    /* a turn in this editor yet */
 static uint8_t  model_link, model_pf;       /* P3: env_link() and env_bt_pair_facts(), latched as the model */
 
@@ -556,6 +564,25 @@ static void about_line(uint8_t line, char *out, size_t sz) {
     }
 }
 
+/* --- P5b: the profiles' snapshot ------------------------------------------ */
+
+static uint8_t pfs_get(void) {
+    if (pfs_stale) {
+        uint8_t rec[PROF_REC], a = prof_active_rec(rec), v = 0;
+        bool    star = a < PROF_SLOTS && prof_differs(rec);
+        for (uint8_t s = 0; s < PROF_SLOTS; s++)
+            if (s == a || prof_slot(s, rec)) v |= (uint8_t)(1u << s);
+        pfs       = (uint8_t)(v | ((a < PROF_SLOTS ? a : 7u) << 4) | (star ? 0x80u : 0u));
+        pfs_stale = 0;
+    }
+    return pfs;
+}
+static bool    pfs_valid(uint8_t s) { return (pfs_get() >> s) & 1u; }
+static uint8_t pfs_active(void) {   /* 0-3, or 0xFF none */
+    uint8_t a = (uint8_t)((pfs_get() >> 4) & 7u);
+    return a < PROF_SLOTS ? a : 0xFFu;
+}
+
 /* --- The list geometry (C8): 0 the title, 1 the separator, 2 the scrollbar,
  * 3-10 the rows. The scrollbar's slot comes before the rows so a page step
  * shows the new position first, then the text flows in (JD, 10-24: it moved
@@ -688,13 +715,13 @@ static row_t row_at(uint8_t r) {
         x.val    = x.bullet ? (uint8_t)(link_state() < 5u ? link_state() : 0u) : 0u;
     }
     else if (x.node == N_PROFILES) {   /* P5b: the active slot (15 none) in val, its `*` in line (row_sig's bit 2) */
-        uint8_t rec[PROF_REC], a = prof_active_rec(rec);
+        uint8_t a = pfs_active();
         x.val  = a < PROF_SLOTS ? a : 15u;
-        x.line = a < PROF_SLOTS && prof_differs(rec) ? 1u : 0u;
+        x.line = a < PROF_SLOTS && (pfs_get() & 0x80u) ? 1u : 0u;
     } else if (is_pslot(x.node)) {   /* a slot: saved (val 1) or empty; the active one's check */
-        uint8_t rec[PROF_REC], s = (uint8_t)(x.node - N_PSLOT0);
-        x.val    = prof_slot(s, rec) ? 1u : 0u;
-        x.bullet = prof_active() == s;
+        uint8_t s = (uint8_t)(x.node - N_PSLOT0);
+        x.val    = pfs_valid(s) ? 1u : 0u;
+        x.bullet = pfs_active() == s;
     }
     else if (x.node == N_EFFOPT || x.node == N_LTSOPT) x.val = val;
     else if (value_which(x.node) >= 0) {
@@ -976,10 +1003,12 @@ static uint16_t row_sig(const row_t *x) {
             return (uint16_t)((1u << 14) | ((uint16_t)x->node << 8) | ((uint16_t)(x->val & 15u) << 4) |
                               ((uint16_t)(x->line & 1u) << 2) | (x->bullet ? 2u : 0u) | (x->lit ? 1u : 0u));
         case RK_PNOTE: {   /* P5b: 0xC800 | line << 9 | the record's crc << 1 (equal crc, equal text); 0xCE00 | line << 1
-                            * empty. Bit 0 stays clear: a row's bit 0 is its lit bit, which the scheduler reads */
-            uint8_t rec[PROF_REC];
-            if (!prof_slot((uint8_t)(x->node - N_PSLOT0), rec)) return (uint16_t)(0xCE00u | ((uint16_t)x->line << 1));
-            return (uint16_t)(0xC800u | ((uint16_t)(x->line & 3u) << 9) | ((uint16_t)rec[PR_CRC] << 1));
+                            * empty. Bit 0 stays clear: a row's bit 0 is its lit bit, which the scheduler reads. The
+                            * crc byte read raw: the snapshot vouched for the record this pass */
+            uint8_t s = (uint8_t)(x->node - N_PSLOT0), crc;
+            if (!pfs_valid(s)) return (uint16_t)(0xCE00u | ((uint16_t)x->line << 1));
+            env_prof_read((uint16_t)(PROF_BASE + PROF_REC_OFF(s) + PR_CRC), &crc, 1);
+            return (uint16_t)(0xC800u | ((uint16_t)(x->line & 3u) << 9) | ((uint16_t)crc << 1));
         }
         case RK_TEXT:
             return (uint16_t)((2u << 14) | ((uint16_t)(x->node - N_TOPIC0) << 11) | ((uint16_t)x->line << 5));
@@ -1658,7 +1687,7 @@ static menu_result_t activate(uint32_t now) {
                 ms_retarget();
                 return MENU_NONE;
             }
-            uint8_t a = prof_active();
+            uint8_t a = pfs_active();
             push(N_PROFILES, (uint8_t)(1u + (a < PROF_SLOTS ? a : 0u)));
             enter_named(S_ROW0 + 1u, PROF_SLOTS, now);
             return MENU_NONE;
@@ -1768,6 +1797,7 @@ menu_result_t menu_input(int8_t turns, mi_latch_t latch, uint32_t now) {
      * where it is: only its bullet follows the model. */
     bool changed = sync_model();
     last_idle    = 0;
+    pfs_stale    = 1;   /* P5b: a click may write a slot; the store is read afresh */
     /* An editor or a previewing choice whose edit an external write has
      * already rolled back takes no more input: menu_tick() pops it with
      * "Cancelled" (codex, P1b's code review: a click queued behind the write
@@ -1870,6 +1900,7 @@ void menu_tick(uint32_t now, uint32_t idle_ms) {
     /* P5b: the host wrote the block (a restore, the dev hooks): the names
      * repaint, which the rows' signatures don't carry. Here, outside the
      * scheduler's scans, as the Clock's jump below. */
+    pfs_stale = 1;   /* the profiles' snapshot, once a pass at most */
     if (prof_take_changed()) ms_invalidate_all();
     /* A profile write failed where no click shows it (the active slot's,
      * deferred to kb_eeconfig's settle; codex): "Save failed" when the latch
