@@ -216,6 +216,10 @@ static const char *icon_of(uint8_t node) {
         case N_CONN:  return MT_I_CONN;   /* Bluetooth */
         case N_BATT:  return MT_I_BATT " ";   /* P4: a vertical battery */
         case N_PROFILES: return MT_I_PROF " ";   /* P5b: the folder */
+        case N_PLOAD:  return MT_I_LOAD " ";     /* a profile's actions (JD, 10-26) */
+        case N_PSAVE:  return MT_I_SAVE " ";
+        case N_PRENAME: return MT_I_RENAME " ";
+        case N_PDELETE: return MT_I_DELETE;
         default:      return NULL;
     }
 }
