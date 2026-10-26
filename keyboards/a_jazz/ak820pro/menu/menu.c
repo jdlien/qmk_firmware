@@ -216,8 +216,8 @@ static const char *icon_of(uint8_t node) {
         case N_CONN:  return MT_I_CONN;   /* Bluetooth */
         case N_BATT:  return MT_I_BATT " ";   /* P4: a vertical battery */
         case N_PROFILES: return MT_I_PROF " ";   /* P5b: the folder */
-        case N_PLOAD:  return MT_I_LOAD " ";     /* a profile's actions (JD, 10-26) */
-        case N_PSAVE:  return MT_I_SAVE " ";
+        case N_PLOAD:  return MT_I_LOAD;         /* a profile's actions (JD, 10-26) */
+        case N_PSAVE:  return MT_I_SAVE;
         case N_PRENAME: return MT_I_RENAME " ";
         case N_PDELETE: return MT_I_DELETE;
         default:      return NULL;
@@ -1240,7 +1240,19 @@ static bool row_split(uint8_t s) {
 }
 /* A row: its lead, then cells 0-9 and cells 10-19 with the trail; a split row
  * (P3) has cells 0-1 as a chunk of their own between the lead and cells 2-9. */
-static uint8_t l_chunks(uint8_t s) { return (s == S_SEP || s == S_BAR) ? 1 : is_row(s) ? (row_split(s) ? 4 : 3) : 2; }
+/* JD (10-26): a profile's summary, under Delete, looked like another
+ * action. A rule over it, grey as the title's separator, on its first line's
+ * top pixel row, which no glyph inks (the cursor, which does, never sits on
+ * the summary): a chunk of its own, after the text's, whose pieces clear
+ * that row. */
+#define RULE_CHUNK 3u
+static bool row_ruled(const row_t *x) { return x->kind == RK_PNOTE && x->line == 0u; }
+static uint8_t l_chunks(uint8_t s) {
+    if (s == S_SEP || s == S_BAR) return 1;
+    if (!is_row(s)) return 2;
+    row_t x = row_at((uint8_t)(s - S_ROW0));
+    return row_ruled(&x) || row_icon_colour(&x) != 0 ? 4 : 3;   /* the rule, or a split row's icon chunk */
+}
 static uint8_t rows_per_piece(void) { return (uint8_t)(MB_PASS_BYTES / (CHUNK_MAX * 2u)); }   /* 4 */
 /* A split row's cells 2-9 are narrower, so their pieces take 5 pixel rows: 3
  * pieces, not 4, which pays for the icon's own piece. Each piece costs about
@@ -1250,6 +1262,10 @@ static uint8_t rows_per_piece(void) { return (uint8_t)(MB_PASS_BYTES / (CHUNK_MA
 static uint8_t rows_per_split(void) { return (uint8_t)(MB_PASS_BYTES / (SPLIT_W * 2u)); }   /* 5 */
 static uint8_t l_pieces(uint8_t s, uint8_t c) {
     if (s == S_SEP || s == S_BAR || (is_row(s) && c == 0)) return 1;   /* a row's lead: every pixel row at once */
+    if (is_row(s) && c == RULE_CHUNK) {                               /* the summary's rule: one fill */
+        row_t x = row_at((uint8_t)(s - S_ROW0));
+        if (row_ruled(&x)) return 1;
+    }
     const bool split = is_row(s) && row_split(s);
     if (split && c == 1) return 1;                                     /* the icon's two cells: every row at once too */
     uint8_t r = split && c == 2 ? rows_per_split() : rows_per_piece();
@@ -1332,6 +1348,10 @@ static ms_paint_t l_paint(uint8_t s, uint8_t c, uint8_t p) {
         return text_piece(cells, 0, false, 0, 0, c, p, pal[MP_WHITE], 0);
     }
     row_t x = row_at((uint8_t)(s - S_ROW0));
+    if (c == RULE_CHUNK && row_ruled(&x)) {
+        uint16_t y = (uint16_t)(ROW_Y0 + (s - S_ROW0) * ROW_H);
+        return mb_fill(4, y, 123, y, pal[MP_GREY]) ? MS_PAINT_DONE : MS_PAINT_FAILED;
+    }
     row_text(&x, cells);
     uint16_t fg = x.kind != RK_ITEM && x.kind != RK_VALUE ? pal[MP_WHITE]   /* a page's text, About's lines */
                 : x.lit              ? pal[MP_LIT]

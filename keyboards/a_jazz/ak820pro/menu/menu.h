@@ -69,7 +69,8 @@ uint16_t menu_color(uint8_t i);
 #define MENU_SAVED     0x468Cu   /* the saved option's check box, #40D060, on every page (JD, 10-25: "green everywhere") */
 #define MENU_ICON_LIT  0xFFB8u   /* the selected row's top-level icon, #FFF7C6: a whiter yellow than its text (JD, 10-25; the others' are white). Not in the palette: a slot there cost the dev heap 8 B */
 #define MENU_FLASH_MS  1300u
-#define MENU_PREVIEW_MS 600u     /* P5e: a profile's preview once the knob rests on its row this long (JD, 10-26:
-                                  * "between 0.3s to a second ... so the board doesn't go crazy as you scroll") */
+#define MENU_PREVIEW_MS 300u     /* P5e: a profile's preview once the knob rests on its row this long (JD, 10-26:
+                                  * "between 0.3s to a second ... so the board doesn't go crazy as you scroll";
+                                  * 600 ms first, then "about half what it is now") */
 #define MENU_HINT_FROM 4000u     /* the hints after 4 s idle: "Turn + Click Knob" 1 s, */
 #define MENU_HINT_EVERY 6000u    /* then "Hold to Go Back" 1 s (JD, 10-24), every 6 s */

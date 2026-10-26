@@ -43,10 +43,10 @@
 #define MT_I_FAIL       "\xa0\xa1"   /* P3: a slot failed, in red (the circled X) */
 #define MT_I_BATT       "\xa2"       /* P4: Battery */
 #define MT_I_PROF       "\xa3"       /* P5b: Profiles, the folder (JD: "A place where you save stuff") */
-#define MT_I_LOAD       "\xa4"       /* a profile's actions (JD, 10-26): <- Load, */
-#define MT_I_SAVE       "\xa5"       /* -> Save current here, */
-#define MT_I_RENAME     "\xa6"       /* the pencil, */
-#define MT_I_DELETE     "\xa7\xa8"   /* the trashcan */
+#define MT_I_LOAD       "\xa4\xa5"   /* a profile's actions (JD, 10-26): the circled left arrow, Load, */
+#define MT_I_SAVE       "\xa6\xa7"   /* the circled right arrow, Save current here, */
+#define MT_I_RENAME     "\xa8"       /* the pencil, */
+#define MT_I_DELETE     "\xa9\xaa"   /* the trashcan */
 
 /* A line as a slot paints it: `lead` pixels, then `cells` glyph cells (the
  * string, padded with spaces, codes the face hasn't shown as '?'), then
