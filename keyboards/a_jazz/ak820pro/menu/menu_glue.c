@@ -178,9 +178,9 @@ void menu_prof_key(bool next) {
         (void)prof_slot(slot, rec);
         prof_name(slot, rec, name);
         /* The load moved the lighting: the poll's next pass would post its
-         * own readout over the name (codex, P5b's review). A fresh baseline
-         * takes the change, as at the menu's close. */
-        param_status_reprime();
+         * own readout over the name (codex, P5b's review). Its lighting
+         * baseline takes the change. */
+        param_status_rebase_rgb();
         display_set_param_status(name);
     } else
         display_set_param_status(st == PROF_INVALID ? "No profiles" : "Busy");

@@ -22,6 +22,7 @@ void param_repeat_task(void);
 void param_repeat_cancel(void);
 void param_overlay_cancel(void);
 void param_status_reprime(void);
+void param_status_rebase_rgb(void);   /* P5b: a profile key's lighting, the poll's baseline */
 
 /* Push the LCD-brightness readout into the info band. Shared by the tap path in
  * process_record_kb and by the hold-repeat step, so a sweep keeps the readout

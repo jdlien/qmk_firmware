@@ -157,19 +157,32 @@ static void fmt_speed(char *buf, size_t n, uint8_t sp) {
     snprintf(buf, n, "Speed  %3u%%", (unsigned)((sp * 100u + 127u) / 255u));
 }
 
-static bool status_primed = false;
+static bool    status_primed = false;
+static uint8_t last_mode = 0, last_h = 0, last_s = 0, last_v = 0, last_sp = 0;
+static bool    last_on = false, last_nkro = false;
 
 /* At the menu's close: the next poll records a fresh baseline, so a change
- * made while the overlays were suppressed doesn't surface afterwards. And
- * after a profile key's load (P5b), whose name the poll would overwrite. */
+ * made while the overlays were suppressed doesn't surface afterwards. */
 void param_status_reprime(void) {
     status_primed  = false;
     param_force_kc = KC_NO;
 }
 
+/* After a profile key's load (P5b): the lighting it set is the baseline now,
+ * so the poll doesn't post a readout over the profile's name (codex). The
+ * lighting only: an NKRO toggle in the same 100 ms still shows (codex's
+ * verify: a whole reprime swallowed it). */
+void param_status_rebase_rgb(void) {
+    if (!status_primed) return;   /* the next poll takes it all */
+    last_mode = rgb_matrix_get_mode();
+    last_h    = rgb_matrix_get_hue();
+    last_s    = rgb_matrix_get_sat();
+    last_v    = rgb_matrix_get_val();
+    last_sp   = rgb_matrix_get_speed();
+    last_on   = rgb_matrix_is_enabled();
+}
+
 void param_status_task(void) {
-    static uint8_t last_mode = 0, last_h = 0, last_s = 0, last_v = 0, last_sp = 0;
-    static bool    last_on = false, last_nkro = false;
 
     uint8_t mode = rgb_matrix_get_mode();
     uint8_t h    = rgb_matrix_get_hue();
@@ -241,4 +254,5 @@ void param_status_task(void) {
 }
 #else
 void param_status_reprime(void) {}
+void param_status_rebase_rgb(void) {}
 #endif // PARAM_OVERLAY
