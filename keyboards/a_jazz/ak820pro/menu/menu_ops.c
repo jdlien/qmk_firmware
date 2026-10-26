@@ -277,16 +277,8 @@ bool menu_ops_op27(uint8_t *d, uint32_t now) {
         op27_meas(d);
         return true;
     }
-    if (sub == 13) {   /* a menu colour, live: [5] the palette index, [6..7] RGB565; the menu repaints */
-        bool ok = menu_set_color(d[5], (uint16_t)(d[6] | (d[7] << 8)));
-        if (ok && OWNER_MENU_OPEN() && menu_kind == MK_MENU) {
-            menu_invalidate();
-            ms_retarget();
-        }
-        memset(&d[5], 0, 27);
-        d[5] = ok ? MI_OK : MI_BAD;
-        return true;
-    }
+    /* Sub 13, a menu colour live, is retired (10-25): the palette is const,
+     * its RAM the settings profiles'. Don't reuse the number. */
     if (sub == 14) {   /* P1b's edit, read: [6] open, [7] its field (ME_*), [8] the live value, [9] the saved one,
                         * [10..11] the external writes that cancelled an edit (the board's exit gates); P2a:
                         * [12] the lock lights' live level, [13] the charging light's, [14] the force bits;

@@ -194,16 +194,10 @@ static const char *icon_of(uint8_t node) {
 }
 
 /* --- The palette ------------------------------------------------------------- */
-#if defined(AK820_DEV_HOOKS) || defined(MENU_HOST_TEST)
-static uint16_t pal[MP_N] = {MENU_LIT, MENU_DIM, MENU_LEAVE, MENU_WHITE, MENU_GREY, MENU_TRACK, MENU_CURSOR};
-bool menu_set_color(uint8_t i, uint16_t c) {
-    if (i >= MP_N) return false;
-    pal[i] = c;
-    return true;
-}
-#else
+/* Const on every build since the settings profiles (10-25): dev's live copy
+ * (op 27 sub 13, menu_tune.py) gave its 14 B of RAM to them. JD: "I probably
+ * don't need live colour tuning anymore." */
 static const uint16_t pal[MP_N] = {MENU_LIT, MENU_DIM, MENU_LEAVE, MENU_WHITE, MENU_GREY, MENU_TRACK, MENU_CURSOR};
-#endif
 uint16_t menu_color(uint8_t i) { return i < MP_N ? pal[i] : 0; }
 
 /* --- State ------------------------------------------------------------------ */

@@ -31,13 +31,10 @@ uint8_t       menu_cursor(void);                          /* byte 15: the cursor
 void          menu_bootloader_refused(uint32_t now);      /* env_bootloader() couldn't release the keys: "Try again" */
 bool          menu_long_wait(void);                       /* P3: the Pairing page starting or advertising: the backstop */
 
-/* The palette: these defaults, and on dev builds op 27 sub 13 changes one
- * live (JD tunes colours on the panel without a flash a shade). */
+/* The palette: these colours, const on every build (dev's live tuning, op 27
+ * sub 13, retired 10-25 for the settings profiles' RAM). */
 enum { MP_LIT = 0, MP_DIM, MP_LEAVE, MP_WHITE, MP_GREY, MP_TRACK, MP_CURSOR, MP_N };
 uint16_t menu_color(uint8_t i);
-#if defined(AK820_DEV_HOOKS) || defined(MENU_HOST_TEST)
-bool     menu_set_color(uint8_t i, uint16_t rgb565);   /* false: no such colour */
-#endif
 
 /* For the host tests' expected frames. */
 #define MENU_ROWS      8
