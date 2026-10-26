@@ -8,6 +8,7 @@
 #include "menu_backend.h"
 #include "menu_env.h"
 #include "menu_meas.h"
+#include "menu.h"   /* P5c: menu_key(), menu_renaming(), Rename's keycodes */
 #include "ak820pro.h"
 #include "health.h"
 #include "rtc/rtc.h"
