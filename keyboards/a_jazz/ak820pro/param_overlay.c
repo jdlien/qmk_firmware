@@ -173,6 +173,7 @@ void param_status_reprime(void) {
  * lighting only: an NKRO toggle in the same 100 ms still shows (codex's
  * verify: a whole reprime swallowed it). */
 void param_status_rebase_rgb(void) {
+    param_force_kc = KC_NO;       /* an RGB key's forced readout would replace the name too (codex) */
     if (!status_primed) return;   /* the next poll takes it all */
     last_mode = rgb_matrix_get_mode();
     last_h    = rgb_matrix_get_hue();
