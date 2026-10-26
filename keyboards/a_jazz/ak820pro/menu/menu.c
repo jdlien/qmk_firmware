@@ -620,6 +620,17 @@ static uint8_t pfs_rank(uint8_t slot) {
     for (; v; v &= (uint8_t)(v - 1u)) n++;
     return n;
 }
+/* P5d: a Profiles frame's cursor on a row and its page the cursor's. The
+ * list shrinks when the host deletes (the dev hooks), under the list or
+ * under a slot's page or confirm above it (codex, P5d's review: past the
+ * end, nothing was selected and a click did nothing; with top left at 8, a
+ * blank page). Not Profiles: nothing. */
+static void prof_list_fit(frame_t *f) {
+    if (f->node != N_PROFILES) return;
+    uint8_t n = row_count(N_PROFILES);
+    if (f->cursor >= n) f->cursor = (uint8_t)(n - 1u);
+    f->top = (uint8_t)(f->cursor / MENU_ROWS * MENU_ROWS);
+}
 
 /* --- The list geometry (C8): 0 the title, 1 the separator, 2 the scrollbar,
  * 3-10 the rows. The scrollbar's slot comes before the rows so a page step
@@ -1551,10 +1562,9 @@ static menu_result_t pop(uint32_t now) {
     uint8_t from = cur()->node;
     if (is_editor(from) || is_preview(from)) me_cancel();   /* never leave an edit open (a no-op once saved) */
     depth--;
-    if (from == N_PSLOT && pfs_valid(pslot)) {   /* P5d: back on its row, wherever a host's write moved it */
-        cur()->cursor = (uint8_t)(1u + pfs_rank(pslot));
-        cur()->top    = (uint8_t)(cur()->cursor / MENU_ROWS * MENU_ROWS);
-    }
+    /* P5d: back on its row, wherever a host's write moved it; in range either way */
+    if (from == N_PSLOT && pfs_valid(pslot)) cur()->cursor = (uint8_t)(1u + pfs_rank(pslot));
+    prof_list_fit(cur());
     if (is_editor(from)) {   /* back to its list: a layout change, both ways (ms_set_layout's clear) */
         retitle(now);
         ms_set_layout(&L_LIST, false);
@@ -1827,6 +1837,7 @@ static menu_result_t pconfirm_click(uint32_t now) {
     prof_outcome(st, T_DELETED, now);
     if (st != PROF_OK) return pop(now);
     depth = (uint8_t)(depth - 2u);   /* the confirm and the slot's page */
+    prof_list_fit(cur());            /* P5d: the deleted row's index, now the next row's */
     retitle(now);
     ms_set_layout(&L_LIST, false);
     return MENU_NONE;
@@ -1958,6 +1969,8 @@ void menu_tick(uint32_t now, uint32_t idle_ms) {
     if (prof_take_changed()) {
         ms_invalidate_all();
         pfs_flags |= PFS_STALE;
+        for (uint8_t i = 0; i < depth; i++) prof_list_fit(&stack[i]);   /* P5d: a host's delete shrinks the list */
+        moved = true;
     }
     uint8_t tk = (uint8_t)((now >> 7) << 2) & PFS_TICKS;   /* the profiles' snapshot: every 128 ms */
     if ((pfs_flags & PFS_TICKS) != tk) pfs_flags = (uint8_t)((pfs_flags & ~PFS_TICKS) | tk | PFS_STALE);
