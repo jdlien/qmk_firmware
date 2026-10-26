@@ -267,6 +267,12 @@ enum { PFS_STALE = 1, PFS_FAILED = 2, PFS_TICKS = 0xFC };
 static uint16_t pfs;
 static uint8_t  pfs_flags = PFS_STALE;
 static uint8_t  pslot;                      /* P5d: the open slot page's slot (the stack holds one at most) */
+/* P5e: what the preview shows: a slot (its preview's edit open, or the
+ * live settings already that slot's after a Load), PV_LIVE the live
+ * settings, PV_HELD the live settings since an external write rolled the
+ * preview back, until the knob moves (the write would hide under it). */
+enum { PV_HELD = 0xFE, PV_LIVE = 0xFF };
+static uint8_t  pv = PV_LIVE;
 static bool     ft_have;                    /* a turn in this editor yet */
 static uint8_t  model_link, model_pf;       /* P3: env_link() and env_bt_pair_facts(), latched as the model */
 
@@ -630,6 +636,22 @@ static void prof_list_fit(frame_t *f) {
     uint8_t n = row_count(N_PROFILES);
     if (f->cursor >= n) f->cursor = (uint8_t)(n - 1u);
     f->top = (uint8_t)(f->cursor / MENU_ROWS * MENU_ROWS);
+}
+/* P5e: the preview (JD, 10-26: "preload the profile as the user scrolls
+ * over it"): a saved slot's lighting and LCD level, unsaved, in an
+ * ME_PROFILE edit (menu_edit.c snapshots and restores the live settings,
+ * and holds the RGB flush); PV_LIVE closes it, the live settings back. The
+ * `*` reads the live settings, so the snapshot is read afresh. */
+static void pv_show(uint8_t slot) {
+    if (slot == pv) return;
+    if (slot >= PROF_SLOTS) {
+        me_cancel();
+    } else {
+        if (me_field() != ME_PROFILE) me_open(ME_PROFILE);
+        prof_preview(slot);
+    }
+    pv = slot;
+    pfs_flags |= PFS_STALE;
 }
 
 /* --- The list geometry (C8): 0 the title, 1 the separator, 2 the scrollbar,
@@ -1513,6 +1535,7 @@ void menu_open(uint32_t now) {
     model_link   = env_link();
     model_pf     = env_bt_pair_facts();
     (void)me_take_pending();   /* changes from before the session aren't its targets */
+    pv = PV_LIVE;              /* P5e: the panel's release rolled any preview back */
     push(N_TOP, 0);
     title_id = T_TOP;
     retitle(now);
@@ -1529,6 +1552,7 @@ void menu_return_from_diag(uint8_t page, uint32_t now) {
     model_link   = env_link();
     model_pf     = env_bt_pair_facts();
     (void)me_take_pending();
+    pv = PV_LIVE;
     push(N_TOP, row_index(N_TOP, N_DIAG));   /* Diagnostics' row, wherever it is */
     push(N_DIAG, page ? 2 : 1);
     title_id = T_DIAG;
@@ -1561,7 +1585,9 @@ static menu_result_t pop(uint32_t now) {
     if (depth <= 1) return MENU_CLOSE;
     uint8_t from = cur()->node;
     if (is_editor(from) || is_preview(from)) me_cancel();   /* never leave an edit open (a no-op once saved) */
+    if (from == N_PROFILES) pv_show(PV_LIVE);                /* P5e: out of Profiles, the live settings */
     depth--;
+    if (cur()->node == N_PSLOT) pv_show(pslot);              /* P5e: back from a confirm, its profile again */
     /* P5d: back on its row, wherever a host's write moved it; in range either way */
     if (from == N_PSLOT && pfs_valid(pslot)) cur()->cursor = (uint8_t)(1u + pfs_rank(pslot));
     prof_list_fit(cur());
@@ -1753,11 +1779,13 @@ static menu_result_t activate(uint32_t now) {
                 return MENU_NONE;
             }
             pslot = val;
+            pv_show(val);   /* P5e: at once, not after a rest: a click is deliberate */
             push(N_PSLOT, 1);
             enter_named(S_ROW0 + PSUM_ROW0, PSUM_LINES, now);
             return MENU_NONE;
         }
         case N_PNEW: {   /* P5d: the live settings into the first free slot as Profile n, which becomes the active one */
+            pv_show(PV_LIVE);   /* P5e: the live settings, not a preview's */
             uint8_t s = prof_free_slot();
             if (s >= PROF_SLOTS) {
                 flash(T_PFULL, now);
@@ -1777,6 +1805,8 @@ static menu_result_t activate(uint32_t now) {
         case N_PLOAD: {   /* commits like a choice: back to Profiles, where the check moves */
             uint8_t st = prof_load(pslot);
             if (st == PROF_OK || st == PROF_OK_EFFECT_SKIPPED) {
+                me_keep();   /* P5e: the preview's values are now saved, so its snapshot goes */
+                pv          = pslot;
                 model_clock = env_clock_mode();   /* the latched model, as a choice's commit sets it */
                 prof_outcome(st, T_LOADED, now);
                 return pop(now);
@@ -1789,6 +1819,7 @@ static menu_result_t activate(uint32_t now) {
         }
         case N_PSAVE:
         case N_PDELETE:   /* overwriting and deleting ask first (Decided 5) */
+            if (node == N_PSAVE) pv_show(PV_LIVE);   /* P5e: Save's confirm shows what it would save */
             push(node, pslot);
             show(true, false, now);
             return MENU_NONE;
@@ -1836,6 +1867,7 @@ static menu_result_t pconfirm_click(uint32_t now) {
     uint8_t st = prof_delete(f->cursor);
     prof_outcome(st, T_DELETED, now);
     if (st != PROF_OK) return pop(now);
+    pv_show(PV_LIVE);                /* P5e: its profile gone, the live settings */
     depth = (uint8_t)(depth - 2u);   /* the confirm and the slot's page */
     prof_list_fit(cur());            /* P5d: the deleted row's index, now the next row's */
     retitle(now);
@@ -1864,6 +1896,7 @@ menu_result_t menu_input(int8_t turns, mi_latch_t latch, uint32_t now) {
     bool changed = sync_model();
     last_idle    = 0;
     pfs_flags   |= PFS_STALE;   /* P5b: a click may write a slot; the store is read afresh */
+    if (pv == PV_HELD) pv = PV_LIVE;   /* P5e: the knob moved: the rest previews again */
     /* An editor or a previewing choice whose edit an external write has
      * already rolled back takes no more input: menu_tick() pops it with
      * "Cancelled" (codex, P1b's code review: a click queued behind the write
@@ -1957,6 +1990,10 @@ void menu_tick(uint32_t now, uint32_t idle_ms) {
      * cancelled the open edit also pops it, with "Cancelled". */
     uint8_t pend  = me_take_pending();
     bool    moved = sync_model();   /* Fn+B, Fn+C, while the menu shows */
+    if ((pend & ME_PEND_CANCELLED) && pv < PROF_SLOTS && me_field() != ME_PROFILE) {
+        pv         = PV_HELD;   /* P5e: an external write rolled the preview back: the live settings until the knob moves */
+        pfs_flags |= PFS_STALE;
+    }
     if ((pend & ME_PEND_CANCELLED) && (is_editor(cur()->node) || is_preview(cur()->node))) {
         flash(T_CANCELLED, now);
         (void)pop(now);   /* its target is the new one (one target, not two: codex) */
@@ -1989,6 +2026,7 @@ void menu_tick(uint32_t now, uint32_t idle_ms) {
     if ((is_bt_screen(n) && !on_bt()) || (n == N_CONNINFO && on_bt())) row = N_CONN;
     else if (is_prof_screen(n) && prof_restore_open()) row = N_PROFILES;
     if (row != N_NONE) {
+        pv_show(PV_LIVE);   /* P5e: a restore's pop, out of Profiles */
         depth           = 1;
         stack[0].cursor = row_index(N_TOP, row);
         stack[0].top    = (uint8_t)(stack[0].cursor / MENU_ROWS * MENU_ROWS);
@@ -1996,6 +2034,12 @@ void menu_tick(uint32_t now, uint32_t idle_ms) {
         if (is_confirm(n)) ms_set_layout(&L_LIST, false);
         else ms_retarget();
         moved = false;
+    }
+    /* P5e: the preview, once the knob has rested on Profiles' row MENU_PREVIEW_MS:
+     * a saved slot's, or the live settings on Back and Save new. */
+    if (cur()->node == N_PROFILES && pv != PV_HELD && idle_ms >= MENU_PREVIEW_MS) {
+        uint8_t v, node = row_node(N_PROFILES, cur()->cursor, &v);
+        pv_show(node == N_PSLOT ? v : PV_LIVE);
     }
     /* The Clock list: a jump (clock_now()) repaints the examples whole, here,
      * outside the scheduler's scans (invalidating from a signature would

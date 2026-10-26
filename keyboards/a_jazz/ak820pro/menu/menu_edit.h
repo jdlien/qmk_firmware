@@ -3,7 +3,8 @@
 //
 // P1b's edit transaction (C6; plans/CONFIG-MENU-P1-DESIGN.md, "P1b"): one
 // previewing edit at most, of an RGB field, the LCD level or an indicator
-// level (P2a, which lights its LEDs while it's open). Pure logic over
+// level (P2a, which lights its LEDs while it's open), or (P5e) a settings
+// profile's lighting and LCD level together. Pure logic over
 // menu_env.h's primitives, so the host tests run this sequencing, not a copy.
 #pragma once
 
@@ -22,6 +23,8 @@ enum {
     ME_LCD,      /* the Screen's level */
     ME_LOCKS,    /* P2a: the lock lights' level, 0-100 */
     ME_CHG,      /* the charging light's */
+    ME_PROFILE,  /* P5e: a profile's preview, the RGB config and the LCD level both (profiles.c's
+                  * prof_preview() sets them; an RGB or an LCD writer rolls it back) */
 };
 
 /* The conflict domains of an external writer. ME_DOM_IND has none today:
@@ -40,8 +43,9 @@ uint8_t me_field(void);               /* ME_NONE when none */
 uint8_t me_value(void);               /* the field's live value (the preview) */
 uint8_t me_saved(void);               /* the field's value when the edit opened: the check, and Cancel's */
 void    me_preview(uint8_t value);
-void    me_save(void);                /* the live value, by the saving setter; closes */
+void    me_save(void);                /* the live value, by the saving setter; closes (not ME_PROFILE's) */
 void    me_cancel(void);              /* the snapshot back; closes */
+void    me_keep(void);                /* P5e: closes, the snapshot dropped: what shows was just saved (a Load) */
 
 /* C6's rollback: the snapshot back and the transaction closed, nothing else.
  * Idempotent. panel_owner.c calls it before the panel leaves the menu. */

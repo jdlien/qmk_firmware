@@ -283,6 +283,28 @@ uint8_t prof_apply(const uint8_t *rec, bool live) {
     return st;
 }
 
+/* P5e: the menu's preview, inside its ME_PROFILE edit (menu_edit.c holds the
+ * live settings and the RGB flush): the lighting and the LCD level only,
+ * the two that show with the menu up; nothing saved. As prof_apply()'s
+ * order, but a value already showing isn't set again: a mode set restarts
+ * its animation, and a rest on a slot that matches the live settings (the
+ * one just loaded, say) changes nothing. A field the record lacks, or an
+ * effect this build lacks, stays as it is. */
+void prof_preview(uint8_t slot) {
+    uint8_t   rec[PROF_REC], mode;
+    env_rgb_t c;
+    if (!prof_slot(slot, rec)) return;
+    env_rgb_get(&c);
+    if (rec[PR_FIELDS] & PF_LIGHTING) {
+        if (!c.enable) env_rgb_enable(true, false);
+        if (mode_of_id(rec[PR_EFFECT], &mode) && mode != c.mode) env_rgb_mode(mode, false);
+        if (rec[PR_HUE] != c.h || rec[PR_SAT] != c.s || rec[PR_VAL] != c.v) env_rgb_hsv(rec[PR_HUE], rec[PR_SAT], rec[PR_VAL], false);
+        if (rec[PR_SPEED] != c.speed) env_rgb_speed(rec[PR_SPEED], false);
+        if (!c.enable || !rec[PR_RGB_ON]) env_rgb_enable(rec[PR_RGB_ON] != 0u, false);
+    }
+    if ((rec[PR_FIELDS] & PF_LCD) && rec[PR_LCD] != env_lcd_level()) env_lcd_set(rec[PR_LCD], false);
+}
+
 uint8_t prof_save(uint8_t slot, bool *consolidated) {
     bool    c  = false;
     uint8_t st = slot < PROF_SLOTS ? writable() : PROF_BAD;
@@ -556,6 +578,7 @@ bool prof_hid(uint8_t *d) {
             return true;
 #if defined(AK820_DEV_HOOKS) || defined(MENU_HOST_TEST)
         case 0x40:
+            cancel_previews();   /* P5e: the live settings, never a preview's */
             d[5] = prof_save(p, &c);
             d[6] = c ? 1u : 0u;
             tx_state |= TX_CHANGED;

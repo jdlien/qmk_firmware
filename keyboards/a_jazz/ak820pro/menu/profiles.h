@@ -65,6 +65,7 @@ uint8_t prof_step(bool next, uint8_t *slot);        /* the Next or Previous key'
 bool    prof_take_changed(void);                    /* the host wrote the block since the last call: the menu repaints */
 void    prof_capture(uint8_t *rec, uint8_t fields); /* the live settings as a record, state and crc set */
 uint8_t prof_apply(const uint8_t *rec, bool live);  /* PROF_OK, or PROF_OK_EFFECT_SKIPPED; the power mode only `live` */
+void    prof_preview(uint8_t slot);                 /* P5e: its lighting and LCD level, unsaved (an ME_PROFILE edit's) */
 uint8_t prof_save(uint8_t slot, bool *consolidated);   /* the live settings, keeping a valid slot's name; it becomes active */
 uint8_t prof_delete(uint8_t slot);
 uint8_t prof_load(uint8_t slot);

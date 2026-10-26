@@ -23,16 +23,19 @@ _Static_assert(ME_RM_FIRST == QK_RGB_MATRIX_ON && ME_RM_LAST == QK_RGB_MATRIX_FL
 /* The one edit (C6): its field and its domain's snapshot, 9 B. */
 static struct {
     uint8_t   field;   /* ME_NONE: none */
-    uint8_t   level;   /* ME_LCD, ME_LOCKS, ME_CHG: the level when it opened */
-    env_rgb_t rgb;     /* an RGB field: the config when it opened */
+    uint8_t   level;   /* ME_LCD, ME_LOCKS, ME_CHG, ME_PROFILE: the level when it opened */
+    env_rgb_t rgb;     /* an RGB field, ME_PROFILE: the config when it opened */
 } ed;
 static uint8_t  pending;     /* ME_PEND_* for menu_tick() */
 static uint16_t ext_count;   /* external writes that cancelled an edit (op 27 sub 5) */
 
-static bool    is_rgb(uint8_t f) { return f >= ME_MODE && f <= ME_ENABLE; }
+static bool    is_rgb(uint8_t f) { return (f >= ME_MODE && f <= ME_ENABLE) || f == ME_PROFILE; }
 static bool    is_ind(uint8_t f) { return f == ME_LOCKS || f == ME_CHG; }
 static uint8_t ind_of(uint8_t f) { return f == ME_LOCKS ? ENV_IND_LOCKS : ENV_IND_CHARGING; }
 static uint8_t domain_of(uint8_t f) { return is_rgb(f) ? ME_DOM_RGB : f == ME_LCD ? ME_DOM_LCD : ME_DOM_IND; }
+/* A writer of domain d conflicts with the edit: its own domain, and P5e's
+ * profile preview the LCD's too. */
+static bool in_domain(uint8_t f, uint8_t d) { return domain_of(f) == d || (f == ME_PROFILE && d == ME_DOM_LCD); }
 
 /* A level field's live value (the LCD's, or an indicator group's). */
 static uint8_t level_now(uint8_t f) { return f == ME_LCD ? env_lcd_level() : env_ind_level(ind_of(f)); }
@@ -81,6 +84,7 @@ static void restore(void) {
         set_field(ed.field, ed.level, false);
         return;
     }
+    if (ed.field == ME_PROFILE) env_lcd_set(ed.level, false);   /* P5e: the LCD's level, then the RGB config */
     env_rgb_t c;
     env_rgb_get(&c);
     const env_rgb_t *s = &ed.rgb;
@@ -105,10 +109,11 @@ static void close_edit(void) {
 
 void me_open(uint8_t field) {
     menu_edit_rollback();
-    if (field == ME_NONE || field > ME_CHG) return;
+    if (field == ME_NONE || field > ME_PROFILE) return;
     ed.field = field;
     if (field == ME_LCD || is_ind(field)) ed.level = level_now(field);
     else env_rgb_get(&ed.rgb);
+    if (field == ME_PROFILE) ed.level = env_lcd_level();
     if (is_ind(field)) env_ind_force(ind_of(field), true);   /* the preview shows, whatever Caps is */
 }
 
@@ -125,16 +130,18 @@ uint8_t me_value(void) {
 uint8_t me_saved(void) { return ed.field == ME_LCD || is_ind(ed.field) ? ed.level : field_of(&ed.rgb, ed.field); }
 
 void me_preview(uint8_t value) {
-    if (ed.field != ME_NONE) set_field(ed.field, value, false);
+    if (ed.field != ME_NONE && ed.field != ME_PROFILE) set_field(ed.field, value, false);   /* a profile's: prof_preview() */
 }
 
 void me_save(void) {
-    if (ed.field == ME_NONE) return;
+    if (ed.field == ME_NONE || ed.field == ME_PROFILE) return;
     set_field(ed.field, me_value(), true);
     close_edit();
 }
 
 void me_cancel(void) { menu_edit_rollback(); }
+
+void me_keep(void) { close_edit(); }
 
 void menu_edit_rollback(void) {
     if (ed.field == ME_NONE) return;
@@ -144,7 +151,7 @@ void menu_edit_rollback(void) {
 
 void menu_edit_external(uint8_t domain) {
     pending |= ME_PEND_CHANGED;
-    if (ed.field == ME_NONE || domain_of(ed.field) != domain) return;
+    if (ed.field == ME_NONE || !in_domain(ed.field, domain)) return;
     menu_edit_rollback();
     pending |= ME_PEND_CANCELLED;
     if (ext_count < 0xFFFFu) ext_count++;
