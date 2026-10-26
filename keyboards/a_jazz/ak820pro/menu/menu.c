@@ -228,7 +228,9 @@ static union {
         uint8_t    st;     /* CK_* */
     } clk;
 } pg;
-enum { CK_OK = 1, CK_JUMP = 2, CK_ODD = 4 };   /* set; not the last read's time on; which jump */
+enum { CK_OK = 1, CK_JUMP = 2 };   /* set; a read that wasn't the last's time on, for menu_tick() */
+#define CLOCK_EXAMPLES 5u          /* the Clock page's rows 1-5 (Off has none) */
+_Static_assert(1 + CLOCK_ROWS <= MENU_ROWS, "the Clock page is one screen: its examples are slots S_ROW0 + 1-5");
 _Static_assert(sizeof pg == sizeof(env_about_t), "the Clock's time shares About's 12 B");
 static uint32_t ft_last;                    /* P1b: the editor's last turn, ms (32-bit: the backstop is 180 s) */
 static bool     ft_have;                    /* a turn in this editor yet */
@@ -738,12 +740,19 @@ static uint32_t batt_key(const row_t *x) {
     uint32_t h = ready && b.left_min < 600u ? (b.left_min < 60u ? 10u : b.left_min / 60u) : 15u;
     return 0x10000u | (uint32_t)b.pct << 4 | h;
 }
-/* b is a's time dt seconds on, on a's day unless that passed midnight. */
+/* b is a's time dt seconds on: a's date, or the next day's if that passed
+ * midnight. */
 static bool clock_follows(const env_time_t *a, const env_time_t *b, uint16_t dt) {
+    static const uint8_t mdays[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
     uint32_t sa = (uint32_t)a->hours * 3600u + a->minutes * 60u + a->seconds;
     uint32_t sb = (uint32_t)b->hours * 3600u + b->minutes * 60u + b->seconds;
     if (sb != (sa + dt) % 86400u) return false;
-    return sb < sa || (a->day == b->day && a->month == b->month && a->year == b->year);
+    if (sa + dt < 86400u) return a->day == b->day && a->month == b->month && a->year == b->year;
+    bool    leap = (a->year % 4u == 0u && a->year % 100u != 0u) || a->year % 400u == 0u;
+    uint8_t last = (uint8_t)(mdays[(a->month + 11u) % 12u] + (a->month == 2u && leap ? 1u : 0u));
+    if (a->day < last) return b->day == a->day + 1u && b->month == a->month && b->year == a->year;
+    if (a->month < 12u) return b->day == 1u && b->month == a->month + 1u && b->year == a->year;
+    return b->day == 1u && b->month == 1u && b->year == a->year + 1u;
 }
 /* The Clock list's time: one RTC read an RTC second. rtc_get_time() decodes
  * through newlib's localtime_r, costly on this core, and each scan called it
@@ -751,15 +760,14 @@ static bool clock_follows(const env_time_t *a, const env_time_t *b, uint16_t dt)
  * set between seconds shows at the next. A read that doesn't follow the last
  * by the seconds counted (a set) is a jump: its 7-bit ticks could equal what
  * the rows show (codex: 02:07:59, a set, then 04:15:00 kept 02:07), so
- * clock_sig() gives the jump's second signatures of its own. */
+ * menu_tick() repaints the examples whole (CK_JUMP holds until it does). */
 static bool clock_now(env_time_t *t) {
     uint16_t k = env_rtc_tick();
     if (!pg.clk.have || k != pg.clk.tick) {
         env_time_t was = pg.clk.t;
         bool       had = pg.clk.have && (pg.clk.st & CK_OK);
-        uint8_t    st  = (uint8_t)((env_clock_now(&pg.clk.t) ? CK_OK : 0u) | (pg.clk.have ? pg.clk.st & CK_ODD : 0u));
-        if (had && (st & CK_OK) && !clock_follows(&was, &pg.clk.t, (uint16_t)(k - pg.clk.tick)))
-            st = (uint8_t)((st ^ CK_ODD) | CK_JUMP);   /* consecutive jumps alternate */
+        uint8_t    st  = (uint8_t)((env_clock_now(&pg.clk.t) ? CK_OK : 0u) | (pg.clk.have ? pg.clk.st & CK_JUMP : 0u));
+        if (had && (st & CK_OK) && !clock_follows(&was, &pg.clk.t, (uint16_t)(k - pg.clk.tick))) st |= CK_JUMP;
         pg.clk.st   = st;
         pg.clk.tick = k;
         pg.clk.have = true;
@@ -799,12 +807,8 @@ static uint16_t clock_sig(const row_t *x, uint8_t row) {
     uint8_t    mode = clock_enum[row];
     uint16_t   bits = (uint16_t)((x->bullet ? 2u : 0u) | (x->lit ? 1u : 0u));
     /* Unset: the row field 7, which no valid example's has, so the clock's
-     * first valid time always repaints (codex: a fixed tick aliased one). A
-     * jump's second: the field 5 or 6, so the rows repaint whole, then again
-     * at the next second's. */
+     * first valid time always repaints (codex: a fixed tick aliased one). */
     if (!clock_now(&t)) return (uint16_t)(0x2000u | (7u << 10) | ((uint16_t)row << 2) | bits);
-    if (pg.clk.st & CK_JUMP)
-        return (uint16_t)(0x2000u | ((pg.clk.st & CK_ODD) ? 6u << 10 : 5u << 10) | ((uint16_t)row << 2) | bits);
     uint32_t tick;
     if (row == 4u) tick = (uint32_t)t.month * 32u + t.day;
     else if (mode == 0u || mode == 1u) tick = (uint32_t)t.hours * 3600u + t.minutes * 60u + t.seconds;
@@ -1382,7 +1386,12 @@ static menu_result_t activate(uint32_t now) {
         case N_POWER:
         case N_CLOCK:
         case N_BATT:
-            if (node == N_CLOCK) pg.clk.have = false;   /* About's bytes: read afresh */
+            if (node == N_CLOCK) {
+                /* About's bytes: read afresh. Its examples repaint whole:
+                 * rows a quick re-entry left committed could alias (codex). */
+                pg.clk.have = false;
+                ms_invalidate_rows(S_ROW0 + 1u, CLOCK_EXAMPLES);
+            }
             push(node, saved_row(node));
             show(false, false, now);
             return MENU_NONE;
@@ -1611,6 +1620,18 @@ void menu_tick(uint32_t now, uint32_t idle_ms) {
         if (is_confirm(n)) ms_set_layout(&L_LIST, false);
         else ms_retarget();
         moved = false;
+    }
+    /* The Clock list: a jump (clock_now()) repaints the examples whole, here,
+     * outside the scheduler's scans (invalidating from a signature would
+     * clear the slot ms_step() is painting): an INVALID row repaints
+     * whatever its signature. */
+    if (cur()->node == N_CLOCK) {
+        env_time_t now_t;
+        (void)clock_now(&now_t);
+        if (pg.clk.st & CK_JUMP) {
+            pg.clk.st &= (uint8_t)~CK_JUMP;
+            ms_invalidate_rows(S_ROW0 + 1u, CLOCK_EXAMPLES);
+        }
     }
     uint8_t t = want_title(now, idle_ms);
     if (t != title_id) {
