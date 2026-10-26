@@ -285,24 +285,38 @@ uint8_t prof_apply(const uint8_t *rec, bool live) {
 
 /* P5e: the menu's preview, inside its ME_PROFILE edit (menu_edit.c holds the
  * live settings and the RGB flush): the lighting and the LCD level only,
- * the two that show with the menu up; nothing saved. As prof_apply()'s
- * order, but a value already showing isn't set again: a mode set restarts
- * its animation, and a rest on a slot that matches the live settings (the
- * one just loaded, say) changes nothing. A field the record lacks, or an
- * effect this build lacks, stays as it is. */
-void prof_preview(uint8_t slot) {
-    uint8_t   rec[PROF_REC], mode;
-    env_rgb_t c;
-    if (!prof_slot(slot, rec)) return;
-    env_rgb_get(&c);
-    if (rec[PR_FIELDS] & PF_LIGHTING) {
-        if (!c.enable) env_rgb_enable(true, false);
-        if (mode_of_id(rec[PR_EFFECT], &mode) && mode != c.mode) env_rgb_mode(mode, false);
-        if (rec[PR_HUE] != c.h || rec[PR_SAT] != c.s || rec[PR_VAL] != c.v) env_rgb_hsv(rec[PR_HUE], rec[PR_SAT], rec[PR_VAL], false);
-        if (rec[PR_SPEED] != c.speed) env_rgb_speed(rec[PR_SPEED], false);
-        if (!c.enable || !rec[PR_RGB_ON]) env_rgb_enable(rec[PR_RGB_ON] != 0u, false);
+ * the two that show with the menu up; nothing saved. The target is the
+ * live settings the edit opened on (base, base_lcd) with the record's
+ * fields over them, so a field the record lacks, or an effect this build
+ * lacks, shows the live settings' and never an earlier preview's, which a
+ * Load would then save (codex, P5e's review). Set in prof_apply()'s order
+ * (the lights on while the mode and HSV change, the enable last), and only
+ * what differs from what shows: a mode set restarts its animation. */
+void prof_preview(uint8_t slot, const env_rgb_t *base, uint8_t base_lcd) {
+    uint8_t   rec[PROF_REC], mode, lcd = base_lcd;
+    env_rgb_t t = *base, c;
+    if (prof_slot(slot, rec)) {
+        if (rec[PR_FIELDS] & PF_LIGHTING) {
+            if (mode_of_id(rec[PR_EFFECT], &mode)) t.mode = mode;
+            t.h      = rec[PR_HUE];
+            t.s      = rec[PR_SAT];
+            t.v      = rec[PR_VAL];
+            t.speed  = rec[PR_SPEED];
+            t.enable = rec[PR_RGB_ON] ? 1u : 0u;
+        }
+        if (rec[PR_FIELDS] & PF_LCD) lcd = rec[PR_LCD];
     }
-    if ((rec[PR_FIELDS] & PF_LCD) && rec[PR_LCD] != env_lcd_level()) env_lcd_set(rec[PR_LCD], false);
+    env_rgb_get(&c);
+    bool on = c.enable;
+    if (!on && (c.mode != t.mode || c.h != t.h || c.s != t.s || c.v != t.v)) {
+        env_rgb_enable(true, false);
+        on = true;
+    }
+    if (c.mode != t.mode) env_rgb_mode(t.mode, false);
+    if (c.h != t.h || c.s != t.s || c.v != t.v) env_rgb_hsv(t.h, t.s, t.v, false);
+    if (c.speed != t.speed) env_rgb_speed(t.speed, false);
+    if (on != (t.enable != 0u)) env_rgb_enable(t.enable != 0u, false);
+    if (lcd != env_lcd_level()) env_lcd_set(lcd, false);
 }
 
 uint8_t prof_save(uint8_t slot, bool *consolidated) {

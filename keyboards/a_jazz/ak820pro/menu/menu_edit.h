@@ -11,6 +11,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "menu_env.h"   /* env_rgb_t */
+
 /* The fields an edit can preview. */
 enum {
     ME_NONE = 0,
@@ -45,7 +47,7 @@ uint8_t me_saved(void);               /* the field's value when the edit opened:
 void    me_preview(uint8_t value);
 void    me_save(void);                /* the live value, by the saving setter; closes (not ME_PROFILE's) */
 void    me_cancel(void);              /* the snapshot back; closes */
-void    me_keep(void);                /* P5e: closes, the snapshot dropped: what shows was just saved (a Load) */
+void    me_base(env_rgb_t *rgb, uint8_t *level);   /* P5e: an ME_PROFILE edit's snapshot, the live settings it opened on */
 
 /* C6's rollback: the snapshot back and the transaction closed, nothing else.
  * Idempotent. panel_owner.c calls it before the panel leaves the menu. */

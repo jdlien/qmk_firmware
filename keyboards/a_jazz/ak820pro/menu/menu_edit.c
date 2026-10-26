@@ -141,7 +141,10 @@ void me_save(void) {
 
 void me_cancel(void) { menu_edit_rollback(); }
 
-void me_keep(void) { close_edit(); }
+void me_base(env_rgb_t *rgb, uint8_t *level) {
+    *rgb   = ed.rgb;
+    *level = ed.level;
+}
 
 void menu_edit_rollback(void) {
     if (ed.field == ME_NONE) return;

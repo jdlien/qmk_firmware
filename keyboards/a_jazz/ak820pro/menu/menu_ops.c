@@ -158,8 +158,11 @@ void menu_ops_task(uint32_t now) {
      * (panel_owner.c's do_close()). The fixture has no edit. */
     /* Signed: an input stamped a little after `now` (an event read its own
      * timer) is no idle at all, never a wrapped 49 days. */
-    /* P3: the Pairing page starting or advertising gets the backstop too. */
-    uint32_t limit = (me_active() || (menu_kind == MK_MENU && menu_long_wait())) ? MI_BACKSTOP_MS : MI_IDLE_MS;
+    /* P3: the Pairing page starting or advertising gets the backstop too.
+     * P5e: a profile's preview is no edit: the 24 s (codex: it held the
+     * menu, and a deep sleep, for three minutes). */
+    bool     editing = me_active() && me_field() != ME_PROFILE;
+    uint32_t limit   = (editing || (menu_kind == MK_MENU && menu_long_wait())) ? MI_BACKSTOP_MS : MI_IDLE_MS;
     if ((int32_t)(now - mi_last_input()) >= (int32_t)limit) (void)env_po_event(PO_EV_CLOSE);
 }
 
