@@ -82,6 +82,13 @@ static void kb_mark_dirty(void) {
     kb_dirty_since = timer_read32();
 }
 
+/* P5b: the settings profiles' active slot rides this settle. profiles.c's
+ * prof_tick() writes its pending byte once this is clean, so a run of
+ * profile keys costs one write, and the sleep waits on it here. */
+void kb_eeconfig_touch(void) {
+    kb_mark_dirty();
+}
+
 uint8_t kb_eeconfig_get_bt_profile(void) {
     if (kb_config.bt_profile >= CH582_PROFILE_BT_1 &&
         kb_config.bt_profile <= CH582_PROFILE_BT_3) {

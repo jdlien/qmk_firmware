@@ -72,6 +72,8 @@ enum ak820pro_keycodes {
                             * board, so a wireless session's counters die exactly
                             * when they become readable. */
     PWR_MODE,              // Fn+B: power mode, Always on -> Balanced -> Power saver -> Lights out (power.c)
+    PROF_NXT,              // the next saved settings profile, wrapping (menu/profiles.c); unbound, assign in VIA
+    PROF_PRV,              // the previous one
     AK820PRO_SAFE_RANGE
 };
 

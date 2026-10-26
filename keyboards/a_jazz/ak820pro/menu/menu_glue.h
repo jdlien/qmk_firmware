@@ -14,6 +14,7 @@
 bool menu_pre_process(uint16_t keycode, keyrecord_t *record);   /* false: captured */
 void menu_pass_begin(void);                                      /* first in each pass: C10's pass timing */
 void menu_task(void);                                            /* each pass, before the pump */
+void menu_prof_key(bool next);                                   /* P5b: PROF_NXT and PROF_PRV, on the press */
 
 /* graphics/display.c: an event's actions, applied. */
 uint16_t display_po_event(po_event_t ev);

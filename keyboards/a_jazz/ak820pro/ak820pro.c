@@ -424,6 +424,12 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
         case PWR_MODE:
             if (record->event.pressed) power_cycle_mode();
             return false;
+        case PROF_NXT:
+        case PROF_PRV:
+            /* P5b: on the press, no repeat; the board's own, nothing to the
+             * host. The menu's Load, and the name in the overlay. */
+            if (record->event.pressed) menu_prof_key(keycode == PROF_NXT);
+            return false;
         case DBG_PAGE:
             /* Tap toggles the page; HOLD resets the counters.
              *

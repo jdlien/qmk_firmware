@@ -83,6 +83,11 @@ void     env_prof_read(uint16_t addr, void *dst, uint8_t n);
 uint8_t  env_prof_write(uint16_t addr, const void *src, uint8_t n);
 bool     env_recovering(void);
 void     env_settings_flush(void);
+/* P5b: the profiles' active slot is written once kb_eeconfig's settle has
+ * passed and its write is done: touch restarts the settle, pending is its
+ * write still to come (a deep sleep's DSB_FLASH). */
+void     env_settings_touch(void);
+bool     env_settings_pending(void);
 #define  ENV_UNKNOWN 0xFFFFu
 typedef struct {
     uint32_t uptime_s;

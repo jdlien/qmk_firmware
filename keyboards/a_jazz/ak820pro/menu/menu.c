@@ -14,6 +14,7 @@
 #include "menu_env.h"
 #include "menu_slots.h"
 #include "menu_text.h"
+#include "profiles.h"   /* P5b: the settings profiles' pages */
 #include "../graphics/res/menu_text_pages.h"
 #include "../graphics/batt_text.h"   /* P4: the Battery choice previews the dashboard's text */
 
@@ -40,15 +41,23 @@ enum {
     N_PAIRING,                                                  /* 44: the Pairing page, its slot in the frame's cursor */
     N_BATT, N_BV0, N_BV1,                                       /* 45-47: P4, Battery and its two readouts */
     N_CLK4, N_CLK5,                                             /* 48-49: the Clock's rows 5-6 (rows: clock_enum[]) */
+    N_PROFILES,                                                 /* 50: P5b, the settings profiles (plans/SETTINGS-PROFILES-PLAN.md) */
+    N_PSLOT0, N_PSLOT1, N_PSLOT2, N_PSLOT3,                     /* 51-54: a slot's row, and as a frame its page */
+    N_PLOAD, N_PSAVE, N_PDELETE,                                /* 55-57: its actions; as frames, Save's and Delete's
+                                                                 * confirms, the slot in the cursor */
     N_COUNT
 };
 _Static_assert(N_COUNT <= 63, "a row's node is 6 bits");
 _Static_assert(MENU_HELP_TOPICS == 4, "Help's four topics");
+_Static_assert(N_PSLOT3 - N_PSLOT0 + 1 == PROF_SLOTS, "a node a slot");
+static bool is_pslot(uint8_t node) { return node >= N_PSLOT0 && node <= N_PSLOT3; }
 
 /* The top level's order (P4, JD 10-25): Battery under Clock, and
- * Diagnostics under Bootloader on page two. */
+ * Diagnostics under Bootloader on page two. P5b (JD, 10-25): Profiles is
+ * page one's last row, and Bootloader moves to the top of page two, with the
+ * system items. */
 static const uint8_t top_rows[]   = {N_LIGHT, N_SCREEN, N_CONN, N_POWER, N_IND,  N_CLOCK,
-                                     N_BATT,  N_BOOT,   N_DIAG, N_HELP,  N_ABOUT, N_EXIT};
+                                     N_BATT,  N_PROFILES, N_BOOT, N_DIAG, N_HELP, N_ABOUT, N_EXIT};
 static const uint8_t light_rows[] = {N_BACK, N_EFFECT, N_BRIGHT, N_HUE, N_SAT, N_SPEED, N_LIGHTS};
 static const uint8_t ind_rows[]   = {N_BACK, N_LOCKS, N_CHGL};
 static const uint8_t conn_rows[]  = {N_BACK, N_BT0, N_BT1, N_BT2, N_PAIRNOW};   /* P3: on BT */
@@ -57,6 +66,13 @@ static const uint8_t help_rows[]  = {N_BACK, N_TOPIC0, N_TOPIC1, N_TOPIC2, N_TOP
 static const uint8_t power_rows[] = {N_BACK, N_POW0, N_POW1, N_POW2, N_POW3};
 static const uint8_t clock_rows[] = {N_BACK, N_CLK0, N_CLK1, N_CLK2, N_CLK3, N_CLK4, N_CLK5};
 static const uint8_t batt_rows[]  = {N_BACK, N_BV0, N_BV1};   /* P4 */
+static const uint8_t prof_rows[]  = {N_BACK, N_PSLOT0, N_PSLOT1, N_PSLOT2, N_PSLOT3};   /* P5b */
+static const uint8_t pslot_rows[] = {N_BACK, N_PLOAD, N_PSAVE, N_PDELETE};
+/* A slot page's summary: three lines under its actions (Decided 10), as the
+ * Battery page places its notes. */
+#define PSUM_ROW0  5u
+#define PSUM_LINES 3u
+_Static_assert(sizeof pslot_rows <= PSUM_ROW0 && PSUM_ROW0 + PSUM_LINES <= MENU_ROWS, "the summary under the actions");
 
 static const char *const power_full[4]  = {"Always on", "Balanced", "Power saver", "Lights out"};
 static const char *const power_short[4] = {"Always on", "Balanced", "Saver", "Lights out"};
@@ -162,6 +178,10 @@ static const char *label_of(uint8_t node) {
         case N_CONN:   return "Connection";
         case N_LOCKS:  return "Lock lights";
         case N_CHGL:   return "Charging";   /* the mockup's row; its editor's title is "Charging light" */
+        case N_PROFILES: return "Profiles";   /* P5b; a slot's row is its name (row_text) */
+        case N_PLOAD:  return "Load";
+        case N_PSAVE:  return "Save current here";
+        case N_PDELETE: return "Delete";
         default: break;
     }
     if (node >= N_BT0 && node <= N_BT2) return slot_names[node - N_BT0];
@@ -189,6 +209,7 @@ static const char *icon_of(uint8_t node) {
         case N_IND:   return MT_I_IND;    /* P2a: the sun (JD's pick) */
         case N_CONN:  return MT_I_CONN;   /* Bluetooth */
         case N_BATT:  return MT_I_BATT " ";   /* P4: a vertical battery */
+        case N_PROFILES: return MT_I_PROF " ";   /* P5b: the folder */
         default:      return NULL;
     }
 }
@@ -203,7 +224,7 @@ uint16_t menu_color(uint8_t i) { return i < MP_N ? pal[i] : 0; }
 /* --- State ------------------------------------------------------------------ */
 
 typedef struct { uint8_t node, cursor, top; } frame_t;
-static frame_t  stack[3];
+static frame_t  stack[4];   /* P5b: the top level, Profiles, a slot's page, its confirm */
 static uint8_t  depth;
 static uint8_t  model_power, model_clock;   /* the latched model (external changes: Fn+B, Fn+C) */
 static uint8_t  title_id;                   /* the latched title: a screen's, a flash's or the hint */
@@ -267,6 +288,11 @@ static const uint8_t *rows_of(uint8_t node, uint8_t *n) {
         case N_LIGHT: *n = sizeof light_rows; return light_rows;
         case N_IND:   *n = sizeof ind_rows;   return ind_rows;
         case N_CONN:  *n = sizeof conn_rows;  return conn_rows;
+        case N_PROFILES: *n = sizeof prof_rows; return prof_rows;   /* P5b */
+        case N_PSLOT0:
+        case N_PSLOT1:
+        case N_PSLOT2:
+        case N_PSLOT3: *n = sizeof pslot_rows; return pslot_rows;
         default:      *n = 0;                 return 0;
     }
 }
@@ -302,19 +328,24 @@ static uint8_t row_index(uint8_t list, uint8_t node) {
 }
 static bool is_topic(uint8_t node) { return node >= N_TOPIC0 && node <= N_TOPIC3; }
 static bool is_list(uint8_t node) {
-    return node == N_TOP || node == N_DIAG || node == N_HELP || node == N_LIGHT || node == N_IND || node == N_CONN;
+    return node == N_TOP || node == N_DIAG || node == N_HELP || node == N_LIGHT || node == N_IND || node == N_CONN ||
+           node == N_PROFILES || is_pslot(node);
 }
 static bool is_bt_screen(uint8_t node) { return node == N_CONN || node == N_PAIRING; }   /* P3: on BT only */
 static bool is_preview(uint8_t node) { return node == N_EFFECT || node == N_LIGHTS; }   /* P1b's previewing choices */
 static bool is_choice(uint8_t node) { return node == N_POWER || node == N_CLOCK || node == N_BATT || is_preview(node); }
-static bool is_option(uint8_t node) {   /* a row a check box marks: a choice's option, or a slot (P3) */
+static bool is_option(uint8_t node) {   /* a row a check box marks: a choice's option, or a slot (P3; P5b's) */
     return (node >= N_POW0 && node <= N_CLK3) || node == N_EFFOPT || node == N_LTSOPT || (node >= N_BT0 && node <= N_BT2) ||
-           (node >= N_BV0 && node <= N_BV1) || node == N_CLK4 || node == N_CLK5;
+           (node >= N_BV0 && node <= N_BV1) || node == N_CLK4 || node == N_CLK5 || is_pslot(node);
 }
 static bool is_ind_editor(uint8_t node) { return node == N_LOCKS || node == N_CHGL; }   /* P2a */
 static bool is_editor(uint8_t node) { return node == N_SCREEN || (node >= N_BRIGHT && node <= N_SPEED) || is_ind_editor(node); }
 static bool is_confirm(uint8_t node) {   /* the confirm geometry's pages */
-    return node == N_RESET || node == N_BOOT || node == N_CONNINFO || node == N_PAIRING;
+    return node == N_RESET || node == N_BOOT || node == N_CONNINFO || node == N_PAIRING || node == N_PSAVE ||
+           node == N_PDELETE;
+}
+static bool is_prof_screen(uint8_t node) {   /* P5b: a host restore pops these */
+    return node == N_PROFILES || is_pslot(node) || node == N_PSAVE || node == N_PDELETE;
 }
 static bool is_hue_editor(uint8_t node) { return node == N_HUE || (node == N_SPEED && two_tone()); }
 static uint8_t field_of(uint8_t node) {
@@ -363,7 +394,9 @@ enum { T_TOP = 1, T_POWER, T_CLOCK, T_DIAG, T_HELP, T_ABOUT, T_TOPIC0, T_RESET =
        T_IND, T_CONN, T_LOCKS, T_CHGL,                                                      /* 32-35: P2a */
        T_PAIRING, T_NOW_BT1, T_NOW_BT2, T_NOW_BT3,                                          /* 36-39: P3 */
        T_ALREADY_BT1, T_ALREADY_BT2, T_ALREADY_BT3, T_PAIR_STOPPED,                         /* 40-43 */
-       T_BATT };                                                                            /* 44: P4 */
+       T_BATT,                                                                              /* 44: P4 */
+       T_PROFILES, T_PSLOT0, T_PSAVE = T_PSLOT0 + PROF_SLOTS, T_PDELETE,                    /* 45-51: P5b; a slot's page's title is its name */
+       T_LOADED, T_LOADED_NOFX, T_DELETED, T_PBUSY, T_SAVE_FAILED };                        /* 52-56 */
 _Static_assert(T_RESET == 11, "the title ids: the design's table");
 
 static uint8_t screen_title(void) {
@@ -392,7 +425,12 @@ static uint8_t screen_title(void) {
         case N_CHGL:   return T_CHGL;
         case N_PAIRING:  return T_PAIRING;
         case N_BATT:   return T_BATT;
-        default:      return is_topic(n) ? (uint8_t)(T_TOPIC0 + (n - N_TOPIC0)) : T_TOP;
+        case N_PROFILES: return T_PROFILES;   /* P5b */
+        case N_PSAVE:  return T_PSAVE;
+        case N_PDELETE: return T_PDELETE;
+        default:      return is_topic(n)   ? (uint8_t)(T_TOPIC0 + (n - N_TOPIC0))
+                             : is_pslot(n) ? (uint8_t)(T_PSLOT0 + (n - N_PSLOT0))
+                                           : T_TOP;
     }
 }
 static const char *title_text(uint8_t id) {
@@ -433,10 +471,19 @@ static const char *title_text(uint8_t id) {
         case T_ALREADY_BT3: return "Already on BT 3";
         case T_PAIR_STOPPED: return "Pairing stopped";
         case T_BATT:       return "Battery";
+        /* P5b's; the words wait for JD's text pass (MENU-TEXT.md) */
+        case T_PROFILES:   return "Profiles";
+        case T_PSAVE:      return "Save profile";
+        case T_PDELETE:    return "Delete profile";
+        case T_LOADED:     return "Loaded";
+        case T_LOADED_NOFX: return "Loaded w/o effect";   /* its effect isn't in this build */
+        case T_DELETED:    return "Deleted";
+        case T_PBUSY:      return "Busy, try again";      /* a recovery, or a host restore open */
+        case T_SAVE_FAILED: return "Save failed";         /* a write failed: none more until a reboot */
         default: break;
     }
     if (id >= T_TOPIC0 && id < T_TOPIC0 + 4) return menu_help_titles[id - T_TOPIC0];
-    return "";
+    return "";   /* a slot's page: its name, in l_paint() */
 }
 /* A heading's icon, before its text (JD, 10-24): the wrench on the top level,
  * and a section's own on every screen inside it ("keep the consistency").
@@ -459,7 +506,9 @@ static const char *title_icon(uint8_t id) {
         case T_CONN:
         case T_PAIRING: return icon_of(N_CONN);
         case T_BATT:   return icon_of(N_BATT);
-        default:      return id >= T_LIGHT && id <= T_LIGHTS ? icon_of(N_LIGHT) : "";
+        default:       return id >= T_LIGHT && id <= T_LIGHTS        ? icon_of(N_LIGHT)
+                            : id >= T_PROFILES && id <= T_PDELETE ? icon_of(N_PROFILES)   /* P5b */
+                                                                   : "";
     }
 }
 
@@ -534,7 +583,8 @@ static void about_line(uint8_t line, char *out, size_t sz) {
 
 /* A row's content: what the slot shows, for its signature and its painter. */
 typedef struct { uint8_t kind; uint8_t node; uint8_t val; bool bullet, lit; uint8_t line; } row_t;
-enum { RK_BLANK = 0, RK_ITEM, RK_TEXT, RK_ABOUT, RK_VALUE, RK_NOTE };   /* RK_NOTE: P4's note under Battery */
+enum { RK_BLANK = 0, RK_ITEM, RK_TEXT, RK_ABOUT, RK_VALUE, RK_NOTE,   /* RK_NOTE: P4's note under Battery */
+       RK_PNOTE };                                                    /* P5b: a slot's summary, node the slot's */
 
 /* P1b's value rows (Lighting's, and the top level's Screen): which one, for
  * the signature, and the live value, read as it composes (not latched: a
@@ -617,6 +667,12 @@ static row_t row_at(uint8_t r) {
         x.line = (uint8_t)(r - 4u);
         return x;
     }
+    if (is_pslot(f->node) && r >= PSUM_ROW0 && r < PSUM_ROW0 + PSUM_LINES) {   /* P5b: the summary; not selectable */
+        x.kind = RK_PNOTE;
+        x.node = f->node;
+        x.line = (uint8_t)(r - PSUM_ROW0);
+        return x;
+    }
     if (i >= row_count(f->node)) return x;
     x.kind = RK_ITEM;
     x.node = row_node(f->node, i, &val);
@@ -630,6 +686,15 @@ static row_t row_at(uint8_t r) {
         x.bullet = on_bt() && x.node - N_BT0 == link_slot();
         x.val    = x.bullet ? (uint8_t)(link_state() < 5u ? link_state() : 0u) : 0u;
     }
+    else if (x.node == N_PROFILES) {   /* P5b: the active slot (15 none) in val, its `*` in line (row_sig's bit 2) */
+        uint8_t rec[PROF_REC], a = prof_active_rec(rec);
+        x.val  = a < PROF_SLOTS ? a : 15u;
+        x.line = a < PROF_SLOTS && prof_differs(rec) ? 1u : 0u;
+    } else if (is_pslot(x.node)) {   /* a slot: saved (val 1) or empty; the active one's check */
+        uint8_t rec[PROF_REC], s = (uint8_t)(x.node - N_PSLOT0);
+        x.val    = prof_slot(s, rec) ? 1u : 0u;
+        x.bullet = prof_active() == s;
+    }
     else if (x.node == N_EFFOPT || x.node == N_LTSOPT) x.val = val;
     else if (value_which(x.node) >= 0) {
         x.kind = RK_VALUE;
@@ -637,6 +702,79 @@ static row_t row_at(uint8_t r) {
     }
     if (is_choice(f->node) && i && i == saved_row(f->node)) x.bullet = true;
     return x;
+}
+
+/* --- P5b's text: a slot's name, the top level's value, a slot's summary ------ */
+
+/* A slot's row: its name, or "Profile n" for an empty slot (a deleted one's
+ * bytes stay) or a nameless one. out: PROF_NAME + 1. */
+static const char *pslot_label(uint8_t node, char *out) {
+    uint8_t rec[PROF_REC], s = (uint8_t)(node - N_PSLOT0);
+    if (!prof_slot(s, rec)) rec[PR_FIELDS] = 0;
+    prof_name(s, rec, out);
+    return out;
+}
+/* The top level's value: the active slot's name in 9 cells, or 8 and its
+ * `*`; a nameless slot's "Profile n" starred is "Prof. n*", its digit kept.
+ * None with no active slot. buf: 24. */
+static const char *prof_value(const row_t *x, char *buf) {
+    if (x->val >= PROF_SLOTS) return "None";
+    uint8_t rec[PROF_REC];
+    (void)prof_slot(x->val, rec);
+    if (x->line && !((rec[PR_FIELDS] & PF_NAME) && rec[PR_NAME])) {
+        snprintf(buf, 24, "Prof. %u*", (unsigned)(x->val + 1u));
+        return buf;
+    }
+    prof_name(x->val, rec, buf);
+    size_t room = x->line ? 8u : 9u;
+    if (strlen(buf) > room) buf[room] = '\0';
+    if (x->line) strcat(buf, "*");
+    return buf;
+}
+/* A slot's summary (Decided 6 and 10; the content is to be worked out on the
+ * panel): the effect and its speed (an Alphas/Mods' second colour as its
+ * offset); the hue, saturation and brightness as the editors show them; the
+ * screen and the clock. out: 20 cells of spaces. */
+static void prof_summary(uint8_t slot, uint8_t line, char *out) {
+    uint8_t rec[PROF_REC];
+    char    b[24];
+    size_t  n;
+    if (!prof_slot(slot, rec)) return;
+    if (line == 0u) {
+        memcpy(out, icon_of(N_LIGHT), 2);
+        if (!(rec[PR_FIELDS] & PF_LIGHTING)) return;
+        if (!rec[PR_RGB_ON]) {
+            memcpy(out + 2, "Lights off", 10);
+            return;
+        }
+        int8_t fx = -1;
+        for (uint8_t k = 0; k < effects(); k++)
+            if (env_effect_id(k) == rec[PR_EFFECT]) fx = (int8_t)k;
+        if (fx >= 0 && env_effect_two_tone(env_effect_mode((uint8_t)fx)))
+            snprintf(b, sizeof b, "+%u", (unsigned)((rec[PR_SPEED] * 360u) / 256u));
+        else
+            snprintf(b, sizeof b, "%u%%", (unsigned)((rec[PR_SPEED] * 100u + 127u) / 255u));
+        size_t vn = strlen(b);
+        memcpy(out + 20 - vn, b, vn);
+        const char *name = fx >= 0 ? env_effect_name((uint8_t)fx) : "Unknown effect";
+        n = strlen(name);
+        if (n > 20u - 2u - vn - 1u) n = 20u - 2u - vn - 1u;
+        memcpy(out + 2, name, n);
+    } else if (line == 1u) {
+        if (!(rec[PR_FIELDS] & PF_LIGHTING)) return;
+        snprintf(b, sizeof b, "H:%u S:%u%% B:%u%%", (unsigned)((rec[PR_HUE] * 360u) / 256u),
+                 (unsigned)((rec[PR_SAT] * 100u + 127u) / 255u), (unsigned)((rec[PR_VAL] * 100u + 127u) / 255u));
+        n = strlen(b);
+        memcpy(out + (n <= 18u ? 2u : 20u - n), b, n);   /* under the effect's name; all three at 100% need 19 */
+    } else {
+        memcpy(out, icon_of(N_SCREEN), 2);
+        if (rec[PR_FIELDS] & PF_LCD) fmt_value(N_SCREEN, rec[PR_LCD], b, sizeof b);
+        else snprintf(b, sizeof b, "--");
+        memcpy(out + 2, b, strlen(b));
+        memcpy(out + 8, icon_of(N_CLOCK), 2);
+        const char *c = rec[PR_FIELDS] & PF_CLOCK ? clock_short_by_enum[rec[PR_CLOCK] % CLOCK_ROWS] : "--";
+        memcpy(out + 10, c, strlen(c));
+    }
 }
 
 /* The row's 20 cells. */
@@ -662,6 +800,10 @@ static void row_text(const row_t *x, char *out) {
         memcpy(out, buf, n > 20 ? 20 : n);
         return;
     }
+    if (x->kind == RK_PNOTE) {
+        prof_summary((uint8_t)(x->node - N_PSLOT0), x->line, out);
+        return;
+    }
     if (x->kind == RK_VALUE) {
         size_t      at   = 0;
         const char *icon = icon_of(x->node);   /* the top level's Screen */
@@ -679,9 +821,11 @@ static void row_text(const row_t *x, char *out) {
         return;
     }
     if (x->kind != RK_ITEM) return;
+    char        nm[PROF_NAME + 1];
     const char *label = x->node == N_EFFOPT   ? env_effect_name(x->val)
                       : x->node == N_LTSOPT   ? (x->val ? "On" : "Off")
                       : x->node == N_PAIRNOW  ? pair_labels[x->val % 3u]
+                      : is_pslot(x->node)     ? pslot_label(x->node, nm)   /* P5b */
                                               : label_of(x->node);
     const char *value = "";
     if (x->node == N_POWER) value = power_short[x->val & 3u];
@@ -691,6 +835,8 @@ static void row_text(const row_t *x, char *out) {
     else if (x->node == N_CONN) value = link_names[x->val % 5u];          /* P3 */
     else if (x->node >= N_BT0 && x->node <= N_BT2) value = link_words[x->val % 5u];
     else if (x->node == N_BV0 || x->node == N_BV1) value = batt_preview(x->node == N_BV1, buf);   /* P4 */
+    else if (x->node == N_PROFILES) value = prof_value(x, buf);           /* P5b */
+    else if (is_pslot(x->node)) value = x->val ? MT_TRI_R : "empty";      /* a saved slot opens its page */
     else if (x->node == N_DIAG || x->node == N_HELP || x->node == N_ABOUT || x->node == N_HEALTH ||
              x->node == N_CAMERA || x->node == N_RESET || is_topic(x->node) || x->node == N_LIGHT || x->node == N_BOOT ||
              x->node == N_IND)
@@ -825,9 +971,15 @@ static uint16_t row_sig(const row_t *x) {
     }
     if (x->kind == RK_ITEM && clk_row(x->node) >= 0 && clk_row(x->node) < 5) return clock_sig(x, (uint8_t)clk_row(x->node));
     switch (x->kind) {
-        case RK_ITEM:
+        case RK_ITEM:   /* bit 2: P5b's `*` (line, 0 on every other item) */
             return (uint16_t)((1u << 14) | ((uint16_t)x->node << 8) | ((uint16_t)(x->val & 15u) << 4) |
-                              (x->bullet ? 2u : 0u) | (x->lit ? 1u : 0u));
+                              ((uint16_t)(x->line & 1u) << 2) | (x->bullet ? 2u : 0u) | (x->lit ? 1u : 0u));
+        case RK_PNOTE: {   /* P5b: 0xC800 | line << 9 | the record's crc << 1 (equal crc, equal text); 0xCE00 | line << 1
+                            * empty. Bit 0 stays clear: a row's bit 0 is its lit bit, which the scheduler reads */
+            uint8_t rec[PROF_REC];
+            if (!prof_slot((uint8_t)(x->node - N_PSLOT0), rec)) return (uint16_t)(0xCE00u | ((uint16_t)x->line << 1));
+            return (uint16_t)(0xC800u | ((uint16_t)(x->line & 3u) << 9) | ((uint16_t)rec[PR_CRC] << 1));
+        }
         case RK_TEXT:
             return (uint16_t)((2u << 14) | ((uint16_t)(x->node - N_TOPIC0) << 11) | ((uint16_t)x->line << 5));
         case RK_ABOUT:
@@ -965,7 +1117,15 @@ static ms_paint_t l_paint(uint8_t s, uint8_t c, uint8_t p) {
     if (s == S_TITLE) {
         memset(cells, ' ', 20);
         cells[20]      = '\0';
+        char        nm[PROF_NAME + 1];
         const char *ic = title_icon(title_id), *tt = title_text(title_id);
+        if (title_id >= T_PSLOT0 && title_id < T_PSLOT0 + PROF_SLOTS) {   /* P5b: a slot's page, its name */
+            uint8_t rec[PROF_REC], s = (uint8_t)(title_id - T_PSLOT0);
+            if (!prof_slot(s, rec)) rec[PR_FIELDS] = 0;
+            prof_name(s, rec, nm);
+            ic = icon_of(N_PROFILES);
+            tt = nm;
+        }
         size_t      ni = strlen(ic), n = strlen(tt);
         memcpy(cells, ic, ni);
         memcpy(cells + ni, tt, n > 20 - ni ? 20 - ni : n);
@@ -976,6 +1136,7 @@ static ms_paint_t l_paint(uint8_t s, uint8_t c, uint8_t p) {
     uint16_t fg = x.kind != RK_ITEM && x.kind != RK_VALUE ? pal[MP_WHITE]   /* a page's text, About's lines */
                 : x.lit              ? pal[MP_LIT]
                 : (x.node == N_BACK || x.node == N_EXIT) ? pal[MP_LEAVE]
+                : is_pslot(x.node) && !x.val ? pal[MP_GREY]   /* P5b: an empty slot, greyed */
                                      : pal[MP_DIM];
     /* The cursor (JD, 10-24): in the lit row's lead, in its own colour. */
     return text_piece(cells, (uint16_t)(ROW_Y0 + (s - S_ROW0) * ROW_H), true, x.lit ? (uint8_t)MT_CURSOR[0] : 0u,
@@ -1026,11 +1187,29 @@ static void pair_line(uint8_t slot, uint8_t phase, uint8_t i, char *out, size_t 
     else if (phase == PP_OPEN) snprintf(out, sz, "AK820 5.1-%u", (unsigned)(slot + 1u));
     else snprintf(out, sz, "Bluetooth %u%s", (unsigned)(slot + 1u), phase == PP_DONE ? " is" : "");
 }
+/* P5b's confirms, the slot's name in the question (the words wait for JD's
+ * text pass). "Replace " or "Delete " and "?" leave 12 for the name. */
+static void pconfirm_line(uint8_t node, uint8_t slot, uint8_t i, char *out, size_t sz) {
+    static const char *const tail[2][3] = {{"with these settings?", "Click: replace", "Hold: cancel"},
+                                           {"", "Click: delete", "Hold: cancel"}};
+    const bool del = node == N_PDELETE;
+    if (i) {
+        snprintf(out, sz, "%s", tail[del][(i - 1u) % 3u]);
+        return;
+    }
+    char    nm[PROF_NAME + 1];
+    uint8_t rec[PROF_REC];
+    if (!prof_slot(slot, rec)) rec[PR_FIELDS] = 0;
+    prof_name(slot, rec, nm);
+    snprintf(out, sz, del ? "Delete %s?" : "Replace %s", nm);
+}
 static uint16_t c_sig(uint8_t s) {
     if (s == 0) return title_id;
     if (s == 1) return 1;
     uint8_t n = cur()->node;
     if (n == N_CONNINFO) return (uint16_t)(0x8000u | (uint16_t)(s - 2u));
+    if (n == N_PSAVE || n == N_PDELETE)   /* P5b: the slot's (its name repaints at the layout change) */
+        return (uint16_t)((n == N_PSAVE ? 0x300u : 0x400u) | ((uint16_t)cur()->cursor << 4) | (uint16_t)(s - 2u));
     if (n == N_PAIRING) {
         uint8_t slot = cur()->cursor;
         return (uint16_t)(0xA000u | ((uint16_t)slot << 8) | ((uint16_t)pair_phase(slot) << 4) | (uint16_t)(s - 2u));
@@ -1047,6 +1226,7 @@ static ms_paint_t c_paint(uint8_t s, uint8_t c, uint8_t p) {
     cells[20] = '\0';
     if (node == N_CONNINFO) snprintf(buf, sizeof buf, "%s", info_lines[i]);
     else if (node == N_PAIRING) pair_line(cur()->cursor, pair_phase(cur()->cursor), i, buf, sizeof buf);
+    else if (node == N_PSAVE || node == N_PDELETE) pconfirm_line(node, cur()->cursor, i, buf, sizeof buf);
     else snprintf(buf, sizeof buf, "%s", (node == N_BOOT ? boot_lines : c_lines)[confirm_page & 1u][i]);
     size_t n = strlen(buf);
     memcpy(cells, buf, n > 20 ? 20 : n);
@@ -1235,7 +1415,7 @@ static bool sync_model(void);
 static uint32_t last_idle;   /* menu_tick's latest idle time, for retitle() between ticks */
 
 static void push(uint8_t node, uint8_t cursor) {
-    if (depth >= 3) return;   /* the tree is three deep at most */
+    if (depth >= sizeof stack / sizeof stack[0]) return;   /* four deep at most: P5b's confirms */
     stack[depth++] = (frame_t){node, cursor, (uint8_t)(cursor / MENU_ROWS * MENU_ROWS)};
 }
 static void flash(uint8_t id, uint32_t now) {
@@ -1308,6 +1488,23 @@ static menu_result_t pop(uint32_t now) {
     } else
         show(false, is_confirm(from), now);
     return MENU_NONE;
+}
+
+/* P5b: a profile action's outcome, as the title's flash. */
+static void prof_outcome(uint8_t st, uint8_t ok, uint32_t now) {
+    flash(st == PROF_OK                  ? ok
+          : st == PROF_OK_EFFECT_SKIPPED ? T_LOADED_NOFX
+          : st == PROF_BUSY              ? T_PBUSY
+                                         : T_SAVE_FAILED,
+          now);
+}
+/* A page that shows names, which the rows' signatures don't carry: entered,
+ * those slots repaint whatever their signature, as About's do. */
+static void enter_named(uint8_t first, uint8_t n, uint32_t now) {
+    retitle(now);
+    ms_invalidate_rows(S_TITLE, 1);
+    ms_invalidate_rows(first, n);
+    ms_retarget();
 }
 
 /* P1b: an editor opens on its field's edit, its own layout. */
@@ -1453,6 +1650,53 @@ static menu_result_t activate(uint32_t now) {
         case N_ABOUT:
             open_about(now);
             return MENU_NONE;
+        case N_PROFILES: {   /* P5b: the cursor on the active slot; not while a host restore is open */
+            if (prof_restore_open()) {
+                flash(T_PBUSY, now);
+                retitle(now);
+                ms_retarget();
+                return MENU_NONE;
+            }
+            uint8_t a = prof_active();
+            push(N_PROFILES, (uint8_t)(1u + (a < PROF_SLOTS ? a : 0u)));
+            enter_named(S_ROW0 + 1u, PROF_SLOTS, now);
+            return MENU_NONE;
+        }
+        case N_PSLOT0:
+        case N_PSLOT1:
+        case N_PSLOT2:
+        case N_PSLOT3: {
+            uint8_t rec[PROF_REC], s = (uint8_t)(node - N_PSLOT0);
+            if (prof_slot(s, rec)) {   /* a saved slot: its page, on Load */
+                push(node, 1);
+                enter_named(S_ROW0 + PSUM_ROW0, PSUM_LINES, now);
+                return MENU_NONE;
+            }
+            /* An empty one saves at once, as Profile n, and becomes the
+             * active one; this page stays, the check moving (Decided 3). */
+            prof_outcome(prof_save(s, NULL), T_SAVED, now);
+            retitle(now);
+            ms_retarget();
+            return MENU_NONE;
+        }
+        case N_PLOAD: {   /* commits like a choice: back to Profiles, where the check moves */
+            uint8_t st = prof_load((uint8_t)(f->node - N_PSLOT0));
+            if (st == PROF_OK || st == PROF_OK_EFFECT_SKIPPED) {
+                model_clock = env_clock_mode();   /* the latched model, as a choice's commit sets it */
+                prof_outcome(st, T_LOADED, now);
+                return pop(now);
+            }
+            if (st == PROF_INVALID) return pop(now);   /* emptied meanwhile (the host's) */
+            prof_outcome(st, T_LOADED, now);
+            retitle(now);
+            ms_retarget();
+            return MENU_NONE;
+        }
+        case N_PSAVE:
+        case N_PDELETE:   /* overwriting and deleting ask first (Decided 5) */
+            push(node, (uint8_t)(f->node - N_PSLOT0));
+            show(true, false, now);
+            return MENU_NONE;
         case N_EXIT:
             return MENU_CLOSE;
         case N_HEALTH: return MENU_DIAG_HEALTH;
@@ -1483,6 +1727,24 @@ static bool sync_model(void) {
     model_link  = l;
     model_pf    = f;
     return true;
+}
+
+/* P5b: a confirm's click. Save: back to the slot's page, its summary the
+ * new record's. Delete: back past the slot's page to Profiles. Refused (a
+ * recovery; a write failed): back to the slot's page, saying so. */
+static menu_result_t pconfirm_click(uint32_t now) {
+    frame_t *f = cur();
+    if (f->node == N_PSAVE) {
+        prof_outcome(prof_save(f->cursor, NULL), T_SAVED, now);
+        return pop(now);
+    }
+    uint8_t st = prof_delete(f->cursor);
+    prof_outcome(st, T_DELETED, now);
+    if (st != PROF_OK) return pop(now);
+    depth = (uint8_t)(depth - 2u);   /* the confirm and the slot's page */
+    retitle(now);
+    ms_set_layout(&L_LIST, false);
+    return MENU_NONE;
 }
 
 /* P3: leaving the Pairing page, a click or a hold: while it's starting,
@@ -1565,11 +1827,13 @@ menu_result_t menu_input(int8_t turns, mi_latch_t latch, uint32_t now) {
             return pop(now);
         }
         if (f->node == N_PAIRING) return pair_leave(now);
+        if (f->node == N_PSAVE || f->node == N_PDELETE) return pconfirm_click(now);   /* P5b */
         return pop(now);   /* a topic, About, Connection off BT: back */
     }
     if (latch == MI_LATCH_BACK) {   /* pop() cancels an editor's or a previewing choice's edit */
         if (f->node == N_PAIRING) return pair_leave(now);   /* the same as a click (the mockup's "Click or hold: stop") */
-        if (is_choice(f->node) || is_editor(f->node) || ((f->node == N_RESET || f->node == N_BOOT) && confirm_page == 0))
+        if (is_choice(f->node) || is_editor(f->node) || ((f->node == N_RESET || f->node == N_BOOT) && confirm_page == 0) ||
+            f->node == N_PSAVE || f->node == N_PDELETE)
             flash(T_CANCELLED, now);
         return pop(now);
     }
@@ -1602,13 +1866,21 @@ void menu_tick(uint32_t now, uint32_t idle_ms) {
         moved = false;
     } else if (pend)
         moved = true;
+    /* P5b: the host wrote the block (a restore, the dev hooks): the names
+     * repaint, which the rows' signatures don't carry. Here, outside the
+     * scheduler's scans, as the Clock's jump below. */
+    if (prof_take_changed()) ms_invalidate_all();
     /* P3: the Connection screens follow the slider. Its BT screens off BT, or
      * the off-BT page on BT: back to the top level, the cursor on Connection,
-     * whose value shows the new link. */
-    uint8_t n = cur()->node;
-    if ((is_bt_screen(n) && !on_bt()) || (n == N_CONNINFO && on_bt())) {
+     * whose value shows the new link. P5b: a host restore pops the profile
+     * pages the same way, the cursor on Profiles (their writes would be
+     * refused). */
+    uint8_t n = cur()->node, row = N_NONE;
+    if ((is_bt_screen(n) && !on_bt()) || (n == N_CONNINFO && on_bt())) row = N_CONN;
+    else if (is_prof_screen(n) && prof_restore_open()) row = N_PROFILES;
+    if (row != N_NONE) {
         depth           = 1;
-        stack[0].cursor = row_index(N_TOP, N_CONN);
+        stack[0].cursor = row_index(N_TOP, row);
         stack[0].top    = (uint8_t)(stack[0].cursor / MENU_ROWS * MENU_ROWS);
         retitle(now);
         if (is_confirm(n)) ms_set_layout(&L_LIST, false);
@@ -1649,6 +1921,7 @@ uint8_t menu_cursor(void) {
     if (is_topic(f->node)) return f->top;
     if (f->node == N_PAIRING) return (uint8_t)(f->cursor << 4 | pair_phase(f->cursor));   /* P3: the slot and the phase */
     if (f->node == N_CONNINFO) return 0;   /* one page: not Reset's or Bootloader's confirm_page (codex) */
+    if (f->node == N_PSAVE || f->node == N_PDELETE) return f->cursor;   /* P5b: the slot */
     if (is_confirm(f->node)) return confirm_page;
     if (is_editor(f->node)) return me_value();   /* P1b: an editor's value */
     return f->cursor;

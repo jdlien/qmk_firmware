@@ -74,6 +74,7 @@ void kb_eeconfig_set_batt_hours(bool hours);
 /* A change is waiting for its deferred flash write (a sleep's precondition). */
 bool kb_eeconfig_write_pending(void);
 void kb_eeconfig_flush(void);   /* a pending write now (HC_PROFILES' sub 6), not inside a recovery */
+void kb_eeconfig_touch(void);   /* the settle restarted, nothing changed: the profiles' active slot waits on it (P5b) */
 #ifdef WDT_TEST_HOOKS
 /* Force a real, immediate flash program (for the reset-during-write test). */
 void kb_eeconfig_test_write(void);

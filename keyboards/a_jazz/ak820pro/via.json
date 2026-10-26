@@ -291,6 +291,16 @@
       "name": "PWR_MODE",
       "title": "Power mode: Always on / Balanced / Power saver / Lights out",
       "shortName": "Power"
+    },
+    {
+      "name": "PROF_NXT",
+      "title": "Next settings profile",
+      "shortName": "Prof+"
+    },
+    {
+      "name": "PROF_PRV",
+      "title": "Previous settings profile",
+      "shortName": "Prof-"
     }
   ]
 }

@@ -3,8 +3,9 @@
 //
 // Settings profiles (plans/SETTINGS-PROFILES-PLAN.md): four slots of the
 // menu's settings in the top 110 B of the emulated EEPROM, and HC_PROFILES,
-// the host's backup and restore. P5a: the store and the command; the menu's
-// pages are P5b's, Rename P5c's. Everything it touches goes through
+// the host's backup and restore. P5a: the store and the command; P5b: what
+// the menu's pages (menu.c) and the Next and Previous keys need; Rename is
+// P5c's. Everything it touches goes through
 // menu_env.h, so the host tests run it on their fakes.
 #pragma once
 
@@ -51,8 +52,13 @@ enum {
 uint8_t prof_crc8(const uint8_t *p, uint8_t n);
 bool    prof_rec_valid(const uint8_t *rec);         /* state 0x01, the crc, every present field in range */
 bool    prof_formatted(void);
-uint8_t prof_active(void);                          /* 0-3; 0xFF none, or the slot isn't valid */
+uint8_t prof_active(void);                          /* 0-3; 0xFF none, or the slot isn't valid. A pending choice counts */
+uint8_t prof_active_rec(uint8_t *rec);              /* the same, its record in rec (PROF_REC) when valid */
 bool    prof_slot(uint8_t slot, uint8_t *rec);      /* the slot's record; true when valid */
+void    prof_name(uint8_t slot, const uint8_t *rec, char *out);   /* PROF_NAME + 1: the name, or "Profile n" */
+bool    prof_differs(const uint8_t *rec);           /* the live settings differ in a field it holds: the menu's `*` */
+uint8_t prof_step(bool next, uint8_t *slot);        /* the Next or Previous key's load; PROF_INVALID: none saved */
+bool    prof_take_changed(void);                    /* the host wrote the block since the last call: the menu repaints */
 void    prof_capture(uint8_t *rec, uint8_t fields); /* the live settings as a record, state and crc set */
 uint8_t prof_apply(const uint8_t *rec, bool live);  /* PROF_OK, or PROF_OK_EFFECT_SKIPPED; the power mode only `live` */
 uint8_t prof_save(uint8_t slot, bool *consolidated);   /* the live settings, keeping a valid slot's name; it becomes active */
@@ -60,7 +66,7 @@ uint8_t prof_delete(uint8_t slot);
 uint8_t prof_load(uint8_t slot);
 bool    prof_restore_open(void);                    /* an HC_PROFILES restore: the menu's writes wait */
 bool    prof_write_failed(void);                    /* a write failed: none more until a reboot (profiles.c) */
-void    prof_tick(void);                            /* 10 Hz: a restore's 5 s without a page aborts it */
+void    prof_tick(void);                            /* 10 Hz: a restore's 5 s without a page aborts it; the active slot's write */
 
 /* HC_PROFILES (0x10 on the health channel), the whole 32 B report in place;
  * false for an unknown sub. Its framing is in profiles.c. */
