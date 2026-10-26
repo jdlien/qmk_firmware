@@ -59,6 +59,7 @@ uint8_t prof_save(uint8_t slot, bool *consolidated);   /* the live settings, kee
 uint8_t prof_delete(uint8_t slot);
 uint8_t prof_load(uint8_t slot);
 bool    prof_restore_open(void);                    /* an HC_PROFILES restore: the menu's writes wait */
+bool    prof_write_failed(void);                    /* a write failed: none more until a reboot (profiles.c) */
 void    prof_tick(void);                            /* 10 Hz: a restore's 5 s without a page aborts it */
 
 /* HC_PROFILES (0x10 on the health channel), the whole 32 B report in place;

@@ -17,7 +17,8 @@
  * The second field is the effect's STABLE id (P5a, the settings profiles):
  * a profile stores it, since QMK's mode numbers move when an effect is
  * enabled or disabled. Append-only, never renumbered or reused, and 0 is
- * RGB_MATRIX_NONE's; scripts/check_effect_ids.py guards it. */
+ * never assigned (QMK clamps mode 0 to 1, so a load skips an id of 0);
+ * scripts/check_effect_ids.py guards it. */
 const rgb_effect_t rgb_effects[] = {
 #ifdef ENABLE_RGB_MATRIX_SOLID_COLOR
     {RGB_MATRIX_SOLID_COLOR, 1, "Solid"},

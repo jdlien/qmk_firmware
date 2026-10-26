@@ -16,11 +16,18 @@
 #define PROF_BVIEW_HOURS   2u   /* KB_BATT_VIEW_HOURS */
 
 /* A restore's transaction (3 B): the host's token; the pages received (bits
- * 0-4) and the open bit; a countdown in 10 Hz ticks, 5 s without a page
- * aborting it. */
-#define TX_OPEN  0x80u
-#define TX_PAGES 0x1Fu
-#define TX_TICKS 50u
+ * 0-4), the open bit, and the write-failure latch; a countdown in 10 Hz
+ * ticks, 5 s without a page aborting it.
+ * The latch (codex, P5a's review): wear_leveling_write() updates its RAM
+ * cache BEFORE it programs the flash, so after a failed write the cache
+ * holds bytes the flash may not. A retry of the same bytes would then be
+ * skipped as unchanged and commit a slot whose body never landed. So the
+ * first failure refuses every later profile write until a reboot reloads
+ * the cache from the flash, which then shows the truth. Aborts keep it. */
+#define TX_OPEN   0x80u
+#define TX_FAILED 0x40u
+#define TX_PAGES  0x1Fu
+#define TX_TICKS  50u
 static uint8_t tx_token, tx_state, tx_left;
 
 /* CRC-8, polynomial 0x07, initial 0xFF, MSB first (hostagent/ak820profiles.py
@@ -72,8 +79,10 @@ static uint8_t rd8(uint8_t off) {
 }
 /* One write of exactly those bytes: false when it failed. */
 static bool wr(uint8_t off, const void *src, uint8_t n, bool *consolidated) {
+    if (tx_state & TX_FAILED) return false;
     uint8_t s = env_prof_write((uint16_t)(PROF_BASE + off), src, n);
     if (s == ENV_WR_CONSOLIDATED) *consolidated = true;
+    if (s == ENV_WR_FAILED) tx_state |= TX_FAILED;
     return s != ENV_WR_FAILED;
 }
 static bool wr8(uint8_t off, uint8_t v, bool *consolidated) { return wr(off, &v, 1, consolidated); }
@@ -106,21 +115,25 @@ static bool format(bool *consolidated) {
 /* Never inside a deep sleep's recovery (a menu can be open in its first
  * passes: sleep.c's wake releases the display first), nor while a restore
  * is open. */
-static uint8_t writable(void) { return env_recovering() || prof_restore_open() ? PROF_BUSY : PROF_OK; }
+static uint8_t writable(void) {
+    if (tx_state & TX_FAILED) return PROF_WRITE_FAILED;
+    return env_recovering() || prof_restore_open() ? PROF_BUSY : PROF_OK;
+}
+
+bool prof_write_failed(void) { return (tx_state & TX_FAILED) != 0u; }
 
 /* --- The effect's stable id (rgb_effects.c, append-only) ---------------------- */
 
+/* Id 0 is reserved, never assigned: QMK clamps mode 0 (RGB_MATRIX_NONE)
+ * to 1 (codex), so it can't be set, and a record holding 0 loads without
+ * its effect, as an unknown id does. */
 static uint8_t effect_id_of(uint8_t mode) {
-    if (mode == 0u) return 0u;   /* RGB_MATRIX_NONE */
     for (uint8_t i = 0; i < env_effects(); i++)
         if (env_effect_mode(i) == mode) return env_effect_id(i);
     return 0xFFu;   /* a mode the table doesn't name: a load skips it */
 }
 static bool mode_of_id(uint8_t id, uint8_t *mode) {
-    if (id == 0u) {
-        *mode = 0u;
-        return true;
-    }
+    if (id == 0u) return false;
     for (uint8_t i = 0; i < env_effects(); i++)
         if (env_effect_id(i) == id) {
             *mode = env_effect_mode(i);
@@ -226,9 +239,16 @@ uint8_t prof_load(uint8_t slot) {
 
 bool prof_restore_open(void) { return (tx_state & TX_OPEN) != 0u; }
 
+/* A restore's end: closed, its pages forgotten, the failure latch kept. */
+static void tx_close(void) { tx_state &= TX_FAILED; }
+
 void prof_tick(void) {
-    if (prof_restore_open() && --tx_left == 0u) tx_state = 0u;   /* aborted: the block stays unformatted */
+    if (prof_restore_open() && --tx_left == 0u) tx_close();   /* aborted: the block stays unformatted */
 }
+
+#ifdef MENU_HOST_TEST
+void prof_test_reset(void) { tx_token = tx_state = tx_left = 0u; }
+#endif
 
 /* An open edit's preview back first, as VIA's lighting reads do
  * (hid_protocol.c's via_command_kb()): a backup never holds one, an apply
@@ -291,7 +311,11 @@ bool prof_hid(uint8_t *d) {
             rd((uint8_t)(p * PROF_PAGE), &d[6], page_len(p));
             return true;
         case 1:
-            tx_state = 0u;
+            tx_close();
+            if (tx_state & TX_FAILED) {
+                d[6] = PROF_WRITE_FAILED;
+                return true;
+            }
             if (env_recovering()) {
                 d[6] = PROF_BUSY;
                 return true;
@@ -301,7 +325,7 @@ bool prof_hid(uint8_t *d) {
                 return true;
             }
             tx_token = d[5];
-            tx_state = TX_OPEN;
+            tx_state = TX_OPEN;   /* the latch is clear here */
             tx_left  = TX_TICKS;
             d[6]     = PROF_OK;
             return true;
@@ -316,8 +340,8 @@ bool prof_hid(uint8_t *d) {
             }
             uint8_t skip = p == 0u ? 1u : 0u;   /* the magic: the firmware writes it, at the commit */
             if (!wr((uint8_t)(p * PROF_PAGE + skip), &d[6 + skip], (uint8_t)(page_len(p) - skip), &c)) {
-                tx_state = 0u;
-                d[6]     = PROF_WRITE_FAILED;
+                tx_close();
+                d[6] = PROF_WRITE_FAILED;
                 return true;
             }
             tx_state |= (uint8_t)(1u << p);
@@ -334,8 +358,8 @@ bool prof_hid(uint8_t *d) {
                 d[6] = PROF_BUSY;
                 return true;
             }
-            d[6]     = commit();
-            tx_state = 0u;
+            d[6] = commit();
+            tx_close();
             return true;
         case 4:
             cancel_previews();
