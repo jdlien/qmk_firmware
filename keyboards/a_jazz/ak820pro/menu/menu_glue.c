@@ -384,6 +384,11 @@ bool env_keys_idle(void) {
 void env_clear_oneshots(void) {
 #ifndef NO_ACTION_ONESHOT
     clear_oneshot_mods();
+    /* A one-shot layer's layer too (codex, P5c's review): reset_oneshot_layer()
+     * clears only its bookkeeping, leaving the layer on (an armed OSL(Fn)
+     * would make an Esc after Rename the bootloader's). Every fulfilment bit
+     * cleared turns it off. */
+    if (is_oneshot_layer_active()) clear_oneshot_layer_state(ONESHOT_START | ONESHOT_TOGGLED);
     reset_oneshot_layer();
 #endif
 }

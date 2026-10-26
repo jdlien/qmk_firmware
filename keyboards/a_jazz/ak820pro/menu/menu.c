@@ -672,7 +672,7 @@ void menu_rename_task(bool showing, uint32_t now) {
         st = st == RN_CAPTURE ? RN_DRAIN : RN_OFF;   /* WAIT took nothing, so nothing to drain */
         rn &= (uint8_t)~(RN_ENTER | RN_ESC | RN_EDITED);
     }
-    if (st == RN_WAIT && env_keys_idle()) {
+    if ((st == RN_WAIT || (st == RN_DRAIN && on_page)) && env_keys_idle()) {   /* a DRAIN under a reopened page */
         env_clear_oneshots();
         st = RN_CAPTURE;
     } else if (st == RN_DRAIN && env_keys_idle()) {
@@ -1989,10 +1989,11 @@ static void rename_open(uint8_t slot, uint32_t now) {
     uint8_t rec[PROF_REC];
     memset(pg.name, 0, sizeof pg.name);
     if (prof_slot(slot, rec) && (rec[PR_FIELDS] & PF_NAME)) memcpy(pg.name, &rec[PR_NAME], PROF_NAME);
-    /* WAIT, from off or from a DRAIN still running (a key held since the last
-     * Rename): it waits for the same quiet, letting that key's release go on
-     * to QMK, which for a press it never saw does nothing. */
-    rn = RN_WAIT;
+    /* WAIT, from off; a DRAIN still running (a key held since the last
+     * Rename) runs on, swallowing that key's release, and the capture starts
+     * when it ends (codex, P5c's review: a release can act, VIA's RM_* keys
+     * on theirs). */
+    rn = (rn & RN_STATE) == RN_DRAIN ? RN_DRAIN : RN_WAIT;
     push(N_PRENAME, slot);
     show(true, false, now);
 }
@@ -2156,8 +2157,12 @@ void menu_tick(uint32_t now, uint32_t idle_ms) {
             else if (k & RN_ESC) {
                 flash(T_CANCELLED, now);
                 (void)pop(now);
-            } else
-                moved = true;   /* the name's line repaints (its signature) */
+            } else {
+                /* The name's line repaints: its signature's hash can repeat
+                 * ("cd", "da"), so it's invalidated too (codex). */
+                ms_invalidate_rows(2, 1);
+                moved = true;
+            }
         }
     }
     if (pend && pv < PROF_SLOTS && me_field() != ME_PROFILE) {
