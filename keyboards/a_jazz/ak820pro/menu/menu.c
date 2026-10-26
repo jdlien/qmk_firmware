@@ -1907,7 +1907,11 @@ menu_result_t menu_input(int8_t turns, mi_latch_t latch, uint32_t now) {
     bool changed = sync_model();
     last_idle    = 0;
     pfs_flags   |= PFS_STALE;   /* P5b: a click may write a slot; the store is read afresh */
-    if (pv == PV_HELD) pv = PV_LIVE;   /* P5e: the knob moved: the rest previews again */
+    /* P5e: the knob moved: the rest previews again. And an external change
+     * menu_tick() hasn't taken yet (input runs first in a pass) while pv
+     * names a slot with no preview open: that slot may no longer show, so
+     * a click on it must preview it (codex's verify). */
+    if (pv == PV_HELD || (pv < PROF_SLOTS && me_field() != ME_PROFILE && me_pending())) pv = PV_LIVE;
     /* An editor or a previewing choice whose edit an external write has
      * already rolled back takes no more input: menu_tick() pops it with
      * "Cancelled" (codex, P1b's code review: a click queued behind the write

@@ -166,6 +166,8 @@ uint8_t me_take_pending(void) {
     return p;
 }
 
+uint8_t me_pending(void) { return pending; }
+
 uint16_t me_external_count(void) { return ext_count; }
 
 bool menu_edit_rgb_open(void) { return is_rgb(ed.field); }

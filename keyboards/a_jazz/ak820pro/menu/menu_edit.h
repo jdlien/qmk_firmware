@@ -57,6 +57,7 @@ void menu_edit_rollback(void);
  * an open edit of that domain, and marks the change for menu_tick(). */
 void    menu_edit_external(uint8_t domain);
 uint8_t me_take_pending(void);        /* ME_PEND_* since the last take; clears them */
+uint8_t me_pending(void);             /* P5e: the same, not cleared (menu_input() runs before menu_tick()) */
 uint16_t me_external_count(void);     /* op 27 sub 5's count of external writes that cancelled an edit */
 
 /* The board's flush hold: an RGB edit is open (its preview must not reach
