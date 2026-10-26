@@ -21,6 +21,11 @@
 #include "rgb_effects.h"
 #include "indicators.h"
 #include "indicator_levels.h"
+#include "sleep.h"
+#include "profiles.h"
+#include "eeprom.h"
+#include "wear_leveling.h"
+#include "wear_leveling_efl_config.h"   /* WEAR_LEVELING_LOGICAL_SIZE, eeprom.h's TOTAL_EEPROM_BYTE_COUNT */
 
 /* --- menu_backend.h ------------------------------------------------------------ */
 
@@ -117,6 +122,7 @@ uint8_t     env_ind_forced(void) { return indicator_forced(); }
 uint8_t     env_effects(void) { return rgb_effects_n; }
 uint8_t     env_effect_mode(uint8_t i) { return i < rgb_effects_n ? rgb_effects[i].mode : 0; }
 const char *env_effect_name(uint8_t i) { return i < rgb_effects_n ? rgb_effects[i].name : ""; }
+uint8_t     env_effect_id(uint8_t i) { return i < rgb_effects_n ? rgb_effects[i].id : 0xFFu; }
 /* The bootloader item: the raw-HID jump's preparation (hid_protocol.c,
  * HC_BOOTLOADER; codex on the item: over BT clear_keyboard()'s releases are
  * frames the main loop pumps, so pump them and see them ACKed, or a key stays
@@ -137,6 +143,30 @@ bool env_bootloader(void) {
 /* flash.sh's rule exactly: on battery AND the RGB cut fired (the cut stays
  * latched a few seconds after power arrives). */
 bool env_reserve(void) { return battery_on_battery() && power_lights_cut(); }
+
+/* P5a, the settings profiles (menu/profiles.c). The block is the EEPROM's top
+ * 110 B, and the dynamic keymap's macros end below it (config.h). Its writes
+ * call wear_leveling_write() for the status QMK's EEPROM wrapper discards;
+ * they skip eeprom_wear_leveling_write_hook(), so flash_stats counts them as
+ * FW_OTHER's, which they are. The ranges profiles.c checks a record against
+ * are the firmware's own. */
+_Static_assert(PROF_BASE + PROF_BLOCK_SIZE == TOTAL_EEPROM_BYTE_COUNT, "the profile block is the EEPROM's top 110 B");
+_Static_assert(DYNAMIC_KEYMAP_EEPROM_MAX_ADDR == PROF_BASE - 1, "the macros end just below the profile block");
+_Static_assert(DISPLAY_CLOCK_MODE_COUNT == 6 && POWER_MODE_COUNT == 4 && KB_BATT_VIEW_PERCENT == 1 && KB_BATT_VIEW_HOURS == 2,
+               "profiles.c's ranges");
+void env_prof_read(uint16_t addr, void *dst, uint8_t n) { eeprom_read_block(dst, (const void *)(uintptr_t)addr, n); }
+uint8_t env_prof_write(uint16_t addr, const void *src, uint8_t n) {
+    switch (wear_leveling_write(addr, src, n)) {
+        case WEAR_LEVELING_SUCCESS:      return ENV_WR_OK;
+        case WEAR_LEVELING_CONSOLIDATED: return ENV_WR_CONSOLIDATED;
+        default:                         return ENV_WR_FAILED;
+    }
+}
+bool env_recovering(void) { return sleep_recovering(); }
+void env_settings_flush(void) {
+    kb_eeconfig_flush();
+    eeconfig_force_flush_rgb_matrix();
+}
 bool        env_effect_two_tone(uint8_t mode) {
 #ifdef ENABLE_RGB_MATRIX_ALPHAS_MODS
     return mode == RGB_MATRIX_ALPHAS_MODS;   /* alpha_mods_anim.h: hsv.h += speed */

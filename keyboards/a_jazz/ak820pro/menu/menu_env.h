@@ -65,6 +65,7 @@ void     env_ind_force(uint8_t which, bool on);
 uint8_t  env_ind_forced(void);                      /* the force bits, 1 << which (op 27 sub 14) */
 uint8_t  env_effects(void);                         /* rgb_effects_n */
 uint8_t  env_effect_mode(uint8_t i);
+uint8_t  env_effect_id(uint8_t i);                  /* P5a: rgb_effects[i]'s stable id, append-only (check_effect_ids.py) */
 const char *env_effect_name(uint8_t i);
 bool     env_effect_two_tone(uint8_t mode);         /* the mode uses speed as its second colour's hue offset (Alphas/Mods) */
 /* The bootloader item: Fn+Esc's path (the splash, 1.5 s, reset_keyboard());
@@ -72,6 +73,16 @@ bool     env_effect_two_tone(uint8_t mode);         /* the mode uses speed as it
  * rule: power_lights_cut()). */
 bool     env_bootloader(void);   /* false: a key's release couldn't be sent over the radio: not entered */
 bool     env_reserve(void);
+/* P5a's settings profiles (profiles.c): the block's bytes from the EEPROM's
+ * RAM cache, and a write through wear_leveling_write() itself, for its
+ * status (QMK's EEPROM wrapper discards it). Never while env_recovering():
+ * sleep_recovering(), the passes after a deep sleep's wake. The flush:
+ * kb_eeconfig's and the RGB config's deferred writes, now. */
+enum { ENV_WR_FAILED = 0, ENV_WR_OK = 1, ENV_WR_CONSOLIDATED = 2 };
+void     env_prof_read(uint16_t addr, void *dst, uint8_t n);
+uint8_t  env_prof_write(uint16_t addr, const void *src, uint8_t n);
+bool     env_recovering(void);
+void     env_settings_flush(void);
 #define  ENV_UNKNOWN 0xFFFFu
 typedef struct {
     uint32_t uptime_s;

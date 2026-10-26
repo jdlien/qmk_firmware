@@ -10,6 +10,7 @@
 
 typedef struct {
     uint8_t mode;       /* QMK's rgb_matrix mode */
+    uint8_t id;         /* the stable id a profile stores (P5a): append-only, see rgb_effects.c */
     char    name[12];   /* at most 11 characters: "Alphas/Mods" */
 } rgb_effect_t;
 

@@ -24,6 +24,7 @@
 #include "sleep.h"                    /* HC_DEVHOOK op 14, subs 3 and 4; op 24 */
 #include "overrun_diag.h"             /* HC_DEVHOOK ops 20-22 */
 #include "menu/menu_edit.h"           /* P1b: VIA and ops 4/5 as the edit's writers (C6) */
+#include "menu/profiles.h"            /* P5a: HC_PROFILES */
 #include "drivers/led/sn32f2xx.h"     /* scan-only, in sub 3's reply */
 #include "menu/menu_glue.h"           /* HC_DEVHOOK op 27 */
 
@@ -498,6 +499,11 @@ enum {
      * FULL u32 0.1 mWh, the band's lower and upper edges i16 pm (-1 none),
      * on battery u8] at [3..29]. HC_CONN is full, hence its own command. */
     HC_POWER       = 0x0F,
+    /* P5a, the settings profiles' backup and restore (menu/profiles.c, its
+     * framing there; plans/SETTINGS-PROFILES-PLAN.md): [.., .., HC_PROFILES,
+     * sub, ...]. Every build: flash.sh keeps the profiles and the live
+     * settings across a flash with it. An unknown sub answers unhandled. */
+    HC_PROFILES    = 0x10,
     /* Clock-sync status (PLAN.md 3.7): [.., .., HC_RTC, page] ->
      *   [.., .., HC_RTC, page, block...]
      * page 1 = the 21-byte RTC_GET_TIME[11..31] tail at [4..24];
@@ -904,6 +910,9 @@ static void health_command(uint8_t *data, uint8_t length) {
 #undef PUT16
 #undef PUT32
             }
+            break;
+        case HC_PROFILES:
+            if (length < 32 || !prof_hid(data)) data[0] = RTC_UNHANDLED;
             break;
         case HC_BATTCFG:
             if (length >= 32) {

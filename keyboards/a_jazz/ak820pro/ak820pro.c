@@ -31,6 +31,7 @@
 #include "flash_stats.h"   /* C1: flash write sessions by writer */
 #include "menu/menu_glue.h" /* the configuration menu: plans/CONFIG-MENU-BUILD-PLAN.md */
 #include "menu/menu_edit.h" /* P1b's edit transaction: its writers' hooks (C6) */
+#include "menu/profiles.h"  /* P5a: a restore's timeout */
 #include "overrun_diag.h"  /* dev: the UART overruns' context */
 
 void early_hardware_init_post(void) {
@@ -638,6 +639,7 @@ void housekeeping_task_kb(void) {
         LOOP_SITE(LOOP_SITE_ANIM, ACCT(ACCT_ANIM, anim_task()));                   // one animation frame per 100 ms
         WDT_CALL(WDT_SITE_DISPLAY_HK, ACCT(ACCT_DISP_HK, display_housekeeping_task()));   // its sub-draws are sited individually
         LOOP_SITE(LOOP_SITE_EECFG,  ACCT(ACCT_EECFG, kb_eeconfig_task()));          // settled, coalesced kb-config flush
+        prof_tick();                                                                // an HC_PROFILES restore's 5 s timeout
         LOOP_SITE(LOOP_SITE_HEALTH, ACCT(ACCT_HEALTH, health_task()));              // [health] console line, on change only
 #ifdef LOOPGAP_INSTRUMENT
         uint32_t hk = timer_elapsed32(hk_t0);

@@ -63,6 +63,7 @@ SRC += menu/menu.c          # P1a: the tree (plans/CONFIG-MENU-P1-DESIGN.md)
 SRC += menu/menu_edit.c     # P1b: the edit transaction (C6)
 SRC += menu/menu_ops.c      # the task each pass, op 27, the menu's side of an owner event
 SRC += menu/menu_glue.c     # the hook, the task, op 27
+SRC += menu/profiles.c      # P5a: the settings profiles' store and HC_PROFILES (plans/SETTINGS-PROFILES-PLAN.md)
 SRC += menu/menu_meas.c     # C10: the tick, the pass times, the clear bands, the session token
 VPATH += bluetooth
 VPATH += graphics

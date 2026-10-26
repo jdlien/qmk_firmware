@@ -13,41 +13,45 @@
  * "RAINBOW_MOVING_CHEVRON" is 22 characters against a 12-character band.
  * Each entry is #ifdef'd on the effect's own enable, so this still builds if
  * the animation list changes. The entries are in mode order:
- * rgb_matrix_effects.inc's, then rgb_matrix_kb.inc's customs. */
+ * rgb_matrix_effects.inc's, then rgb_matrix_kb.inc's customs.
+ * The second field is the effect's STABLE id (P5a, the settings profiles):
+ * a profile stores it, since QMK's mode numbers move when an effect is
+ * enabled or disabled. Append-only, never renumbered or reused, and 0 is
+ * RGB_MATRIX_NONE's; scripts/check_effect_ids.py guards it. */
 const rgb_effect_t rgb_effects[] = {
 #ifdef ENABLE_RGB_MATRIX_SOLID_COLOR
-    {RGB_MATRIX_SOLID_COLOR, "Solid"},
+    {RGB_MATRIX_SOLID_COLOR, 1, "Solid"},
 #endif
 #ifdef ENABLE_RGB_MATRIX_ALPHAS_MODS
-    {RGB_MATRIX_ALPHAS_MODS, "Alphas/Mods"},
+    {RGB_MATRIX_ALPHAS_MODS, 2, "Alphas/Mods"},
 #endif
 #ifdef ENABLE_RGB_MATRIX_BREATHING
-    {RGB_MATRIX_BREATHING, "Breathing"},
+    {RGB_MATRIX_BREATHING, 3, "Breathing"},
 #endif
 #ifdef ENABLE_RGB_MATRIX_CYCLE_ALL
-    {RGB_MATRIX_CYCLE_ALL, "Cycle All"},
+    {RGB_MATRIX_CYCLE_ALL, 4, "Cycle All"},
 #endif
 #ifdef ENABLE_RGB_MATRIX_CYCLE_LEFT_RIGHT
-    {RGB_MATRIX_CYCLE_LEFT_RIGHT, "Cycle L-R"},
+    {RGB_MATRIX_CYCLE_LEFT_RIGHT, 5, "Cycle L-R"},
 #endif
 #ifdef ENABLE_RGB_MATRIX_CYCLE_UP_DOWN
-    {RGB_MATRIX_CYCLE_UP_DOWN, "Cycle U-D"},
+    {RGB_MATRIX_CYCLE_UP_DOWN, 6, "Cycle U-D"},
 #endif
 #ifdef ENABLE_RGB_MATRIX_RAINBOW_MOVING_CHEVRON
-    {RGB_MATRIX_RAINBOW_MOVING_CHEVRON, "Chevron"},
+    {RGB_MATRIX_RAINBOW_MOVING_CHEVRON, 7, "Chevron"},
 #endif
 #ifdef ENABLE_RGB_MATRIX_CYCLE_PINWHEEL
-    {RGB_MATRIX_CYCLE_PINWHEEL, "Pinwheel"},
+    {RGB_MATRIX_CYCLE_PINWHEEL, 8, "Pinwheel"},
 #endif
 #ifdef ENABLE_RGB_MATRIX_JELLYBEAN_RAINDROPS
-    {RGB_MATRIX_JELLYBEAN_RAINDROPS, "Jellybean"},
+    {RGB_MATRIX_JELLYBEAN_RAINDROPS, 9, "Jellybean"},
 #endif
 #ifdef ENABLE_RGB_MATRIX_TYPING_HEATMAP
-    {RGB_MATRIX_TYPING_HEATMAP, "Heatmap"},
+    {RGB_MATRIX_TYPING_HEATMAP, 10, "Heatmap"},
 #endif
 #if defined(RGB_MATRIX_CUSTOM_KB)
-    {RGB_MATRIX_CUSTOM_RAINFALL, "Rainfall"},
-    {RGB_MATRIX_CUSTOM_DRIFT, "Drift"},
+    {RGB_MATRIX_CUSTOM_RAINFALL, 11, "Rainfall"},
+    {RGB_MATRIX_CUSTOM_DRIFT, 12, "Drift"},
 #endif
 };
 const uint8_t rgb_effects_n = sizeof rgb_effects / sizeof rgb_effects[0];

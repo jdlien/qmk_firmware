@@ -65,6 +65,14 @@ void kb_eeconfig_task(void) {
     eeconfig_update_kb_datablock(&kb_config, 0, sizeof(kb_config));
 }
 
+/* HC_PROFILES' flush (P5a): the pending write now, unsettled; never inside a
+ * deep sleep's recovery either. */
+void kb_eeconfig_flush(void) {
+    if (!kb_dirty || sleep_recovering()) return;
+    kb_dirty = false;
+    eeconfig_update_kb_datablock(&kb_config, 0, sizeof(kb_config));
+}
+
 bool kb_eeconfig_write_pending(void) {
     return kb_dirty;
 }

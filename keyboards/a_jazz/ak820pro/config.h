@@ -272,6 +272,11 @@
 // The battery row in whole percent. Define BATTERY_SHOW_TENTHS for tenths
 // ("85.9%"), the view the 2026-09-28 drain test was calibrated with.
 #define EECONFIG_KB_DATA_VERSION 7   // 7: the battery readout (P4); 6: the LCD level 0-100 (P2b); 5: the indicator levels (P2a)
+// The settings profiles' block (P5a, plans/SETTINGS-PROFILES-PLAN.md): the
+// emulated EEPROM's top 110 B, 914-1023, out of VIA's macro buffer, which
+// shrinks from 237 B to 127 B (VIA asks the firmware for its size). Nothing
+// else moves. menu/menu_glue.c asserts it against menu/profiles.h.
+#define DYNAMIC_KEYMAP_EEPROM_MAX_ADDR 913
 
 // Debounce eeconfig flushes from RGB adjustment. Without this QMK writes MCU
 // flash on every single step (~8/s while a key is held), which is both needless
