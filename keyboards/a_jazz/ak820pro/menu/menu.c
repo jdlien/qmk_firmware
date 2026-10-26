@@ -2293,7 +2293,8 @@ uint8_t menu_cursor(void) {
 }
 
 /* P3: the Pairing page holds the menu to the backstop, not the idle timeout:
- * adding a device on a computer takes longer than 24 s, and the idle time
- * dates from the last knob input, so a page that turned connected after that
- * would close the moment it did (codex). A close leaves pairing running. */
+ * adding a device on a computer can take longer than 60 s, and the idle
+ * time dates from the last knob input, so a page that turned connected after
+ * that would close the moment it did (codex). A close leaves pairing
+ * running. */
 bool menu_long_wait(void) { return depth && (cur()->node == N_PAIRING || cur()->node == N_PRENAME); }   /* P5c: Rename too */

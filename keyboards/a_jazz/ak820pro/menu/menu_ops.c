@@ -154,14 +154,14 @@ void menu_ops_task(uint32_t now) {
     /* The menu's latched model (Fn+B, Fn+C) and its title (the flash, the
      * hint), each pass while it shows. */
     if (menu_kind == MK_MENU && po_owner() == PANEL_MENU) menu_tick(now, now - mi_last_input());
-    /* 24 s with no knob input closes it (C7: hint repaints, host traffic and
+    /* 60 s with no knob input closes it (C7: hint repaints, host traffic and
      * typing don't restart this); while a previewing edit is open (P1b), the
      * 3-minute backstop instead, and the close rolls the edit back
      * (panel_owner.c's do_close()). The fixture has no edit. */
     /* Signed: an input stamped a little after `now` (an event read its own
      * timer) is no idle at all, never a wrapped 49 days. */
     /* P3: the Pairing page starting or advertising gets the backstop too.
-     * P5e: a profile's preview is no edit: the 24 s (codex: it held the
+     * P5e: a profile's preview is no edit: the 60 s (codex: it held the
      * menu, and a deep sleep, for three minutes). */
     bool     editing = me_active() && me_field() != ME_PROFILE;
     uint32_t limit   = (editing || (menu_kind == MK_MENU && menu_long_wait())) ? MI_BACKSTOP_MS : MI_IDLE_MS;

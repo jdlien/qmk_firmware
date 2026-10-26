@@ -27,7 +27,7 @@ static const char *const menu_help_lines[40] = {
     "Fn+click: close",
     "",
     "Auto-closes after",
-    "24 seconds idle.",
+    "60 seconds idle.",
     /* Customizing */
     "Remap keys & knob at",
     "usevia.app over USB",
