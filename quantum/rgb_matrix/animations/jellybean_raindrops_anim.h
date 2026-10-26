@@ -14,7 +14,7 @@ bool JELLYBEAN_RAINDROPS(effect_params_t* params) {
     static uint16_t index = RGB_MATRIX_LED_COUNT + 1;
 
     // Periodic trigger for LED change
-    if ((params->iter == 0) && (scale16by8(g_rgb_timer, qadd8(rgb_matrix_config.speed, 16)) % 5 == 0)) {
+    if ((params->iter == 0) && rgb_matrix_jellybean_drop()) {   /* weak: upstream's (timer * (speed + 16) / 256) % 5 == 0 */
         index = random8_max(RGB_MATRIX_LED_COUNT);
     }
 

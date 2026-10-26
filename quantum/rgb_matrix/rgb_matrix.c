@@ -308,6 +308,17 @@ __attribute__((weak)) bool rgb_matrix_eeprom_flush_allowed(void) {
     return true;
 }
 
+/* Board hooks for the effects' speeds (rgb_matrix.h): effect_runner_i's time,
+ * and whether Jellybean Raindrops drops one this frame. The defaults are
+ * upstream's own expressions, so every other keyboard is unchanged. */
+__attribute__((weak)) uint8_t rgb_matrix_runner_i_time(void) {
+    return scale16by8(g_rgb_timer, qadd8(rgb_matrix_config.speed / 4, 1));
+}
+
+__attribute__((weak)) bool rgb_matrix_jellybean_drop(void) {
+    return scale16by8(g_rgb_timer, qadd8(rgb_matrix_config.speed, 16)) % 5 == 0;
+}
+
 static void rgb_task_sync(void) {
     if (rgb_matrix_eeprom_flush_allowed()) {
         eeconfig_flush_rgb_matrix_task(RGB_MATRIX_EEPROM_WRITE_DELAY);

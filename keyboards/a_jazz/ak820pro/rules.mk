@@ -42,6 +42,7 @@ SRC += bt_ui.c      # wireless slider, BT slot keys, hold-to-pair
 SRC += consumer_mod.c # modified-consumer endpoint-ordering sequencer
 SRC += param_overlay.c # RGB hold-to-repeat + parameter readout overlay
 SRC += rgb_effects.c  # the enabled effects' names, for the readout and the menu (P1b)
+SRC += rgb_speed.c    # the effects' speed curves (pure logic; rgb_effects.c has the hooks)
 SRC += indicators.c  # Caps/WinLock/Charging PWM, 20 kHz tick, lock states
 SRC += battery.c     # VDD from the SN32 ADC (AIN16 against VDD)
 SRC += power.c       # power caps: the low-battery lights cut; the idle ladder only with POWER_LADDER_ENABLE

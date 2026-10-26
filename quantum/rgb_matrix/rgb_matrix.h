@@ -196,6 +196,11 @@ void        rgb_matrix_mode_noeeprom(uint8_t mode);
 /* Re-run the current effect's init pass so it repaints every LED (a board's
  * power caps moved below it). */
 void rgb_matrix_reinit_effect(void);
+/* Board hooks, weak, for the effects' speeds: the time effect_runner_i's
+ * effects animate by, and whether Jellybean Raindrops drops one this frame
+ * (called once a frame). The defaults are upstream's expressions. */
+uint8_t rgb_matrix_runner_i_time(void);
+bool    rgb_matrix_jellybean_drop(void);
 uint8_t     rgb_matrix_get_mode(void);
 void        rgb_matrix_step(void);
 void        rgb_matrix_step_noeeprom(void);
