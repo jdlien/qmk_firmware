@@ -47,6 +47,7 @@
 #define MT_I_SAVE       "\xa6\xa7"   /* the circled right arrow, Save current here, */
 #define MT_I_RENAME     "\xa8"       /* the pencil, */
 #define MT_I_DELETE     "\xa9\xaa"   /* the trashcan */
+#define MT_I_RESET      "\xab"       /* Reset settings (10-27): the anticlockwise circle arrow */
 
 /* A line as a slot paints it: `lead` pixels, then `cells` glyph cells (the
  * string, padded with spaces, codes the face hasn't shown as '?'), then

@@ -64,6 +64,7 @@ enum display_clock_mode {
     DISPLAY_CLOCK_12H_HM,       /* H:MM + the AM/PM glyph */
     DISPLAY_CLOCK_MODE_COUNT    /* append only: the value is persisted */
 };
+#define DISPLAY_CLOCK_DEFAULT DISPLAY_CLOCK_24H   /* after a flash, and the menu's Reset settings (JD, 10-27) */
 void    display_set_clock_mode(uint8_t mode);
 uint8_t display_get_clock_mode(void);
 /* Fn+C's next mode, in the menu's order: 24h:ss, 24h, 12h:ss, 12h, Date,

@@ -216,6 +216,25 @@ void menu_prof_key(bool next) {
 #endif
 }
 void env_prof_switched(uint8_t slot, uint8_t st) { (void)prof_named(slot, st); }
+/* 10-27, Reset settings: what a flash leaves, from the same definitions (JD's
+ * defaults: the lighting keyboard.json's rgb_matrix.default, a warm white;
+ * the screen and the lights config.h's; the clock and the power mode their
+ * modules'; the battery readout kb_eeconfig's unset). */
+void env_defaults(env_defaults_t *d) {
+    d->rgb.mode     = RGB_MATRIX_DEFAULT_MODE;
+    d->rgb.h        = RGB_MATRIX_DEFAULT_HUE;
+    d->rgb.s        = RGB_MATRIX_DEFAULT_SAT;
+    d->rgb.v        = RGB_MATRIX_DEFAULT_VAL;
+    d->rgb.speed    = RGB_MATRIX_DEFAULT_SPD;
+    d->rgb.enable   = RGB_MATRIX_DEFAULT_ON ? 1u : 0u;
+    d->rgb.flags    = RGB_MATRIX_DEFAULT_FLAGS;   /* not a setting: the menu's Lights is the enable */
+    d->lcd          = DISPLAY_BRIGHTNESS_DEFAULT;
+    d->locks        = INDICATOR_BRIGHTNESS_DEFAULT;
+    d->charging     = CHARGING_LED_BRIGHTNESS;
+    d->clock        = DISPLAY_CLOCK_DEFAULT;
+    d->bview        = KB_BATT_VIEW_PERCENT;
+    d->power        = POWER_MODE_DEFAULT;
+}
 void env_settings_flush(void) {
     kb_eeconfig_flush();
     eeconfig_force_flush_rgb_matrix();

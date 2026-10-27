@@ -468,13 +468,16 @@
  * Not persisted: every kb-eeconfig write is an internal-flash program/erase,
  * which is the thing that wedges this board. Change it here, not at runtime.
  * (Since phase 4.2 the keys' and the menu's level is persisted, deferred and
- * coalesced; this is the level after a flash.) */
-#define DISPLAY_BRIGHTNESS_DEFAULT 42
+ * coalesced; this is the level after a flash.)
+ *
+ * 10-27 (JD's defaults, which the menu's Reset settings applies too): 60, from 42. */
+#define DISPLAY_BRIGHTNESS_DEFAULT 60
 
 // The lock lights' (Caps Lock, Win Lock) default level, 0-100 (indicators.c,
 // indicator_levels.h; the menu's Indicators sets and saves it). They are dimmed
 // in software on the same tick as the LCD backlight; at full drive they are
 // searchlights on a dark desk. 1 = the dimmest lit step (one tick in 48).
-// 0 would turn them off entirely. The charging light's is CHARGING_LED_BRIGHTNESS
-// (indicators.c), 0.
-#define INDICATOR_BRIGHTNESS_DEFAULT 1
+// 0 would turn them off entirely. 10-27 (JD's defaults: "Indicators both on at
+// 5%"): 5 for both, the charging light's from 0.
+#define INDICATOR_BRIGHTNESS_DEFAULT 5
+#define CHARGING_LED_BRIGHTNESS      5

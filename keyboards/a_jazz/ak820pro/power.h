@@ -33,6 +33,7 @@ typedef enum {
                                * asleep after 1 min */
     POWER_MODE_COUNT
 } power_mode_t;
+#define POWER_MODE_DEFAULT POWER_MODE_NORMAL   /* after a flash, and the menu's Reset settings (JD, 10-27) */
 
 /* Post-init, after kb_eeconfig_init: the persisted mode. */
 void power_init(void);

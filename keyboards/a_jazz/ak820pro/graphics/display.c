@@ -571,7 +571,7 @@ static void retire_line(uint8_t slot);
  * shadow, because the glyph starts exactly where the run ends and
  * rects_overlap() is half-open. Every WHOLE-band clear goes through
  * clock_band_clear() so the two shadows cannot disagree. */
-static uint8_t clock_mode = DISPLAY_CLOCK_24H;
+static uint8_t clock_mode = DISPLAY_CLOCK_DEFAULT;
 static struct { bool shown; uint16_t x; bool pm; } ampm = {false, 0, false};
 /* A format change RELAYOUTS the band; it does not wipe it. The first version
  * forced a whole-band clear and the eight digits then arrived one per main-

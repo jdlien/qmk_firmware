@@ -49,6 +49,7 @@ enum {
                                                                  * confirms, the slot in the cursor */
     N_PRENAME,                                                  /* 56: P5c, Rename; as a frame its page, the slot in the cursor */
     N_BV2,                                                      /* 57: Battery's third readout, Both (JD, 10-26) */
+    N_DEFAULTS,                                                 /* 58: Reset settings (JD, 10-27), its confirm as a frame */
     N_COUNT
 };
 _Static_assert(N_COUNT <= 63, "a row's node is 6 bits");
@@ -58,9 +59,10 @@ static bool is_pslot(uint8_t node) { return node == N_PSLOT; }
 /* The top level's order (P4, JD 10-25): Battery under Clock, and
  * Diagnostics under Bootloader on page two. P5b (JD, 10-25): Profiles is
  * page one's last row, and Bootloader moves to the top of page two, with the
- * system items. */
-static const uint8_t top_rows[]   = {N_LIGHT, N_SCREEN, N_CONN, N_POWER, N_IND,  N_CLOCK,
-                                     N_BATT,  N_PROFILES, N_BOOT, N_DIAG, N_HELP, N_ABOUT, N_EXIT};
+ * system items. 10-27: Reset settings under Bootloader (JD: "we still
+ * haven't filled out a second page yet, so this could go on there"). */
+static const uint8_t top_rows[]   = {N_LIGHT, N_SCREEN, N_CONN,     N_POWER, N_IND,  N_CLOCK, N_BATT,
+                                     N_PROFILES, N_BOOT, N_DEFAULTS, N_DIAG, N_HELP, N_ABOUT, N_EXIT};
 static const uint8_t light_rows[] = {N_BACK, N_EFFECT, N_BRIGHT, N_HUE, N_SAT, N_SPEED, N_LIGHTS};
 static const uint8_t ind_rows[]   = {N_BACK, N_LOCKS, N_CHGL};
 static const uint8_t conn_rows[]  = {N_BACK, N_BT0, N_BT1, N_BT2, N_PAIRNOW};   /* P3: on BT */
@@ -189,6 +191,7 @@ static const char *label_of(uint8_t node) {
         case N_SPEED:  return two_tone() ? "Second color" : "Speed";   /* Alphas/Mods' speed is its second colour */
         case N_LIGHTS: return "Lights";
         case N_BOOT:   return "Bootloader";
+        case N_DEFAULTS: return "Reset settings";   /* 10-27 */
         case N_IND:    return "Indicators";
         case N_CONN:   return "Connection";
         case N_LOCKS:  return "Lock lights";
@@ -223,6 +226,7 @@ static const char *icon_of(uint8_t node) {
         case N_LIGHT: return MT_I_LIGHT " ";   /* P1b */
         case N_SCREEN: return MT_I_SCREEN;
         case N_BOOT:  return MT_I_BOOT;
+        case N_DEFAULTS: return MT_I_RESET " ";   /* 10-27: the circle arrow (JD: "arrow-rotate-left") */
         case N_IND:   return MT_I_IND;    /* P2a: the sun (JD's pick) */
         case N_CONN:  return MT_I_CONN;   /* Bluetooth */
         case N_BATT:  return MT_I_BATT " ";   /* P4: a vertical battery */
@@ -395,7 +399,7 @@ static bool is_ind_editor(uint8_t node) { return node == N_LOCKS || node == N_CH
 static bool is_editor(uint8_t node) { return node == N_SCREEN || (node >= N_BRIGHT && node <= N_SPEED) || is_ind_editor(node); }
 static bool is_confirm(uint8_t node) {   /* the confirm geometry's pages */
     return node == N_RESET || node == N_BOOT || node == N_CONNINFO || node == N_PAIRING || node == N_PSAVE ||
-           node == N_PDELETE || node == N_PRENAME;
+           node == N_PDELETE || node == N_PRENAME || node == N_DEFAULTS;
 }
 static bool is_prof_screen(uint8_t node) {   /* P5b: a host restore pops these */
     return node == N_PROFILES || is_pslot(node) || node == N_PSAVE || node == N_PDELETE || node == N_PRENAME;
@@ -451,7 +455,8 @@ enum { T_TOP = 1, T_POWER, T_CLOCK, T_DIAG, T_HELP, T_ABOUT, T_TOPIC0, T_RESET =
        T_PROFILES, T_PSLOT0, T_PSAVE = T_PSLOT0 + PROF_SLOTS, T_PDELETE,                    /* 45-55: P5b; a slot's page's title is its name */
        T_LOADED, T_LOADED_NOFX, T_DELETED, T_PBUSY, T_SAVE_FAILED,                          /* 56-60 */
        T_PFULL,                                                                             /* 61: P5d */
-       T_PRENAME, T_RENAMED };                                                              /* 62-63: P5c */
+       T_PRENAME, T_RENAMED,                                                                /* 62-63: P5c */
+       T_DEFAULTS, T_DEFAULTS_DONE };                                                       /* 64-65: Reset settings (10-27) */
 _Static_assert(T_RESET == 11, "the title ids: the design's table");
 
 static uint8_t screen_title(void) {
@@ -473,6 +478,7 @@ static uint8_t screen_title(void) {
         case N_SPEED:  return two_tone() ? T_SECOND : T_SPEED;
         case N_LIGHTS: return T_LIGHTS;
         case N_BOOT:   return T_BOOT;
+        case N_DEFAULTS: return T_DEFAULTS;
         case N_IND:    return T_IND;
         case N_CONN:
         case N_CONNINFO: return T_CONN;
@@ -539,6 +545,8 @@ static const char *title_text(uint8_t id) {
         case T_PFULL:      return "Full: delete one";     /* P5d: Save new, every slot saved */
         case T_PRENAME:    return "Rename profile";       /* P5c */
         case T_RENAMED:    return "Renamed";
+        case T_DEFAULTS:   return "Reset settings";       /* 10-27 */
+        case T_DEFAULTS_DONE: return "Settings reset";
         default: break;
     }
     if (id >= T_TOPIC0 && id < T_TOPIC0 + 4) return menu_help_titles[id - T_TOPIC0];
@@ -559,6 +567,7 @@ static const char *title_icon(uint8_t id) {
         case T_ABOUT: return icon_of(N_ABOUT);
         case T_SCREEN: return icon_of(N_SCREEN);
         case T_BOOT:   return icon_of(N_BOOT);
+        case T_DEFAULTS: return icon_of(N_DEFAULTS);
         case T_IND:
         case T_LOCKS:
         case T_CHGL:   return icon_of(N_IND);
@@ -904,7 +913,7 @@ static row_t row_at(uint8_t r) {
     } else if (x.node == N_PSLOT) {   /* P5d: a saved slot, its slot in val (row_node()); the active one's check */
         x.val    = val;
         x.bullet = pfs_active() == val;
-    } else if (x.node == N_PNEW) x.val = pfs_saved() >= PROF_SLOTS ? 1u : 0u;   /* P5d: 1 every slot saved, greyed */
+    } else if (x.node == N_PNEW) x.val = pfs_saved() >= PROF_USER ? 1u : 0u;   /* P5d: 1 every slot saved, greyed */
     else if (x.node == N_EFFOPT || x.node == N_LTSOPT) x.val = val;
     else if (value_which(x.node) >= 0) {
         x.kind = RK_VALUE;
@@ -1053,7 +1062,7 @@ static void row_text(const row_t *x, char *out) {
     else if (x->node == N_PNEW) value = x->val ? "Full" : "";            /* P5d */
     else if (x->node == N_DIAG || x->node == N_HELP || x->node == N_ABOUT || x->node == N_HEALTH ||
              x->node == N_CAMERA || x->node == N_RESET || is_topic(x->node) || x->node == N_LIGHT || x->node == N_BOOT ||
-             x->node == N_IND)
+             x->node == N_IND || x->node == N_DEFAULTS)
         value = MT_TRI_R;                            /* JD, 10-24: ▶ for > */
     size_t      at   = 0;
     const char *icon = icon_of(x->node);
@@ -1406,6 +1415,12 @@ static const char *const boot_lines[2][4] = {
     {"For a firmware", "update over USB.", "Click: enter", "Hold: cancel"},
     {"Plug in first:", "the battery is low.", "Click: back", ""},
 };
+/* Reset settings' (10-27; the words wait for JD's text pass): the question,
+ * then done. The defaults are env_defaults()'s, what a flash leaves. */
+static const char *const defaults_lines[2][4] = {
+    {"Back to defaults?", "Profiles are kept.", "Click: reset", "Hold: cancel"},
+    {"Settings reset.", "", "Click: back", ""},
+};
 /* P3, Connection off BT (JD, 10-25: "a screen saying 'Switch to BT mode to
  * change Bluetooth settings' or such"): fixed, its lines at y 22, 36, 50 and
  * 86 so the sentence isn't split by the confirm pages' gap. */
@@ -1455,7 +1470,8 @@ static uint16_t c_sig(uint8_t s) {
         uint8_t slot = cur()->cursor;
         return (uint16_t)(0xA000u | ((uint16_t)slot << 8) | ((uint16_t)pair_phase(slot) << 4) | (uint16_t)(s - 2u));
     }
-    return (uint16_t)((n == N_BOOT ? 0x200u : 0x100u) | ((uint16_t)confirm_page << 4) | (uint16_t)(s - 2u));
+    return (uint16_t)((n == N_BOOT ? 0x200u : n == N_DEFAULTS ? 0x700u : 0x100u) | ((uint16_t)confirm_page << 4) |
+                      (uint16_t)(s - 2u));
 }
 static uint8_t c_chunks(uint8_t s) { return s == 1 ? 1 : 2; }
 static uint8_t c_pieces(uint8_t s, uint8_t c) { return l_pieces(s == 1 ? S_SEP : S_TITLE, c); }
@@ -1469,7 +1485,8 @@ static ms_paint_t c_paint(uint8_t s, uint8_t c, uint8_t p) {
     else if (node == N_PAIRING) pair_line(cur()->cursor, pair_phase(cur()->cursor), i, buf, sizeof buf);
     else if (node == N_PSAVE || node == N_PDELETE) pconfirm_line(node, cur()->cursor, i, buf, sizeof buf);
     else if (node == N_PRENAME) rename_line(i, buf, sizeof buf);   /* P5c */
-    else snprintf(buf, sizeof buf, "%s", (node == N_BOOT ? boot_lines : c_lines)[confirm_page & 1u][i]);
+    else snprintf(buf, sizeof buf, "%s",
+                  (node == N_BOOT ? boot_lines : node == N_DEFAULTS ? defaults_lines : c_lines)[confirm_page & 1u][i]);
     size_t n = strlen(buf);
     memcpy(cells, buf, n > 20 ? 20 : n);
     return text_piece(cells, (node == N_CONNINFO ? info_y : c_y)[i], false, 0, 0, c, p, pal[MP_WHITE], 0);
@@ -1940,8 +1957,8 @@ static menu_result_t activate(uint32_t now) {
              * read again: the board's pass for this click was 22 ms, its
              * three writes, the reads and a paint piece (P5d). */
             uint8_t v = (uint8_t)pfs_get(), s = 0;
-            while (s < PROF_SLOTS && ((v >> s) & 1u)) s++;
-            if (s >= PROF_SLOTS) {
+            while (s < PROF_USER && ((v >> s) & 1u)) s++;
+            if (s >= PROF_USER) {   /* 10-27: seven, the eighth record the last */
                 flash(T_PFULL, now);
             } else {
                 uint8_t st = prof_save(s, NULL);
@@ -1989,6 +2006,7 @@ static menu_result_t activate(uint32_t now) {
         case N_CAMERA: return MENU_DIAG_CAMERA;
         case N_RESET:
         case N_BOOT:
+        case N_DEFAULTS:
             confirm_page = 0;
             push(node, 0);
             show(true, false, now);
@@ -2167,6 +2185,21 @@ menu_result_t menu_input(int8_t turns, mi_latch_t latch, uint32_t now) {
             }
             return pop(now);
         }
+        if (f->node == N_DEFAULTS) {   /* 10-27: the defaults, saved; the profiles kept, neither side's */
+            if (confirm_page == 0) {
+                if (prof_reset() == PROF_BUSY) {
+                    flash(T_PBUSY, now);
+                    return MENU_NONE;
+                }
+                pfs_flags |= PFS_STALE;
+                confirm_page = 1;
+                flash(T_DEFAULTS_DONE, now);
+                retitle(now);
+                ms_retarget();
+                return MENU_NONE;
+            }
+            return pop(now);
+        }
         if (f->node == N_PAIRING) return pair_leave(now);
         if (f->node == N_PSAVE || f->node == N_PDELETE) return pconfirm_click(now);   /* P5b */
         if (f->node == N_PRENAME) return rename_commit(now);                          /* P5c */
@@ -2174,7 +2207,8 @@ menu_result_t menu_input(int8_t turns, mi_latch_t latch, uint32_t now) {
     }
     if (latch == MI_LATCH_BACK) {   /* pop() cancels an editor's or a previewing choice's edit */
         if (f->node == N_PAIRING) return pair_leave(now);   /* the same as a click (the mockup's "Click or hold: stop") */
-        if (is_choice(f->node) || is_editor(f->node) || ((f->node == N_RESET || f->node == N_BOOT) && confirm_page == 0) ||
+        if (is_choice(f->node) || is_editor(f->node) ||
+            ((f->node == N_RESET || f->node == N_BOOT || f->node == N_DEFAULTS) && confirm_page == 0) ||
             f->node == N_PSAVE || f->node == N_PDELETE || f->node == N_PRENAME)
             flash(T_CANCELLED, now);
         return pop(now);

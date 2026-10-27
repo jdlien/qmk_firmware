@@ -46,27 +46,29 @@ static uint8_t pend;
 _Static_assert(PROF_SLOTS <= 0xFu, "a side's slot in its nibble, 0xF none");
 /* The Win/Mac switch (10-27), 1 B: the side it reads (SD_MAC), whether the
  * boot's reading came (SD_KNOWN), the side the profiles go by (SD_SETTLED:
- * the Mac's when set), the pair pending, and a flip's countdown in 10 Hz
- * ticks. The side settles once the switch has rested SD_REST ticks, so a
- * bouncing contact loads once and a bounce back loads nothing; until then
- * a Load or a Save goes to the side it was on. */
+ * the Mac's when set), the pair pending, a flip's countdown in 10 Hz ticks,
+ * and the boot's check still to run (SD_BOOT, prof_tick()). The side
+ * settles once the switch has rested SD_REST ticks, so a bouncing contact
+ * loads once and a bounce back loads nothing; until then a Load or a Save
+ * goes to the side it was on. */
 #define SD_MAC     0x01u
 #define SD_KNOWN   0x02u
 #define SD_SETTLED 0x04u
 #define SD_PEND    0x08u
 #define SD_TICKS   0x70u
 #define SD_TICK    0x10u
+#define SD_BOOT    0x80u
 #define SD_REST    3u   /* 200-300 ms */
 static uint8_t side;
 
 static uint8_t cur_side(void) { return (side & SD_SETTLED) ? PROF_SIDE_MAC : PROF_SIDE_WIN; }
 static uint8_t nib(uint8_t pair, uint8_t sd) { return (uint8_t)((pair >> (sd * 4u)) & 0x0Fu); }
 /* The pair with each side that remembers slot s (or a nibble past the
- * slots, s >= PROF_SLOTS) set to none. */
+ * profiles, s >= PROF_USER: the last record's too) set to none. */
 static uint8_t drop(uint8_t pair, uint8_t s) {
     for (uint8_t sd = PROF_SIDE_WIN; sd <= PROF_SIDE_MAC; sd++) {
         uint8_t n = nib(pair, sd);
-        if (n == s || (s >= PROF_SLOTS && n >= PROF_SLOTS)) pair |= (uint8_t)(0x0Fu << (sd * 4u));
+        if (n == s || (s >= PROF_USER && n >= PROF_USER)) pair |= (uint8_t)(0x0Fu << (sd * 4u));
     }
     return pair;
 }
@@ -113,8 +115,9 @@ static bool name_ok(const uint8_t *n) {
     return true;
 }
 
-bool prof_rec_valid(const uint8_t *rec) {
-    if (rec[PR_STATE] != PS_SAVED_V1 || rec[PR_CRC] != body_crc(rec)) return false;
+/* The crc and every present field in range, whatever the state. */
+static bool body_ok(const uint8_t *rec) {
+    if (rec[PR_CRC] != body_crc(rec)) return false;
     uint8_t f = rec[PR_FIELDS];
     if ((f & PF_LIGHTING) && rec[PR_RGB_ON] > 1u) return false;
     if ((f & PF_LCD) && rec[PR_LCD] > MENU_LCD_MAX) return false;
@@ -125,6 +128,11 @@ bool prof_rec_valid(const uint8_t *rec) {
     if ((f & PF_POWER) && rec[PR_POWER] >= PROF_POWER_MODES) return false;
     if ((f & PF_NAME) && !name_ok(&rec[PR_NAME])) return false;
     return true;
+}
+bool prof_rec_valid(const uint8_t *rec) { return rec[PR_STATE] == PS_SAVED_V1 && body_ok(rec); }
+/* The last record, PS_LAST | a side, a profile's settings and nothing else. */
+static bool last_valid(const uint8_t *rec) {
+    return (rec[PR_STATE] & ~1u) == PS_LAST && !(rec[PR_FIELDS] & ~PF_SIDE) && body_ok(rec);
 }
 
 /* --- The block, through the EEPROM's RAM cache and wear_leveling_write() --- */
@@ -145,10 +153,10 @@ static bool wr(uint8_t off, const void *src, uint8_t n, bool *consolidated) {
 }
 static bool wr8(uint8_t off, uint8_t v, bool *consolidated) { return wr(off, &v, 1, consolidated); }
 
-bool prof_formatted(void) { return rd8(PROF_OFF_MAGIC) == PROF_MAGIC_V3; }
+bool prof_formatted(void) { return rd8(PROF_OFF_MAGIC) == PROF_MAGIC_V4; }
 
 bool prof_slot(uint8_t slot, uint8_t *rec) {
-    if (slot >= PROF_SLOTS || !prof_formatted()) {
+    if (slot >= PROF_USER || !prof_formatted()) {
         memset(rec, 0, PROF_REC);
         return false;
     }
@@ -161,7 +169,7 @@ bool prof_slot(uint8_t slot, uint8_t *rec) {
 uint8_t prof_valid_mask(void) {
     uint8_t rec[PROF_REC], v = 0;
     if (!prof_formatted()) return 0;
-    for (uint8_t s = 0; s < PROF_SLOTS; s++) {
+    for (uint8_t s = 0; s < PROF_USER; s++) {
         rd(PROF_REC_OFF(s), rec, PROF_REC);
         if (prof_rec_valid(rec)) v |= (uint8_t)(1u << s);
     }
@@ -171,7 +179,7 @@ _Static_assert(PROF_SLOTS <= 8u, "a mask's byte");
 
 uint8_t prof_free_slot(void) {
     uint8_t v = prof_valid_mask();
-    for (uint8_t s = 0; s < PROF_SLOTS; s++)
+    for (uint8_t s = 0; s < PROF_USER; s++)
         if (!((v >> s) & 1u)) return s;
     return 0xFFu;
 }
@@ -191,7 +199,7 @@ static void set_active(uint8_t a) {
 
 uint8_t prof_active_rec(uint8_t *rec) {
     uint8_t a = prof_formatted() ? nib(active_byte(), cur_side()) : 0xFFu;
-    return a < PROF_SLOTS && prof_slot(a, rec) ? a : 0xFFu;
+    return a < PROF_USER && prof_slot(a, rec) ? a : 0xFFu;
 }
 uint8_t prof_active(void) {
     uint8_t rec[PROF_REC];
@@ -216,7 +224,7 @@ static bool format(bool *consolidated) {
     side &= (uint8_t)~SD_PEND;   /* a fresh block's pair is none, none */
     for (uint8_t s = 0; s < PROF_SLOTS; s++)
         if (!wr8(PROF_REC_OFF(s) + PR_STATE, PS_EMPTY, consolidated)) return false;
-    return wr8(PROF_OFF_ACTIVE, 0xFFu, consolidated) && wr8(PROF_OFF_MAGIC, PROF_MAGIC_V3, consolidated);
+    return wr8(PROF_OFF_ACTIVE, 0xFFu, consolidated) && wr8(PROF_OFF_MAGIC, PROF_MAGIC_V4, consolidated);
 }
 
 /* Never inside a deep sleep's recovery (a menu can be open in its first
@@ -247,6 +255,32 @@ static bool mode_of_id(uint8_t id, uint8_t *mode) {
             return true;
         }
     return false;
+}
+
+/* --- The last record (10-27) --------------------------------------------------
+ * The eighth record holds the settings the side not in use had as it was
+ * left (PS_LAST | that side), so a flip back brings them back, the `*`
+ * included: JD, 10-27, "don't lose your settings when switching between
+ * mac/windows". Only a side with a profile keeps its settings. */
+
+/* The last record into rec: true when it holds side sd's. */
+static bool last_of(uint8_t sd, uint8_t *rec) {
+    if (!prof_formatted()) return false;
+    rd(PROF_REC_OFF(PROF_LAST), rec, PROF_REC);
+    return last_valid(rec) && rec[PR_STATE] == (uint8_t)(PS_LAST | sd);
+}
+/* rec as the last record, in a save's order: the state empty, the body and
+ * crc, the state in its own write (a cut leaves it empty). */
+static void last_put(const uint8_t *rec) {
+    bool    c = false;
+    uint8_t o = PROF_REC_OFF(PROF_LAST);
+    if (wr8(o + PR_STATE, PS_EMPTY, &c) && wr(o + PR_FIELDS, &rec[PR_FIELDS], PROF_REC - 1u, &c))
+        (void)wr8(o + PR_STATE, rec[PR_STATE], &c);
+}
+static void last_clear(void) {
+    bool    c = false;
+    uint8_t o = PROF_REC_OFF(PROF_LAST);
+    if (prof_formatted() && rd8(o + PR_STATE) != PS_EMPTY) (void)wr8(o + PR_STATE, PS_EMPTY, &c);
 }
 
 /* --- Capture, apply, and the slots' writes ------------------------------------ */
@@ -355,7 +389,7 @@ void prof_preview(uint8_t slot, const env_rgb_t *base, uint8_t base_lcd) {
 
 uint8_t prof_save(uint8_t slot, bool *consolidated) {
     bool    c  = false;
-    uint8_t st = slot < PROF_SLOTS ? writable() : PROF_BAD;
+    uint8_t st = slot < PROF_USER ? writable() : PROF_BAD;
     if (st == PROF_OK) {
         uint8_t rec[PROF_REC], name[PROF_NAME];
         memset(name, 0, sizeof name);
@@ -372,10 +406,15 @@ uint8_t prof_save(uint8_t slot, bool *consolidated) {
              * deferred (set_active()). */
             uint8_t o = PROF_REC_OFF(slot);
             if (!wr8(o + PR_STATE, PS_EMPTY, &c) || !wr(o + PR_FIELDS, &rec[PR_FIELDS], PROF_REC - 1u, &c) ||
-                !wr8(o + PR_STATE, PS_SAVED_V1, &c))
+                !wr8(o + PR_STATE, PS_SAVED_V1, &c)) {
                 st = PROF_WRITE_FAILED;
-            else
+            } else {
                 set_active(slot);
+                /* 10-27: the other side's settings as left came from this
+                 * profile, so they'd bring the old one back: it loads anew. */
+                uint8_t o2 = (uint8_t)(cur_side() ^ 1u);
+                if (nib(active_byte(), o2) == slot && last_of(o2, rec)) last_clear();
+            }
         }
     }
     if (consolidated) *consolidated = c;
@@ -388,7 +427,7 @@ uint8_t prof_save(uint8_t slot, bool *consolidated) {
  * bit (a restored record's). The active slot doesn't move. */
 uint8_t prof_rename(uint8_t slot, const char *name) {
     bool    c = false;
-    uint8_t rec[PROF_REC], st = slot < PROF_SLOTS ? writable() : PROF_BAD;
+    uint8_t rec[PROF_REC], st = slot < PROF_USER ? writable() : PROF_BAD;
     if (st != PROF_OK) return st;
     if (!prof_slot(slot, rec)) return PROF_INVALID;
     bool had = (rec[PR_FIELDS] & PF_NAME) != 0u;
@@ -406,11 +445,15 @@ uint8_t prof_rename(uint8_t slot, const char *name) {
 
 uint8_t prof_delete(uint8_t slot) {
     bool    c  = false;
-    uint8_t st = slot < PROF_SLOTS ? writable() : PROF_BAD;
+    uint8_t st = slot < PROF_USER ? writable() : PROF_BAD;
     if (st != PROF_OK || !prof_formatted()) return st;
     if (!wr8(PROF_REC_OFF(slot) + PR_STATE, PS_EMPTY, &c)) return PROF_WRITE_FAILED;
-    uint8_t a = active_byte(), b = drop(a, slot);   /* either side's */
+    uint8_t a = active_byte(), b = drop(a, slot), last[PROF_REC];   /* either side's */
     if (b != a) set_pair(b);
+    /* A side without a profile keeps nothing of its own (10-27): its
+     * settings as left go with it. */
+    for (uint8_t sd = PROF_SIDE_WIN; sd <= PROF_SIDE_MAC; sd++)
+        if (nib(a, sd) == slot && last_of(sd, last)) last_clear();
     return PROF_OK;
 }
 
@@ -431,9 +474,9 @@ uint8_t prof_step(bool next, uint8_t *slot) {
      * `*`); from none, Next the first saved and Previous the last. */
     uint8_t rec[PROF_REC], a = prof_active(), st = writable();
     if (st != PROF_OK) return st;
-    for (uint8_t i = 1; i <= PROF_SLOTS; i++) {
-        uint8_t s = a >= PROF_SLOTS ? (uint8_t)(next ? i - 1u : PROF_SLOTS - i)
-                                    : (uint8_t)((a + (next ? i : PROF_SLOTS - i)) % PROF_SLOTS);
+    for (uint8_t i = 1; i <= PROF_USER; i++) {
+        uint8_t s = a >= PROF_USER ? (uint8_t)(next ? i - 1u : PROF_USER - i)
+                                    : (uint8_t)((a + (next ? i : PROF_USER - i)) % PROF_USER);
         if (prof_slot(s, rec)) {
             *slot = s;
             cancel_previews();   /* an editor's preview, as any external write (`Cancelled`) */
@@ -469,23 +512,44 @@ static void write_active(void) {
     if (prof_formatted()) (void)wr8(PROF_OFF_ACTIVE, a, &c);
 }
 
-/* A flip settled: the new side's profile loaded, as the Next and Previous
- * keys load one, and named (env_prof_switched()). A side that remembers
- * none, or a bounce back to the side it was on, changes nothing. */
+/* A flip settled. A side with a profile keeps its settings (10-27): the side
+ * left goes into the last record as it was, and the side arrived at comes
+ * back from it as it was left, else its profile loads, as the Next and
+ * Previous keys load one; either named (env_prof_switched()). A side
+ * without one keeps nothing of its own: arriving at it changes nothing. A
+ * bounce back to the side it was on changes nothing either. Refused by the
+ * latch: nothing applied or kept, the side still moves. */
 static void settle_side(void) {
     uint8_t now = (side & SD_MAC) ? SD_SETTLED : 0u;
     if ((side & SD_SETTLED) == now) return;
-    side = (uint8_t)((side & ~SD_SETTLED) | now);
-    uint8_t rec[PROF_REC], s = prof_active_rec(rec);
-    if (s >= PROF_SLOTS) return;
-    cancel_previews();
-    env_prof_switched(s, prof_load(s));
+    uint8_t keep[PROF_REC], rec[PROF_REC];
+    uint8_t x = cur_side();
+    bool    kept = prof_active_rec(rec) < PROF_USER;
+    if (kept) {   /* the side left, as it is now */
+        prof_capture(keep, PF_SIDE);
+        keep[PR_STATE] = (uint8_t)(PS_LAST | x);
+    }
+    side          = (uint8_t)((side & ~SD_SETTLED) | now);
+    uint8_t s     = prof_active_rec(rec), st = writable();
+    bool    taken = false;
+    if (st == PROF_OK) {
+        if (s < PROF_USER) {
+            cancel_previews();
+            taken = last_of(cur_side(), rec);   /* read before the side left's goes in */
+            st    = taken ? prof_apply(rec, false) : prof_load(s);
+        }
+        if (kept)
+            last_put(keep);
+        else if (taken)
+            last_clear();   /* used, and nothing to keep: no stale copy */
+    }
+    if (s < PROF_USER) env_prof_switched(s, st);
 }
 
 void prof_switch(bool mac) {
     uint8_t m = mac ? SD_MAC : 0u;
-    if (!(side & SD_KNOWN)) {   /* the boot's (dip_switch_init(), before the EEPROM is read): no load */
-        side = (uint8_t)((side & SD_PEND) | SD_KNOWN | m | (mac ? SD_SETTLED : 0u));
+    if (!(side & SD_KNOWN)) {   /* the boot's (dip_switch_init(), before the EEPROM is read): no load, a check at the first tick */
+        side = (uint8_t)((side & SD_PEND) | SD_KNOWN | SD_BOOT | m | (mac ? SD_SETTLED : 0u));
         return;
     }
     if ((side & SD_MAC) == m) return;   /* a reading again, not a change */
@@ -494,6 +558,19 @@ void prof_switch(bool mac) {
 
 void prof_tick(void) {
     if (prof_restore_open() && --tx_left == 0u) tx_close();   /* aborted: the block stays unformatted */
+    /* The boot's check (10-27): the last record holding this side's settings
+     * means the switch moved while the board was off, so the live settings
+     * are the other side's: settled as that side, then the flip's swap. A
+     * boot that didn't move it (the slider's flips reboot the board) finds
+     * the other side's there, and changes nothing. */
+    if ((side & SD_BOOT) && writable() != PROF_BUSY) {
+        uint8_t rec[PROF_REC];
+        side &= (uint8_t)~SD_BOOT;
+        if (prof_active_rec(rec) < PROF_USER && last_of(cur_side(), rec)) {
+            side ^= SD_SETTLED;
+            settle_side();
+        }
+    }
     /* A flip's countdown; at its end the load waits out a recovery or a
      * restore, as the keys' would be refused. */
     if ((side & SD_TICKS) && !((side & SD_TICKS) == SD_TICK && writable() == PROF_BUSY)) {
@@ -530,16 +607,51 @@ static uint8_t commit(void) {
     bool    c = false;
     uint8_t rec[PROF_REC];
     if ((tx_state & TX_PAGES) != PROF_PAGES) return PROF_INCOMPLETE;
-    uint8_t a = drop(rd8(PROF_OFF_ACTIVE), PROF_SLOTS);   /* a nibble past the slots */
+    uint8_t a = drop(rd8(PROF_OFF_ACTIVE), PROF_USER);   /* a nibble past the profiles */
     for (uint8_t s = 0; s < PROF_SLOTS; s++) {
         rd(PROF_REC_OFF(s), rec, PROF_REC);
         if (rec[PR_STATE] == PS_EMPTY) {
             a = drop(a, s);
-        } else if (!prof_rec_valid(rec)) {
+        } else if (s < PROF_USER ? !prof_rec_valid(rec) : !last_valid(rec)) {   /* the eighth, the last record */
             return PROF_INVALID;
         }
     }
-    return wr8(PROF_OFF_ACTIVE, a, &c) && wr8(PROF_OFF_MAGIC, PROF_MAGIC_V3, &c) ? PROF_OK : PROF_WRITE_FAILED;
+    return wr8(PROF_OFF_ACTIVE, a, &c) && wr8(PROF_OFF_MAGIC, PROF_MAGIC_V4, &c) ? PROF_OK : PROF_WRITE_FAILED;
+}
+
+/* --- Reset settings (10-27) ------------------------------------------------- */
+
+uint8_t prof_reset(void) {
+    uint8_t st = writable();
+    if (st == PROF_BUSY) return st;
+    env_defaults_t d;
+    uint8_t        rec[PROF_REC];
+    env_defaults(&d);
+    memset(rec, 0, PROF_REC);
+    rec[PR_STATE]    = PS_SAVED_V1;
+    rec[PR_FIELDS]   = PF_LIVE;
+    rec[PR_RGB_ON]   = d.rgb.enable ? 1u : 0u;
+    rec[PR_EFFECT]   = effect_id_of(d.rgb.mode);
+    rec[PR_HUE]      = d.rgb.h;
+    rec[PR_SAT]      = d.rgb.s;
+    rec[PR_VAL]      = d.rgb.v;
+    rec[PR_SPEED]    = d.rgb.speed;
+    rec[PR_LCD]      = d.lcd;
+    rec[PR_LOCKS]    = d.locks;
+    rec[PR_CHARGING] = d.charging;
+    rec[PR_CLOCK]    = d.clock;
+    rec[PR_BVIEW]    = d.bview;
+    rec[PR_POWER]    = d.power;
+    cancel_previews();
+    st = prof_apply(rec, true);
+    /* Both sides forget their profile, and the last record goes: a flip
+     * changes nothing until a profile is loaded or saved again. Under the
+     * latch the pair still changes in RAM, so until a reboot nothing loads. */
+    if (prof_formatted()) {
+        if (active_byte() != 0xFFu) set_pair(0xFFu);
+        last_clear();
+    }
+    return st;
 }
 
 /* The report in place: [0] SET_VALUE, [1] 0x13, [2] 0x10, [3] the sub; VIA
@@ -677,7 +789,7 @@ bool prof_hid(uint8_t *d) {
             d[5] = PROF_REC;
             d[6] = PROF_PAGES;
             d[7] = PROF_PAGE;
-            d[8] = PROF_MAGIC_V3;
+            d[8] = PROF_MAGIC_V4;
             d[9] = (side & SD_KNOWN) ? (uint8_t)(1u + cur_side()) : 0u;
             return true;
 #if defined(AK820_DEV_HOOKS) || defined(MENU_HOST_TEST)

@@ -53,9 +53,10 @@
 #include "indicator_levels.h"
 _Static_assert(IND_PWM_TICKS == 48 && IND_LEVEL_MAX == 100, "the levels' floor and range");
 
-/* Per-group levels (0-100): the charging LED duplicates what the battery icon
- * already shows, so it defaults to 0 (off) while the locks stay dimly lit (1,
- * the old level 1). The menu's Indicators set and save them (kb_eeconfig). */
+/* Per-group levels (0-100). The fallbacks below were the defaults until
+ * 10-27: the charging LED off (it duplicates the battery icon) and the locks
+ * at 1; config.h now sets both to 5 (JD: "Indicators both on at 5%"). The
+ * menu's Indicators set and save them (kb_eeconfig). */
 #ifndef INDICATOR_BRIGHTNESS_DEFAULT
 #    define INDICATOR_BRIGHTNESS_DEFAULT 1
 #endif

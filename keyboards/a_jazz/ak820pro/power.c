@@ -89,7 +89,7 @@ static const ladder_t ladders[POWER_MODE_COUNT] = {
 #define ANNOUNCE_AFTER_MS 3000u
 
 static power_stage_t stage      = POWER_STAGE_ACTIVE;
-static power_mode_t  mode       = POWER_MODE_NORMAL;
+static power_mode_t  mode       = POWER_MODE_DEFAULT;
 static bool          lights_cut = false;
 static bool          low_now    = false;   /* below LOW_CAP_PM on battery, this tick */
 static bool          low_noted  = false;   /* the low cap's notice given (or owed) */
@@ -187,7 +187,7 @@ void power_init(void) {
     if (kb_eeconfig_get_power_mode(&m) && m < POWER_MODE_COUNT) {
         mode = (power_mode_t)m;
     } else {
-        mode     = POWER_MODE_NORMAL;
+        mode     = POWER_MODE_DEFAULT;
         announce = true;   /* "says so": a flash reset it */
     }
 }
