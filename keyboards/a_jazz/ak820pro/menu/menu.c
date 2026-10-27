@@ -1280,10 +1280,12 @@ static bool row_ruled(const row_t *x) { return x->kind == RK_PNOTE && x->line ==
 /* 10-27 (JD: "use the power mode icons that we show on the battery row,
  * right aligned on the right edge"): a Power option's row ends in its mode's
  * bulb, the dashboard's (graphics/power_bulb.c), at x 111-123 beside the
- * trail's column: a chunk of its own, last, every pixel row at once, and the
+ * trail's column: a chunk of its own, every pixel row at once, and the
  * text's right half stops at x 110, so no pixel is painted twice. Its
- * colours don't follow the cursor or the saved option: the node's, so the
- * row's signature holds it. */
+ * colours don't follow the cursor or the saved option: the node's. It is the
+ * row's first chunk, so l_first() skips it while the row stays the same
+ * option: a move or a commit repaints the text, never the bulb (the board,
+ * 10-27: a move between two bulbs' rows took ~340 ms against ~230). */
 #define BULB_X       111u
 #define BULB_CHUNK_W (TEXT_X + 20u * MT_CELL_W + 1u - BULB_X)   /* 14: the bulb's 13 and the trail */
 _Static_assert(BULB_CHUNK_W == BULB_W + 1u && BULB_H == ROW_H, "the bulb: a row's height, right-aligned on its cells");
@@ -1294,18 +1296,18 @@ static uint8_t l_chunks(uint8_t s) {
     if (!is_row(s)) return 2;
     row_t   x = row_at((uint8_t)(s - S_ROW0));
     uint8_t n = row_ruled(&x) || row_icon_colour(&x) != 0 ? 4 : 3;   /* the rule, or a split row's icon chunk */
-    return row_bulb(&x) ? (uint8_t)(n + 1u) : n;                    /* the bulb last */
+    return row_bulb(&x) ? (uint8_t)(n + 1u) : n;                    /* the bulb first */
 }
-/* The bulb's chunk, the row's last; 0xFF none. */
-static uint8_t bulb_chunk(uint8_t s) {
-    if (!is_row(s)) return 0xFFu;
+/* A bulb's row: its chunk 0 the bulb, its own chunks from 1. */
+static bool bulb_at(uint8_t s) {
+    if (!is_row(s)) return false;
     row_t x = row_at((uint8_t)(s - S_ROW0));
-    return row_bulb(&x) ? (uint8_t)(l_chunks(s) - 1u) : 0xFFu;
+    return row_bulb(&x);
 }
 static void bulb_row(const void *v, uint16_t row, uint16_t *px, uint16_t w) {
-    const uint8_t mode = *(const uint8_t *)v;
-    for (uint16_t i = 0; i < w; i++) px[i] = MB_PANEL(power_bulb_px(mode, (uint8_t)i, (uint8_t)row, 0u));
+    power_bulb_row(*(const uint8_t *)v, (uint8_t)row, px, (uint8_t)w, 0u, true);   /* MB_PANEL's order */
 }
+_Static_assert(MB_PANEL(0x1234u) == 0x3412u, "power_bulb_row()'s swap is MB_PANEL()");
 static uint8_t rows_per_piece(void) { return (uint8_t)(MB_PASS_BYTES / (CHUNK_MAX * 2u)); }   /* 4 */
 /* A split row's cells 2-9 are narrower, so their pieces take 5 pixel rows: 3
  * pieces, not 4, which pays for the icon's own piece. Each piece costs about
@@ -1314,8 +1316,11 @@ static uint8_t rows_per_piece(void) { return (uint8_t)(MB_PASS_BYTES / (CHUNK_MA
 #define SPLIT_W (HALF_W - 2u * MT_CELL_W)   /* 48 */
 static uint8_t rows_per_split(void) { return (uint8_t)(MB_PASS_BYTES / (SPLIT_W * 2u)); }   /* 5 */
 static uint8_t l_pieces(uint8_t s, uint8_t c) {
+    if (bulb_at(s)) {                                                  /* 10-27: the bulb, every pixel row at once */
+        if (c == 0) return 1;
+        c--;
+    }
     if (s == S_SEP || s == S_BAR || (is_row(s) && c == 0)) return 1;   /* a row's lead: every pixel row at once */
-    if (c == bulb_chunk(s)) return 1;                                  /* 10-27: the bulb, the same */
     if (is_row(s) && c == RULE_CHUNK) {                               /* the summary's rule: one fill */
         row_t x = row_at((uint8_t)(s - S_ROW0));
         if (row_ruled(&x)) return 1;
@@ -1402,10 +1407,13 @@ static ms_paint_t l_paint(uint8_t s, uint8_t c, uint8_t p) {
         return text_piece(cells, 0, false, 0, 0, c, p, pal[MP_WHITE], 0, false);
     }
     row_t x = row_at((uint8_t)(s - S_ROW0));
-    if (row_bulb(&x) && c == bulb_chunk(s)) {   /* 10-27 */
-        uint8_t mode = (uint8_t)(x.node - N_POW0);
-        return mb_rows(BULB_X, (uint16_t)(ROW_Y0 + (s - S_ROW0) * ROW_H), BULB_CHUNK_W, ROW_H, bulb_row, &mode)
-                   ? MS_PAINT_DONE : MS_PAINT_FAILED;
+    if (row_bulb(&x)) {   /* 10-27: chunk 0 the bulb, the row's own after it */
+        if (c == 0) {
+            uint8_t mode = (uint8_t)(x.node - N_POW0);
+            return mb_rows(BULB_X, (uint16_t)(ROW_Y0 + (s - S_ROW0) * ROW_H), BULB_CHUNK_W, ROW_H, bulb_row, &mode)
+                       ? MS_PAINT_DONE : MS_PAINT_FAILED;
+        }
+        c--;
     }
     if (c == RULE_CHUNK && row_ruled(&x)) {
         uint16_t y = (uint16_t)(ROW_Y0 + (s - S_ROW0) * ROW_H);
@@ -1426,6 +1434,11 @@ static ms_paint_t l_paint(uint8_t s, uint8_t c, uint8_t p) {
  * the trail, when nothing but the tick changed (clock_sig()); not Date,
  * whose text crosses the halves. A split row's right half is chunk 3. */
 static uint8_t l_first(uint8_t s, uint16_t was, uint16_t now) {
+    if (bulb_at(s)) {   /* 10-27: the same option before and after (RK_ITEM's kind and node, bits 8-15): its bulb stands */
+        row_t    x    = row_at((uint8_t)(s - S_ROW0));
+        uint16_t mine = (uint16_t)((1u << 14) | ((uint16_t)x.node << 8));
+        return (was & 0xFF00u) == mine && (now & 0xFF00u) == mine ? 1u : 0u;
+    }
     if (!is_row(s) || (was & 0xE000u) != 0x2000u || (now & 0xE000u) != 0x2000u) return 0;
     if (((was ^ now) & (uint16_t)~0x01FCu) != 0u || ((now >> 10) & 7u) == 4u) return 0;
     return row_split(s) ? 3u : 2u;

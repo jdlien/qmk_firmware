@@ -70,6 +70,19 @@ static const uint16_t bulb_cols[BULB_MODES][5] = {
     {COL_BULB_OFF, 0, COL_BULB_OFF_BASE, COL_BULB_OFF_COLLAR, COL_BULB_OFF_SLASH},
 };
 
+void power_bulb_row(uint8_t mode, uint8_t y, uint16_t *px, uint8_t w, uint16_t bg, bool swap) {
+    uint16_t pal[6] = {bg, bg, bg, bg, bg, bg};   /* '.', then '#', '*', '+', '=', '/' */
+    if (mode < BULB_MODES && y < BULB_H)
+        for (uint8_t i = 0; i < 5u; i++) pal[i + 1u] = bulb_cols[mode][i];
+    if (swap)
+        for (uint8_t i = 0; i < 6u; i++) pal[i] = (uint16_t)((pal[i] >> 8) | (pal[i] << 8));
+    const char *art = mode < BULB_MODES && y < BULB_H ? bulb_art[mode][y] : ".............";
+    for (uint8_t i = 0; i < w; i++) {
+        char c = i < BULB_W ? art[i] : '.';
+        px[i]  = pal[c == '.' ? 0 : c == '#' ? 1 : c == '*' ? 2 : c == '+' ? 3 : c == '=' ? 4 : 5];
+    }
+}
+
 uint16_t power_bulb_px(uint8_t mode, uint8_t x, uint8_t y, uint16_t bg) {
     if (mode >= BULB_MODES || x >= BULB_W || y >= BULB_H) return bg;
     char c = bulb_art[mode][y][x];
