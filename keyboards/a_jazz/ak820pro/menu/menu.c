@@ -253,8 +253,9 @@ static uint8_t  flash_id;                   /* 0 none */
 static uint16_t flash_t0;                   /* 16-bit ms */
 static uint8_t  confirm_page;               /* Reset counters: 0 the question, 1 done */
 /* Page-scoped: About's snapshot, frozen while it shows, or the Clock list's
- * time, read once an RTC second (clock_now()). The two never show together,
- * and each is taken as its page opens. */
+ * time, read once an RTC second (clock_now()), or whether the Battery page's
+ * hours were ready at its last look. They never show together, and each is
+ * taken as its page opens. */
 static union {
     env_about_t snap;
     struct {
@@ -264,6 +265,7 @@ static union {
         uint8_t    st;     /* CK_* */
     } clk;
     char name[PROF_NAME];   /* P5c: Rename's name, NUL-padded, its length strnlen()'s */
+    uint8_t batt_ready;     /* Both: batt_hours_ready() last seen, for menu_tick() */
 } pg;
 enum { CK_OK = 1, CK_JUMP = 2 };   /* set; a read that wasn't the last's time on, for menu_tick() */
 #define CLOCK_EXAMPLES 5u          /* the Clock page's rows 1-5 (Off has none) */
@@ -1830,6 +1832,11 @@ static menu_result_t activate(uint32_t now) {
                 pg.clk.have = false;
                 ms_invalidate_rows(S_ROW0 + 1u, CLOCK_EXAMPLES);
             }
+            if (node == N_BATT) {
+                env_batt_t b;
+                env_batt_facts(&b);
+                pg.batt_ready = batt_hours_ready(&b) ? 1u : 0u;
+            }
             push(node, saved_row(node));
             show(false, false, now);
             return MENU_NONE;
@@ -2275,6 +2282,19 @@ void menu_tick(uint32_t now, uint32_t idle_ms) {
         if (pg.clk.st & CK_JUMP) {
             pg.clk.st &= (uint8_t)~CK_JUMP;
             ms_invalidate_rows(S_ROW0 + 1u, CLOCK_EXAMPLES);
+        }
+    }
+    /* The Battery page: the hours turning ready, or not, repaint its rows
+     * whole, as the Clock's jump does. The signatures are hashes, and Both's
+     * "80% --" and "80% 57h" collide (codex, Both's review), where nothing
+     * else would change for up to an hour. */
+    if (cur()->node == N_BATT) {
+        env_batt_t b;
+        env_batt_facts(&b);
+        uint8_t ready = batt_hours_ready(&b) ? 1u : 0u;
+        if (ready != pg.batt_ready) {
+            pg.batt_ready = ready;
+            ms_invalidate_rows(S_ROW0 + 1u, MENU_ROWS - 1u);
         }
     }
     uint8_t t = want_title(now, idle_ms);
