@@ -19,13 +19,17 @@
 #define PROF_BASE       (1024u - PROF_BLOCK_SIZE)   /* 806: menu_glue.c asserts it's TOTAL_EEPROM_BYTE_COUNT - 218 */
 #define PROF_SLOTS      8u
 #define PROF_REC        27u
-#define PROF_MAGIC_V2   0xA2u   /* P5d's eight slots; P5a's four were 0xA1 (hostagent/ak820profiles.py converts) */
+#define PROF_MAGIC_V3   0xA3u   /* the active byte a side's (10-27); P5d's 0xA2 one slot, P5a's four 0xA1 (hostagent/ak820profiles.py converts) */
 #define PROF_PAGE       26u     /* HC_PROFILES' page: [6..31] of the report */
 #define PROF_PAGES      9u      /* 8 x 26 + 10 */
 #define PROF_NAME       12u
 
-/* The block: the magic, the active slot (0xFF none), eight records. */
+/* The block: the magic, the active slots, eight records. The active byte
+ * holds a slot a side of the Win/Mac switch (JD, 10-27: "the current profile
+ * is remembered for windows and Mac layers"): bits 0-3 Windows', 4-7 the
+ * Mac's, 0xF none. */
 enum { PROF_OFF_MAGIC = 0, PROF_OFF_ACTIVE = 1, PROF_OFF_REC = 2 };
+enum { PROF_SIDE_WIN = 0, PROF_SIDE_MAC = 1 };
 #define PROF_REC_OFF(slot) ((uint8_t)(PROF_OFF_REC + (slot) * PROF_REC))
 _Static_assert(PROF_OFF_REC + PROF_SLOTS * PROF_REC == PROF_BLOCK_SIZE, "the block is its header and eight records");
 _Static_assert(PROF_BLOCK_SIZE <= 255u, "the block's offsets are a byte");
@@ -56,7 +60,7 @@ enum {
 uint8_t prof_crc8(const uint8_t *p, uint8_t n);
 bool    prof_rec_valid(const uint8_t *rec);         /* state 0x01, the crc, every present field in range */
 bool    prof_formatted(void);
-uint8_t prof_active(void);                          /* 0-3; 0xFF none, or the slot isn't valid. A pending choice counts */
+uint8_t prof_active(void);                          /* the switch's side's, 0-7; 0xFF none, or the slot isn't valid. A pending choice counts */
 uint8_t prof_active_rec(uint8_t *rec);              /* the same, its record in rec (PROF_REC) when valid */
 bool    prof_slot(uint8_t slot, uint8_t *rec);      /* the slot's record; true when valid */
 uint8_t prof_valid_mask(void);                      /* P5d: bit s set when slot s holds a valid record */
@@ -74,7 +78,10 @@ uint8_t prof_rename(uint8_t slot, const char *name);   /* P5c: up to PROF_NAME c
 uint8_t prof_load(uint8_t slot);
 bool    prof_restore_open(void);                    /* an HC_PROFILES restore: the menu's writes wait */
 bool    prof_write_failed(void);                    /* a write failed: none more until a reboot (profiles.c) */
-void    prof_tick(void);                            /* 10 Hz: a restore's 5 s without a page aborts it; the active slot's write */
+void    prof_tick(void);                            /* 10 Hz: a restore's 5 s without a page aborts it; the active slot's write; a flip's load */
+/* The Win/Mac switch (10-27): the boot's reading sets the side; a change
+ * after it loads that side's profile once the switch has rested. */
+void    prof_switch(bool mac);
 
 /* HC_PROFILES (0x10 on the health channel), the whole 32 B report in place;
  * false for an unknown sub. Its framing is in profiles.c. */

@@ -121,9 +121,12 @@ void early_hardware_init_post(void) {
         return false;
     }
 
-    if (index == 0) {  // Mac/Windows switch -- icon only (layer set by keymap)
+    if (index == 0) {  // Mac/Windows switch -- the icon (layer set by keymap)
         if (active) display_draw_windows_logo();
         else        display_draw_mac_logo();
+        // ...and each side's profile (JD, 10-27): the boot's reading sets the
+        // side; a flip loads the profile last used on it (menu/profiles.c).
+        prof_switch(!active);
     } else if (index == 1 || index == 2) {
         bt_ui_mode_slider(index, active);   // tri-state slider; see bt_ui.c
     }

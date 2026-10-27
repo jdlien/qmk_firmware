@@ -35,15 +35,41 @@
 #define TX_TICKS   50u
 _Static_assert(PROF_PAGES <= TX_PAGES, "the pages' count fits its five bits");
 static uint8_t tx_token, tx_state, tx_left;
-/* The active slot's choice still to be written (P5b), 1 B: 0 none, else
- * 0x80 | the slot (0-7), or 0xFF for no slot. The menu's Load, Save and
- * Delete and the Next and Previous keys all set it here, one writer and one
- * rule: it rides kb_eeconfig's settle (env_settings_touch()) and prof_tick()
- * writes it once that write is done, so a run of presses costs one write and
- * a deep sleep waits on it (DSB_FLASH). The records' writes stay at the
- * click. */
+/* The active byte's choice still to be written (P5b), 1 B, the pair as it
+ * will be, while SD_PEND is set. The menu's Load, Save and Delete, the Next
+ * and Previous keys and the switch's flips all set it here, one writer and
+ * one rule: it rides kb_eeconfig's settle (env_settings_touch()) and
+ * prof_tick() writes it once that write is done, so a run of presses costs
+ * one write and a deep sleep waits on it (DSB_FLASH). The records' writes
+ * stay at the click. */
 static uint8_t pend;
-_Static_assert(PROF_SLOTS <= 0x7Fu, "the pending slot's 7 bits");
+_Static_assert(PROF_SLOTS <= 0xFu, "a side's slot in its nibble, 0xF none");
+/* The Win/Mac switch (10-27), 1 B: the side it reads (SD_MAC), whether the
+ * boot's reading came (SD_KNOWN), the side the profiles go by (SD_SETTLED:
+ * the Mac's when set), the pair pending, and a flip's countdown in 10 Hz
+ * ticks. The side settles once the switch has rested SD_REST ticks, so a
+ * bouncing contact loads once and a bounce back loads nothing; until then
+ * a Load or a Save goes to the side it was on. */
+#define SD_MAC     0x01u
+#define SD_KNOWN   0x02u
+#define SD_SETTLED 0x04u
+#define SD_PEND    0x08u
+#define SD_TICKS   0x70u
+#define SD_TICK    0x10u
+#define SD_REST    3u   /* 200-300 ms */
+static uint8_t side;
+
+static uint8_t cur_side(void) { return (side & SD_SETTLED) ? PROF_SIDE_MAC : PROF_SIDE_WIN; }
+static uint8_t nib(uint8_t pair, uint8_t sd) { return (uint8_t)((pair >> (sd * 4u)) & 0x0Fu); }
+/* The pair with each side that remembers slot s (or a nibble past the
+ * slots, s >= PROF_SLOTS) set to none. */
+static uint8_t drop(uint8_t pair, uint8_t s) {
+    for (uint8_t sd = PROF_SIDE_WIN; sd <= PROF_SIDE_MAC; sd++) {
+        uint8_t n = nib(pair, sd);
+        if (n == s || (s >= PROF_SLOTS && n >= PROF_SLOTS)) pair |= (uint8_t)(0x0Fu << (sd * 4u));
+    }
+    return pair;
+}
 
 /* CRC-8, polynomial 0x07, initial 0xFF, MSB first (hostagent/ak820profiles.py
  * computes the same), a byte a step from a table (P5b): bit at a time, the
@@ -119,7 +145,7 @@ static bool wr(uint8_t off, const void *src, uint8_t n, bool *consolidated) {
 }
 static bool wr8(uint8_t off, uint8_t v, bool *consolidated) { return wr(off, &v, 1, consolidated); }
 
-bool prof_formatted(void) { return rd8(PROF_OFF_MAGIC) == PROF_MAGIC_V2; }
+bool prof_formatted(void) { return rd8(PROF_OFF_MAGIC) == PROF_MAGIC_V3; }
 
 bool prof_slot(uint8_t slot, uint8_t *rec) {
     if (slot >= PROF_SLOTS || !prof_formatted()) {
@@ -150,15 +176,21 @@ uint8_t prof_free_slot(void) {
     return 0xFFu;
 }
 
-/* The active byte as it will be: the pending choice, else the block's. */
-static uint8_t active_byte(void) { return pend ? (pend == 0xFFu ? 0xFFu : (uint8_t)(pend & 0x7Fu)) : rd8(PROF_OFF_ACTIVE); }
-static void    set_active(uint8_t a) {
-    pend = (uint8_t)(0x80u | a);   /* 0xFF stays 0xFF */
+/* The active byte as it will be: the pending pair, else the block's. */
+static uint8_t active_byte(void) { return (side & SD_PEND) ? pend : rd8(PROF_OFF_ACTIVE); }
+static void    set_pair(uint8_t pair) {
+    pend = pair;
+    side |= SD_PEND;
     env_settings_touch();
+}
+/* The side the profiles go by: its slot a (0xFF none). */
+static void set_active(uint8_t a) {
+    uint8_t sh = (uint8_t)(cur_side() * 4u);
+    set_pair((uint8_t)((active_byte() & ~(0x0Fu << sh)) | ((a & 0x0Fu) << sh)));
 }
 
 uint8_t prof_active_rec(uint8_t *rec) {
-    uint8_t a = prof_formatted() ? active_byte() : 0xFFu;
+    uint8_t a = prof_formatted() ? nib(active_byte(), cur_side()) : 0xFFu;
     return a < PROF_SLOTS && prof_slot(a, rec) ? a : 0xFFu;
 }
 uint8_t prof_active(void) {
@@ -181,9 +213,10 @@ void prof_name(uint8_t slot, const uint8_t *rec, char *out) {
  * the states, the active byte, then the magic last, so the first save shows
  * and a stale byte from before the flash never reads as a record. */
 static bool format(bool *consolidated) {
+    side &= (uint8_t)~SD_PEND;   /* a fresh block's pair is none, none */
     for (uint8_t s = 0; s < PROF_SLOTS; s++)
         if (!wr8(PROF_REC_OFF(s) + PR_STATE, PS_EMPTY, consolidated)) return false;
-    return wr8(PROF_OFF_ACTIVE, 0xFFu, consolidated) && wr8(PROF_OFF_MAGIC, PROF_MAGIC_V2, consolidated);
+    return wr8(PROF_OFF_ACTIVE, 0xFFu, consolidated) && wr8(PROF_OFF_MAGIC, PROF_MAGIC_V3, consolidated);
 }
 
 /* Never inside a deep sleep's recovery (a menu can be open in its first
@@ -376,7 +409,8 @@ uint8_t prof_delete(uint8_t slot) {
     uint8_t st = slot < PROF_SLOTS ? writable() : PROF_BAD;
     if (st != PROF_OK || !prof_formatted()) return st;
     if (!wr8(PROF_REC_OFF(slot) + PR_STATE, PS_EMPTY, &c)) return PROF_WRITE_FAILED;
-    if (active_byte() == slot) set_active(0xFFu);
+    uint8_t a = active_byte(), b = drop(a, slot);   /* either side's */
+    if (b != a) set_pair(b);
     return PROF_OK;
 }
 
@@ -431,19 +465,48 @@ bool prof_take_changed(void) {
 static void write_active(void) {
     bool    c = false;
     uint8_t a = active_byte();
-    pend      = 0u;
+    side &= (uint8_t)~SD_PEND;
     if (prof_formatted()) (void)wr8(PROF_OFF_ACTIVE, a, &c);
+}
+
+/* A flip settled: the new side's profile loaded, as the Next and Previous
+ * keys load one, and named (env_prof_switched()). A side that remembers
+ * none, or a bounce back to the side it was on, changes nothing. */
+static void settle_side(void) {
+    uint8_t now = (side & SD_MAC) ? SD_SETTLED : 0u;
+    if ((side & SD_SETTLED) == now) return;
+    side = (uint8_t)((side & ~SD_SETTLED) | now);
+    uint8_t rec[PROF_REC], s = prof_active_rec(rec);
+    if (s >= PROF_SLOTS) return;
+    cancel_previews();
+    env_prof_switched(s, prof_load(s));
+}
+
+void prof_switch(bool mac) {
+    uint8_t m = mac ? SD_MAC : 0u;
+    if (!(side & SD_KNOWN)) {   /* the boot's (dip_switch_init(), before the EEPROM is read): no load */
+        side = (uint8_t)((side & SD_PEND) | SD_KNOWN | m | (mac ? SD_SETTLED : 0u));
+        return;
+    }
+    if ((side & SD_MAC) == m) return;   /* a reading again, not a change */
+    side = (uint8_t)((side & ~(SD_MAC | SD_TICKS)) | m | (SD_REST * SD_TICK));
 }
 
 void prof_tick(void) {
     if (prof_restore_open() && --tx_left == 0u) tx_close();   /* aborted: the block stays unformatted */
+    /* A flip's countdown; at its end the load waits out a recovery or a
+     * restore, as the keys' would be refused. */
+    if ((side & SD_TICKS) && !((side & SD_TICKS) == SD_TICK && writable() == PROF_BUSY)) {
+        side = (uint8_t)(side - SD_TICK);
+        if (!(side & SD_TICKS)) settle_side();
+    }
     /* After kb_eeconfig's settled write (it runs just before this in the
      * 10 Hz block), never in a recovery or a restore. */
-    if (pend && !env_settings_pending() && writable() == PROF_OK) write_active();
+    if ((side & SD_PEND) && !env_settings_pending() && writable() == PROF_OK) write_active();
 }
 
 #ifdef MENU_HOST_TEST
-void prof_test_reset(void) { tx_token = tx_state = tx_left = pend = 0u; }
+void prof_test_reset(void) { tx_token = tx_state = tx_left = pend = side = 0u; }
 #endif
 
 /* An open edit's preview back first, as VIA's lighting reads do
@@ -462,22 +525,21 @@ static uint8_t page_len(uint8_t p) {
 }
 
 /* The restore's commit: every page received; each record empty or valid; the
- * active byte normalized; the magic last, in its own write. */
+ * active byte normalized, each side's; the magic last, in its own write. */
 static uint8_t commit(void) {
     bool    c = false;
     uint8_t rec[PROF_REC];
     if ((tx_state & TX_PAGES) != PROF_PAGES) return PROF_INCOMPLETE;
-    uint8_t a = rd8(PROF_OFF_ACTIVE);
+    uint8_t a = drop(rd8(PROF_OFF_ACTIVE), PROF_SLOTS);   /* a nibble past the slots */
     for (uint8_t s = 0; s < PROF_SLOTS; s++) {
         rd(PROF_REC_OFF(s), rec, PROF_REC);
         if (rec[PR_STATE] == PS_EMPTY) {
-            if (a == s) a = 0xFFu;
+            a = drop(a, s);
         } else if (!prof_rec_valid(rec)) {
             return PROF_INVALID;
         }
     }
-    if (a >= PROF_SLOTS) a = 0xFFu;
-    return wr8(PROF_OFF_ACTIVE, a, &c) && wr8(PROF_OFF_MAGIC, PROF_MAGIC_V2, &c) ? PROF_OK : PROF_WRITE_FAILED;
+    return wr8(PROF_OFF_ACTIVE, a, &c) && wr8(PROF_OFF_MAGIC, PROF_MAGIC_V3, &c) ? PROF_OK : PROF_WRITE_FAILED;
 }
 
 /* The report in place: [0] SET_VALUE, [1] 0x13, [2] 0x10, [3] the sub; VIA
@@ -497,12 +559,16 @@ static uint8_t commit(void) {
  *                                             and the pending active slot's (P5b): WRITE_FAILED if it failed, or
  *                                             while the latch holds (any profile write failed since the boot)
  *   7  the geometry (P5d)                  -> [4] slots, [5] a record's bytes, [6] pages, [7] a page's bytes,
- *                                             [8] the magic. P5a's and P5b's builds answer it unhandled: the
- *                                             host takes them for four slots, five pages, magic 0xA1
+ *                                             [8] the magic, [9] the side the profiles go by (10-27: 1
+ *                                             Windows, 2 the Mac, 0 before the switch's first reading; the
+ *                                             builds before, 0). P5a's and P5b's builds answer it unhandled:
+ *                                             the host takes them for four slots, five pages, magic 0xA1
  * 4, 5 and 6 cancel an open preview first. Dev builds: 0x40 save the live
  * settings to slot [4] -> [5] status, [6] 1 when the wear-leveling layer
- * consolidated; 0x41 delete slot [4] -> [5] status. The subs that write the
- * block (1, 2, 3, 0x40, 0x41) mark it changed for the menu. */
+ * consolidated; 0x41 delete slot [4] -> [5] status; 0x42 the switch read as
+ * [4] (0 Windows, 1 the Mac), as a flip would read it -> [5] status (10-27:
+ * the board's checks; put it back after). The subs that write the block
+ * (1, 2, 3, 0x40, 0x41) mark it changed for the menu. */
 bool prof_hid(uint8_t *d) {
     uint8_t p = d[4];
     bool    c = false;
@@ -514,11 +580,11 @@ bool prof_hid(uint8_t *d) {
                 return true;
             }
             rd((uint8_t)(p * PROF_PAGE), &d[6], page_len(p));
-            if (p == 0u && pend) d[6 + PROF_OFF_ACTIVE] = active_byte();   /* a backup has the choice the board will write */
+            if (p == 0u && (side & SD_PEND)) d[6 + PROF_OFF_ACTIVE] = active_byte();   /* a backup has the choice the board will write */
             return true;
         case 1:
             tx_close();
-            pend = 0u;   /* the restore's active byte wins */
+            side &= (uint8_t)~SD_PEND;   /* the restore's active byte wins */
             tx_state |= TX_CHANGED;
             if (tx_state & TX_FAILED) {
                 d[6] = PROF_WRITE_FAILED;
@@ -598,7 +664,7 @@ bool prof_hid(uint8_t *d) {
                 return true;
             }
             env_settings_flush();
-            if (pend && writable() == PROF_OK) write_active();   /* the choice durable too */
+            if ((side & SD_PEND) && writable() == PROF_OK) write_active();   /* the choice durable too */
             /* WRITE_FAILED while the latch holds: this write's failure, or any
              * profile write's since the boot, a deferred one included, whose
              * pending choice is gone (codex, both rounds). The cache can't
@@ -611,7 +677,8 @@ bool prof_hid(uint8_t *d) {
             d[5] = PROF_REC;
             d[6] = PROF_PAGES;
             d[7] = PROF_PAGE;
-            d[8] = PROF_MAGIC_V2;
+            d[8] = PROF_MAGIC_V3;
+            d[9] = (side & SD_KNOWN) ? (uint8_t)(1u + cur_side()) : 0u;
             return true;
 #if defined(AK820_DEV_HOOKS) || defined(MENU_HOST_TEST)
         case 0x40:
@@ -623,6 +690,10 @@ bool prof_hid(uint8_t *d) {
         case 0x41:
             d[5] = prof_delete(p);
             tx_state |= TX_CHANGED;
+            return true;
+        case 0x42:
+            prof_switch(p != 0u);
+            d[5] = PROF_OK;
             return true;
 #endif
         default:

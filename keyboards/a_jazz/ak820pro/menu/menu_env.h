@@ -88,6 +88,9 @@ void     env_settings_flush(void);
  * write still to come (a deep sleep's DSB_FLASH). */
 void     env_settings_touch(void);
 bool     env_settings_pending(void);
+/* 10-27: a flip of the Win/Mac switch loaded slot's profile, prof_load()'s
+ * status st: named as the Next and Previous keys name theirs. */
+void     env_prof_switched(uint8_t slot, uint8_t st);
 /* P5c, Rename's capture: the debounced matrix idle (the knob masked) and
  * QMK's tapping holding nothing; the one-shots cleared; the default layer's
  * keycode at a position; a Shift held, by the default layer's keycodes. */

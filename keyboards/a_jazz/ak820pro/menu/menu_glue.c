@@ -186,26 +186,36 @@ bool env_recovering(void) { return sleep_recovering(); }
  * prof_step()), and the slot's name in the dashboard's status band, as Fn+B
  * and Fn+C post theirs. The band holds 12 characters (CONN_STATUS_MAX), a
  * name's limit, so the name stands alone. With the menu open the band drops
- * it (C1), and the menu's rows show the change. */
+ * it (C1), and the menu's rows show the change. A flip of the Win/Mac
+ * switch (10-27) names its load the same way, and a refusal not at all: a
+ * failed write's latch has the menu's "Save failed". */
+static bool prof_named(uint8_t slot, uint8_t st) {
+#ifdef PARAM_OVERLAY
+    if (st != PROF_OK && st != PROF_OK_EFFECT_SKIPPED) return false;
+    uint8_t rec[PROF_REC];
+    char    name[PROF_NAME + 1];
+    (void)prof_slot(slot, rec);
+    prof_name(slot, rec, name);
+    /* The load moved the lighting: the poll's next pass would post its
+     * own readout over the name (codex, P5b's review). Its lighting
+     * baseline takes the change. */
+    param_status_rebase_rgb();
+    display_set_param_status(name);
+#else
+    (void)slot;
+    (void)st;
+#endif
+    return true;
+}
 void menu_prof_key(bool next) {
     uint8_t slot = 0, st = prof_step(next, &slot);
 #ifdef PARAM_OVERLAY
-    if (st == PROF_OK || st == PROF_OK_EFFECT_SKIPPED) {
-        uint8_t rec[PROF_REC];
-        char    name[PROF_NAME + 1];
-        (void)prof_slot(slot, rec);
-        prof_name(slot, rec, name);
-        /* The load moved the lighting: the poll's next pass would post its
-         * own readout over the name (codex, P5b's review). Its lighting
-         * baseline takes the change. */
-        param_status_rebase_rgb();
-        display_set_param_status(name);
-    } else
-        display_set_param_status(st == PROF_INVALID ? "No profiles" : "Busy");
+    if (!prof_named(slot, st)) display_set_param_status(st == PROF_INVALID ? "No profiles" : "Busy");
 #else
-    (void)st;
+    (void)prof_named(slot, st);
 #endif
 }
+void env_prof_switched(uint8_t slot, uint8_t st) { (void)prof_named(slot, st); }
 void env_settings_flush(void) {
     kb_eeconfig_flush();
     eeconfig_force_flush_rgb_matrix();
