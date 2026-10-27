@@ -939,7 +939,7 @@ static uint32_t drive_now[3] = {0};   /* the committed frame's channel sums: r, 
 static uint32_t drive_since  = 0;     /* when it was committed, ms */
 static uint64_t drive_acc[3] = {0};   /* sum x ms since the last take, per colour */
 static uint32_t drive_lit    = 0;     /* ms with any channel lit, since the last take */
-static uint16_t commits      = 0;     /* frames committed, wrapping (sn32f2xx_led_commits()) */
+static uint8_t  commits      = 0;     /* frames committed, wrapping (sn32f2xx_led_commits()) */
 
 static void drive_close(uint32_t now) {
     uint32_t dt = now - drive_since;
@@ -964,7 +964,7 @@ bool sn32f2xx_led_committed_dark(void) {
     return (drive_now[0] | drive_now[1] | drive_now[2]) == 0;
 }
 
-uint16_t sn32f2xx_led_commits(void) {
+uint8_t sn32f2xx_led_commits(void) {
     return commits;
 }
 

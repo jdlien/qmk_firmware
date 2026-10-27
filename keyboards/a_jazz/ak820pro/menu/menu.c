@@ -288,7 +288,7 @@ static union {
         uint8_t  dim;       /* Dim + cleanup: 1 waiting for the cap, 2 for its frames on the LEDs */
         uint16_t next;      /* 16-bit ms: the next of the ten */
         uint16_t dim_at;    /* 16-bit ms: the dim's cleanup at the soonest, once 2 */
-        uint16_t frames;    /* env_wt_frames() when the cap was on */
+        uint8_t  frames;    /* env_wt_frames() when the cap was on */
     } wt;
 } pg;
 enum { CK_OK = 1, CK_JUMP = 2 };   /* set; a read that wasn't the last's time on, for menu_tick() */
@@ -1998,7 +1998,7 @@ static bool wt_tick(uint32_t now) {
         pg.wt.dim_at = (uint16_t)(now + WT_FRAME_MS);
         pg.wt.frames = env_wt_frames();
     } else if (pg.wt.dim == 2u && (int16_t)((uint16_t)now - pg.wt.dim_at) >= 0 &&
-               (uint16_t)(env_wt_frames() - pg.wt.frames) >= 2u) {
+               (uint8_t)(env_wt_frames() - pg.wt.frames) >= 2u) {
         pg.wt.dim = 0;
         flash(env_wt_cleanup() ? T_WT_CLEAN : T_WT_FAIL, now);
         moved = true;

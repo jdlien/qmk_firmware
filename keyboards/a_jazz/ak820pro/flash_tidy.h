@@ -36,8 +36,7 @@
 void flash_tidy_task(void);
 
 /* HC_FLASHW page 4 (hid_protocol.c), 28 bytes: u16 the log's bytes in use,
- * u16 its size, u16 the threshold, u16 early cleanups since boot, u16 those
- * that failed, u32 the uptime of the last (ms, 0 none), u8 its kind (1 dark,
- * 2 lit), the rest zero. */
+ * u16 its size, u16 the threshold, u16 early cleanups since boot, u8 those
+ * that failed, u8 the last's kind (1 dark, 2 lit, 0 none), the rest zero. */
 #define FLASH_TIDY_PAGE 4u
 void flash_tidy_fill(uint8_t *out28);

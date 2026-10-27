@@ -105,7 +105,7 @@ bool sn32f2xx_led_committed_dark(void);
  * wrapping. A caller that changed what renders waits for it to move twice:
  * a change made this pass reaches the LEDs only at a later flush, and a pass
  * blocked meanwhile (a consolidation) flushes nothing. Main-thread only. */
-uint16_t sn32f2xx_led_commits(void);
+uint8_t sn32f2xx_led_commits(void);
 
 /* ak820pro (2026-10-27): what the row ISR does while an internal-flash
  * program runs (EFLD1.state == FLASH_PGM). true (the default): the scan runs

@@ -20,11 +20,13 @@
 
 enum { TIDY_DARK = 1, TIDY_LIT = 2 };
 
-static bool     tried;      /* a try since boot */
-static uint32_t tried_at;   /* last_input_activity_time() at it: one a pause */
-static uint16_t tidies, failures;
-static uint32_t last_ms;
-static uint8_t  last_kind;
+/* 6 B: the build's heap gap is at its floor (C5). */
+static struct {
+    uint16_t tried_at;   /* last_input_activity_time()'s low half at the last try: one a pause */
+    uint16_t tidies;     /* since boot */
+    uint8_t  failures;
+    uint8_t  kind;       /* the last's, TIDY_DARK or TIDY_LIT; 0 none tried */
+} t;
 
 void flash_tidy_task(void) {
     if (wear_leveling_log_used() < TIDY_BYTES) return;
@@ -38,14 +40,13 @@ void flash_tidy_task(void) {
     } else {
         return;
     }
-    if (tried && last_input_activity_time() == tried_at) return;
+    uint16_t pause = (uint16_t)last_input_activity_time();
+    if (t.kind && pause == t.tried_at) return;
     if (display_menu_sleep_blocked() || sleep_recovering() || power_lights_cut()) return;
-    tried     = true;
-    tried_at  = last_input_activity_time();
-    last_kind = kind;
-    last_ms   = timer_read32();
-    tidies++;
-    if (wear_leveling_consolidate() == WEAR_LEVELING_FAILED) failures++;
+    t.tried_at = pause;
+    t.kind     = kind;
+    t.tidies++;
+    if (wear_leveling_consolidate() == WEAR_LEVELING_FAILED && t.failures < 0xFFu) t.failures++;
 }
 
 void flash_tidy_fill(uint8_t *out28) {
@@ -55,10 +56,8 @@ void flash_tidy_fill(uint8_t *out28) {
     PUT16(wear_leveling_log_used());
     PUT16(LOG_BYTES);
     PUT16(TIDY_BYTES);
-    PUT16(tidies);
-    PUT16(failures);
-    PUT16(last_ms & 0xFFFFu);
-    PUT16(last_ms >> 16);
-    *p = last_kind;
+    PUT16(t.tidies);
+    *p++ = t.failures;
+    *p   = t.kind;
 #undef PUT16
 }

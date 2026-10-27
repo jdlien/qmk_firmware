@@ -116,7 +116,7 @@ bool     env_wt_cleanup(void);
 void     env_wt_dim(bool on);
 bool     env_wt_dimmed(void);
 bool     env_wt_dim_applied(void);   /* forced, and the ladder's cap in force: the dim rendering */
-uint16_t env_wt_frames(void);
+uint8_t  env_wt_frames(void);
 #endif
 /* P5c, Rename's capture: the debounced matrix idle (the knob masked) and
  * QMK's tapping holding nothing; the one-shots cleared; the default layer's
