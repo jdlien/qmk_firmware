@@ -101,6 +101,15 @@ uint64_t sn32f2xx_led_drive_take(uint32_t now_ms, uint32_t *lit_ms, uint64_t rgb
  * replaces it. Main-thread only. */
 bool sn32f2xx_led_committed_dark(void);
 
+/* ak820pro (2026-10-27): what the row ISR does while an internal-flash
+ * program runs (EFLD1.state == FLASH_PGM). false (the default): every mux row
+ * de-selected, the board dark for the program's length (the 09-01 guard).
+ * true: the scan runs straight through, as between programs; interrupts are
+ * masked only for each line's 10-20 us window, so a row is at most that late.
+ * A dev build's write test switches it at run time to compare the two by eye
+ * (plans/BACKLOG.md, "The LED blink at an internal-flash write"). */
+extern volatile bool sn32f2xx_pgm_scan;
+
 /* Scale every LED's output by scale/256 (255 = unscaled) below the rgb_matrix
  * config: dim or darken the matrix without touching the user's brightness.
  * Takes effect as the next frame renders. Main-thread only. */

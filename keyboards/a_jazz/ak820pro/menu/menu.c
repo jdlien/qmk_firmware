@@ -51,6 +51,7 @@ enum {
     N_PRENAME,                                                  /* 56: P5c, Rename; as a frame its page, the slot in the cursor */
     N_BV2,                                                      /* 57: Battery's third readout, Both (JD, 10-26) */
     N_DEFAULTS,                                                 /* 58: Reset settings (JD, 10-27), its confirm as a frame */
+    N_WTEST, N_WROW,                                            /* 59-60: dev builds' write test (10-27); a row's index in val */
     N_COUNT
 };
 _Static_assert(N_COUNT <= 63, "a row's node is 6 bits");
@@ -67,7 +68,15 @@ static const uint8_t top_rows[]   = {N_LIGHT, N_SCREEN, N_CONN,     N_POWER, N_I
 static const uint8_t light_rows[] = {N_BACK, N_EFFECT, N_BRIGHT, N_HUE, N_SAT, N_SPEED, N_LIGHTS};
 static const uint8_t ind_rows[]   = {N_BACK, N_LOCKS, N_CHGL};
 static const uint8_t conn_rows[]  = {N_BACK, N_BT0, N_BT1, N_BT2, N_PAIRNOW};   /* P3: on BT */
+/* 10-27 (JD: "add a dev-only option in the menu that lets you do a write
+ * strategy test to see if the board blinks"): dev builds' Write test, the
+ * LED blink at an internal-flash write compared by eye (plans/BACKLOG.md). */
+#if defined(AK820_DEV_HOOKS) || defined(MENU_HOST_TEST)
+#    define MENU_WTEST 1
+static const uint8_t diag_rows[]  = {N_BACK, N_HEALTH, N_CAMERA, N_RESET, N_WTEST};
+#else
 static const uint8_t diag_rows[]  = {N_BACK, N_HEALTH, N_CAMERA, N_RESET};
+#endif
 static const uint8_t help_rows[]  = {N_BACK, N_TOPIC0, N_TOPIC1, N_TOPIC2, N_TOPIC3};
 static const uint8_t power_rows[] = {N_BACK, N_POW0, N_POW1, N_POW2, N_POW3};
 static const uint8_t clock_rows[] = {N_BACK, N_CLK0, N_CLK1, N_CLK2, N_CLK3, N_CLK4, N_CLK5};
@@ -193,6 +202,7 @@ static const char *label_of(uint8_t node) {
         case N_LIGHTS: return "Lights";
         case N_BOOT:   return "Bootloader";
         case N_DEFAULTS: return "Reset settings";   /* 10-27 */
+        case N_WTEST:  return "Write test";         /* 10-27, dev */
         case N_IND:    return "Indicators";
         case N_CONN:   return "Connection";
         case N_LOCKS:  return "Lock lights";
@@ -271,6 +281,11 @@ static union {
     } clk;
     char name[PROF_NAME];   /* P5c: Rename's name, NUL-padded, its length strnlen()'s */
     uint8_t batt_ready;     /* Both: batt_hours_ready() last seen, for menu_tick() */
+    struct {                /* 10-27, dev: the write test's */
+        uint8_t  left;      /* Ten writes: still to come */
+        uint8_t  dim;       /* Dim + write: 1 the write waits for the dim */
+        uint16_t next;      /* 16-bit ms: the next of the ten */
+    } wt;
 } pg;
 enum { CK_OK = 1, CK_JUMP = 2 };   /* set; a read that wasn't the last's time on, for menu_tick() */
 #define CLOCK_EXAMPLES 5u          /* the Clock page's rows 1-5 (Off has none) */
@@ -351,7 +366,15 @@ static uint8_t effects(void) {
 }
 static uint8_t pfs_saved(void);
 static uint8_t pfs_nth(uint8_t k);
+#ifdef MENU_WTEST
+enum { WT_STRATEGY = 1, WT_ONE, WT_TEN, WT_CLEAN, WT_DIM, WT_ROWS };
+static const char *const wt_labels[WT_ROWS] = {"", "Strategy", "One write", "Ten writes", "Cleanup", "Dim + write"};
+static void wt_leave(void);   /* with the page's other functions, before activate() */
+#endif
 static uint8_t row_count(uint8_t node) {
+#ifdef MENU_WTEST
+    if (node == N_WTEST) return WT_ROWS;
+#endif
     if (node == N_EFFECT) return (uint8_t)(1u + effects());
     if (node == N_LIGHTS) return 3;
     if (node == N_PROFILES) return (uint8_t)(2u + pfs_saved());   /* P5d: Back, the saved slots, Save new */
@@ -366,6 +389,13 @@ static uint8_t row_node(uint8_t node, uint8_t i, uint8_t *val) {
         *val = (uint8_t)(i - 1u);
         return node == N_EFFECT ? N_EFFOPT : N_LTSOPT;
     }
+#ifdef MENU_WTEST
+    if (node == N_WTEST) {
+        if (!i) return N_BACK;
+        *val = i;
+        return i < WT_ROWS ? N_WROW : N_NONE;
+    }
+#endif
     if (node == N_PROFILES) {   /* P5d: row i the (i - 1)th saved slot, its slot in val; then Save new */
         if (!i) return N_BACK;
         uint8_t s = pfs_nth((uint8_t)(i - 1u));
@@ -387,7 +417,7 @@ static uint8_t row_index(uint8_t list, uint8_t node) {
 static bool is_topic(uint8_t node) { return node >= N_TOPIC0 && node <= N_TOPIC3; }
 static bool is_list(uint8_t node) {
     return node == N_TOP || node == N_DIAG || node == N_HELP || node == N_LIGHT || node == N_IND || node == N_CONN ||
-           node == N_PROFILES || is_pslot(node);
+           node == N_PROFILES || is_pslot(node) || node == N_WTEST;
 }
 static bool is_bt_screen(uint8_t node) { return node == N_CONN || node == N_PAIRING; }   /* P3: on BT only */
 static bool is_preview(uint8_t node) { return node == N_EFFECT || node == N_LIGHTS; }   /* P1b's previewing choices */
@@ -457,7 +487,8 @@ enum { T_TOP = 1, T_POWER, T_CLOCK, T_DIAG, T_HELP, T_ABOUT, T_TOPIC0, T_RESET =
        T_LOADED, T_LOADED_NOFX, T_DELETED, T_PBUSY, T_SAVE_FAILED,                          /* 56-60 */
        T_PFULL,                                                                             /* 61: P5d */
        T_PRENAME, T_RENAMED,                                                                /* 62-63: P5c */
-       T_DEFAULTS, T_DEFAULTS_DONE };                                                       /* 64-65: Reset settings (10-27) */
+       T_DEFAULTS, T_DEFAULTS_DONE,                                                         /* 64-65: Reset settings (10-27) */
+       T_WTEST, T_WT_DONE, T_WT_NONE, T_WT_CLEAN, T_WT_FAIL };                              /* 66-70: dev's write test */
 _Static_assert(T_RESET == 11, "the title ids: the design's table");
 
 static uint8_t screen_title(void) {
@@ -480,6 +511,7 @@ static uint8_t screen_title(void) {
         case N_LIGHTS: return T_LIGHTS;
         case N_BOOT:   return T_BOOT;
         case N_DEFAULTS: return T_DEFAULTS;
+        case N_WTEST:  return T_WTEST;
         case N_IND:    return T_IND;
         case N_CONN:
         case N_CONNINFO: return T_CONN;
@@ -548,6 +580,11 @@ static const char *title_text(uint8_t id) {
         case T_RENAMED:    return "Renamed";
         case T_DEFAULTS:   return "Reset settings";       /* 10-27 */
         case T_DEFAULTS_DONE: return "Settings reset";
+        case T_WTEST:      return "Write test";           /* 10-27, dev */
+        case T_WT_DONE:    return "Written";
+        case T_WT_NONE:    return "No spare byte";        /* VIA's macros fill the buffer */
+        case T_WT_CLEAN:   return "Cleaned up";
+        case T_WT_FAIL:    return "Write failed";
         default: break;
     }
     if (id >= T_TOPIC0 && id < T_TOPIC0 + 4) return menu_help_titles[id - T_TOPIC0];
@@ -569,6 +606,7 @@ static const char *title_icon(uint8_t id) {
         case T_SCREEN: return icon_of(N_SCREEN);
         case T_BOOT:   return icon_of(N_BOOT);
         case T_DEFAULTS: return icon_of(N_DEFAULTS);
+        case T_WTEST:  return icon_of(N_DIAG);
         case T_IND:
         case T_LOCKS:
         case T_CHGL:   return icon_of(N_IND);
@@ -915,6 +953,12 @@ static row_t row_at(uint8_t r) {
         x.val    = val;
         x.bullet = pfs_active() == val;
     } else if (x.node == N_PNEW) x.val = pfs_saved() >= PROF_USER ? 1u : 0u;   /* P5d: 1 every slot saved, greyed */
+#ifdef MENU_WTEST
+    else if (x.node == N_WROW) {   /* 10-27: its index in val, its state in line (row_sig's bit 2) */
+        x.val  = val;
+        x.line = val == WT_STRATEGY ? env_wt_scan() : val == WT_TEN ? pg.wt.left != 0u : val == WT_DIM ? env_wt_dimmed() : 0u;
+    }
+#endif
     else if (x.node == N_EFFOPT || x.node == N_LTSOPT) x.val = val;
     else if (value_which(x.node) >= 0) {
         x.kind = RK_VALUE;
@@ -1049,6 +1093,9 @@ static void row_text(const row_t *x, char *out) {
                       : x->node == N_LTSOPT   ? (x->val ? "On" : "Off")
                       : x->node == N_PAIRNOW  ? pair_labels[x->val % 3u]
                       : x->node == N_PSLOT    ? pslot_label(x->val, nm)   /* P5b */
+#ifdef MENU_WTEST
+                      : x->node == N_WROW     ? wt_labels[x->val % WT_ROWS]   /* 10-27 */
+#endif
                                               : label_of(x->node);
     const char *value = "";
     if (x->node == N_POWER) value = power_short[x->val & 3u];
@@ -1061,9 +1108,13 @@ static void row_text(const row_t *x, char *out) {
     else if (x->node == N_PROFILES) value = prof_value(x, buf);           /* P5b */
     else if (x->node == N_PSLOT) value = MT_TRI_R;                        /* a saved slot opens its page */
     else if (x->node == N_PNEW) value = x->val ? "Full" : "";            /* P5d */
+#ifdef MENU_WTEST
+    else if (x->node == N_WROW)   /* 10-27: the strategy; Ten writes running; the dim held */
+        value = x->val == WT_STRATEGY ? (x->line ? "Scan" : "Blank") : x->line ? (x->val == WT_TEN ? "Writing" : "On") : "";
+#endif
     else if (x->node == N_DIAG || x->node == N_HELP || x->node == N_ABOUT || x->node == N_HEALTH ||
              x->node == N_CAMERA || x->node == N_RESET || is_topic(x->node) || x->node == N_LIGHT || x->node == N_BOOT ||
-             x->node == N_IND || x->node == N_DEFAULTS)
+             x->node == N_IND || x->node == N_DEFAULTS || x->node == N_WTEST)
         value = MT_TRI_R;                            /* JD, 10-24: ▶ for > */
     size_t      at   = 0;
     const char *icon = icon_of(x->node);
@@ -1786,6 +1837,9 @@ static menu_result_t pop(uint32_t now) {
     uint8_t from = cur()->node;
     if (is_editor(from) || is_preview(from)) me_cancel();   /* never leave an edit open (a no-op once saved) */
     if (from == N_PROFILES) pv_show(PV_LIVE);                /* P5e: out of Profiles, the live settings */
+#ifdef MENU_WTEST
+    if (from == N_WTEST) wt_leave();                         /* 10-27: its writes stop, its dim goes */
+#endif
     depth--;
     if (cur()->node == N_PSLOT) pv_show(pslot);              /* P5e: back from a confirm, its profile again */
     /* P5d: back on its row, wherever a host's write moved it; in range either way */
@@ -1860,6 +1914,77 @@ static void edit_turn(int8_t turns, uint32_t now) {
     ms_retarget();
 }
 
+#ifdef MENU_WTEST
+/* --- 10-27, dev builds: the write test -----------------------------------------
+ * JD: "a suite I can trigger from the cool new menu system ... and see what
+ * looks better". Strategy switches what the LEDs do during a flash program
+ * (Blank, every row dark: the 09-01 guard; Scan: straight through); One
+ * write and Ten writes (one a second) write a spare byte, as a setting's
+ * save does; Cleanup forces the store's consolidation, the long one; Dim +
+ * write forces the ladder's Dim and writes as the dim lands (JD: "if the
+ * blink coincided with the keyboard going dim"), a click again releasing it.
+ * Leaving the page or the session stops the writes and releases the dim, but
+ * only a dim this page forced (wt_dimmed): a bench's forced stage stays. */
+static uint8_t wt_dimmed;
+static void wt_flash(uint8_t st, uint32_t now) {
+    flash(st == ENV_WT_NONE ? T_WT_NONE : st == ENV_WR_FAILED ? T_WT_FAIL : T_WT_DONE, now);
+}
+static void wt_undim(void) {
+    pg.wt.dim = 0;
+    if (wt_dimmed) env_wt_dim(false);
+    wt_dimmed = 0;
+}
+static void wt_leave(void) {
+    pg.wt.left = 0;
+    wt_undim();
+}
+void menu_wtest_closed(void) {
+    if (wt_dimmed) {
+        env_wt_dim(false);
+        wt_dimmed = 0;
+    }
+}
+static void wt_click(uint8_t i, uint32_t now) {
+    switch (i) {
+        case WT_STRATEGY: env_wt_set_scan(!env_wt_scan()); break;
+        case WT_ONE:      wt_flash(env_wt_write(), now); break;
+        case WT_TEN:      /* a click again stops it */
+            pg.wt.left = pg.wt.left ? 0u : 10u;
+            pg.wt.next = (uint16_t)now;
+            break;
+        case WT_CLEAN:    flash(env_wt_cleanup() ? T_WT_CLEAN : T_WT_FAIL, now); break;
+        case WT_DIM:
+            if (env_wt_dimmed()) {
+                wt_undim();
+            } else {
+                env_wt_dim(true);
+                wt_dimmed = 1;
+                pg.wt.dim = 1;   /* the write waits for the cap (wt_tick()) */
+            }
+            break;
+        default: break;
+    }
+}
+/* Each pass on the page: the ten writes' next, the dim's write once the cap
+ * is on the LEDs. True when the page's state moved. */
+static bool wt_tick(uint32_t now) {
+    bool moved = false;
+    if (pg.wt.left && (int16_t)((uint16_t)now - pg.wt.next) >= 0) {
+        uint8_t st = env_wt_write();
+        wt_flash(st, now);
+        pg.wt.left = st == ENV_WR_FAILED || st == ENV_WT_NONE ? 0u : (uint8_t)(pg.wt.left - 1u);
+        pg.wt.next = (uint16_t)(pg.wt.next + 1000u);
+        moved      = true;
+    }
+    if (pg.wt.dim && env_wt_dim_applied()) {
+        pg.wt.dim = 0;
+        wt_flash(env_wt_write(), now);
+        moved = true;
+    }
+    return moved;
+}
+#endif
+
 static menu_result_t activate(uint32_t now) {
     frame_t *f = cur();
     uint8_t  val, node = row_node(f->node, f->cursor, &val);
@@ -1923,9 +2048,18 @@ static menu_result_t activate(uint32_t now) {
         case N_HELP:
         case N_LIGHT:
         case N_IND:
+#ifdef MENU_WTEST
+        case N_WTEST:
+            if (node == N_WTEST) memset(&pg.wt, 0, sizeof pg.wt);
+#endif
             push(node, 1);
             show(false, false, now);
             return MENU_NONE;
+#ifdef MENU_WTEST
+        case N_WROW:
+            wt_click(val, now);
+            return MENU_NONE;
+#endif
         case N_CONN:   /* P3: the slots on BT, the cursor on the current one; off it, JD's page */
             if (on_bt()) {
                 push(N_CONN, (uint8_t)(1u + (link_slot() > 2u ? 0u : link_slot())));
@@ -2378,6 +2512,9 @@ void menu_tick(uint32_t now, uint32_t idle_ms) {
             ms_invalidate_rows(S_ROW0 + 1u, MENU_ROWS - 1u);
         }
     }
+#ifdef MENU_WTEST
+    if (cur()->node == N_WTEST) moved |= wt_tick(now);
+#endif
     uint8_t t = want_title(now, idle_ms);
     if (t != title_id) {
         title_id = t;

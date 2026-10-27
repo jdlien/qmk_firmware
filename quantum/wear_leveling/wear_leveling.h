@@ -44,6 +44,14 @@ wear_leveling_status_t wear_leveling_erase(void);
 wear_leveling_status_t wear_leveling_write(uint32_t address, const void* value, size_t length);
 
 /**
+ * ak820pro (2026-10-27): a consolidation now, as a full write log forces one:
+ * the backing store erased and the cache written back. A dev build's write
+ * test (the configuration menu's) fires it on demand. Additive: nothing else
+ * calls it.
+ */
+wear_leveling_status_t wear_leveling_consolidate(void);
+
+/**
  * Reads logical data from the cache.
  *
  * @param address[in] the logical address to read data

@@ -323,6 +323,13 @@ static wear_leveling_status_t wear_leveling_consolidate_force(void) {
 }
 
 /**
+ * ak820pro: a consolidation on demand (wear_leveling.h).
+ */
+wear_leveling_status_t wear_leveling_consolidate(void) {
+    return wear_leveling_consolidate_force();
+}
+
+/**
  * Potential write of the current cache to the backing store.
  * Skipped if the current write log position is not at the end of the backing store.
  * During this operation, there is the potential for data loss if a power loss occurs.

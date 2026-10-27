@@ -112,6 +112,7 @@ static matrix_row_t  shared_matrix[MATRIX_ROWS]; // scan values
  * (The old matrix_locked interlock that paired with it is gone; the scheme it
  * balanced coverage for no longer exists.) */
 static volatile bool matrix_scanned = false;
+volatile bool        sn32f2xx_pgm_scan = false;   /* sn32f2xx.h: straight through a flash program (ak820pro, 10-27) */
 #endif // SHARED MATRIX
 /* +1 so a channel at FULL brightness still has a match to hit.
  *
@@ -733,7 +734,7 @@ static void rgb_callback(PWMDriver *pwmp) {
         if (scan_only) shared_matrix_rgb_disable_output();
     }
     if (scan_only) {
-        if (EFLD1.state != FLASH_PGM) {   /* as below: no scan inside a flash program */
+        if (EFLD1.state != FLASH_PGM || sn32f2xx_pgm_scan) {   /* as below: no scan inside a flash program, unless asked */
             uint8_t last = scan_only_row;
             if (++scan_only_row >= ROWS_PER_HAND) scan_only_row = 0;
             shared_matrix_scan_keys(shared_matrix, scan_only_row, last);
@@ -741,7 +742,7 @@ static void rgb_callback(PWMDriver *pwmp) {
     } else
 #endif
     // Scan the rgb and key matrix
-    if (EFLD1.state != FLASH_PGM) {
+    if (EFLD1.state != FLASH_PGM || sn32f2xx_pgm_scan) {   /* ak820pro: straight through a program when asked */
         update_pwm_channels(pwmp);
     } else {
         /* A flash program is in progress. The old guard merely SKIPPED the

@@ -26,6 +26,9 @@ void          menu_return_from_diag(uint8_t page, uint32_t now);   /* 0 Health, 
 void          menu_invalidate(void);                      /* a loss under the menu */
 menu_result_t menu_input(int8_t turns, mi_latch_t latch, uint32_t now);
 void          menu_tick(uint32_t now, uint32_t idle_ms);  /* each pass: the latched model and the title */
+#if defined(AK820_DEV_HOOKS) || defined(MENU_HOST_TEST)
+void          menu_wtest_closed(void);   /* 10-27, dev: no session open: the write test's dim released, if its */
+#endif
 uint8_t       menu_screen_id(void);                       /* op 27 sub 5, byte 14: 16 + the node showing */
 uint8_t       menu_cursor(void);                          /* byte 15: the cursor, a topic's top line, the confirm's page */
 void          menu_bootloader_refused(uint32_t now);      /* env_bootloader() couldn't release the keys: "Try again" */

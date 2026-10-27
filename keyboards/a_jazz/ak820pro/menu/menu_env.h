@@ -99,6 +99,23 @@ typedef struct {
     uint8_t   lcd, locks, charging, clock, bview, power;
 } env_defaults_t;
 void     env_defaults(env_defaults_t *d);
+#if defined(AK820_DEV_HOOKS) || defined(MENU_HOST_TEST)
+/* 10-27, dev builds: the menu's write test (JD: "a suite I can trigger from
+ * the cool new menu system"; plans/BACKLOG.md, "The LED blink at an
+ * internal-flash write"). The LED driver's strategy while a flash program
+ * runs (false: every row dark, true: the scan straight through); one small
+ * write, the spare byte past VIA's macros toggled (ENV_WR_*, or ENV_WT_NONE
+ * when the macros leave none spare); a consolidation, true when done; the
+ * power ladder's Dim stage forced or released, and whether it is forced. */
+#define ENV_WT_NONE 0xFFu
+bool     env_wt_scan(void);
+void     env_wt_set_scan(bool on);
+uint8_t  env_wt_write(void);
+bool     env_wt_cleanup(void);
+void     env_wt_dim(bool on);
+bool     env_wt_dimmed(void);
+bool     env_wt_dim_applied(void);   /* forced, and the ladder's cap in force: the dim on the LEDs */
+#endif
 /* P5c, Rename's capture: the debounced matrix idle (the knob masked) and
  * QMK's tapping holding nothing; the one-shots cleared; the default layer's
  * keycode at a position; a Shift held, by the default layer's keycodes. */

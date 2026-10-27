@@ -119,6 +119,9 @@ void menu_ops_task(uint32_t now) {
     mi_tick(now);
     op27_poll();
     if (po_session() == SESSION_NONE) menu_kind = MK_NONE;   /* closed, or a PENDING cancelled */
+#if defined(AK820_DEV_HOOKS) || defined(MENU_HOST_TEST)
+    if (po_session() != SESSION_OPEN) menu_wtest_closed();   /* 10-27: the write test's dim never outlives it */
+#endif
     if (po_session() != SESSION_OPEN) return;
 
     int8_t     turns;

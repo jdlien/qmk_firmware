@@ -235,6 +235,28 @@ void env_defaults(env_defaults_t *d) {
     d->bview        = KB_BATT_VIEW_PERCENT;
     d->power        = POWER_MODE_DEFAULT;
 }
+
+#ifdef AK820_DEV_HOOKS
+/* 10-27: the write test's (menu_env.h). Its write goes to the last byte of
+ * VIA's macro buffer, past the sixteen macros' terminators: a byte nothing
+ * reads, toggled so the wear-leveling layer writes it (an unchanged byte is
+ * skipped); refused when the macros reach it. */
+bool env_wt_scan(void) { return sn32f2xx_pgm_scan; }
+void env_wt_set_scan(bool on) { sn32f2xx_pgm_scan = on; }
+uint8_t env_wt_write(void) {
+    uint8_t buf[DYNAMIC_KEYMAP_MACRO_EEPROM_SIZE], nul = 0, i = 0;
+    eeprom_read_block(buf, (const void *)(uintptr_t)PROF_MACRO_ADDR, sizeof buf);
+    while (i < sizeof buf && nul < DYNAMIC_KEYMAP_MACRO_COUNT)
+        if (buf[i++] == 0u) nul++;
+    if (nul < DYNAMIC_KEYMAP_MACRO_COUNT || i >= sizeof buf) return ENV_WT_NONE;   /* the last byte a macro's */
+    uint8_t v = buf[sizeof buf - 1u] == 0x55u ? 0x00u : 0x55u;
+    return env_prof_write((uint16_t)(PROF_MACRO_ADDR + sizeof buf - 1u), &v, 1);
+}
+bool env_wt_cleanup(void) { return wear_leveling_consolidate() != WEAR_LEVELING_FAILED; }
+void env_wt_dim(bool on) { power_force_stage(on ? (uint8_t)POWER_STAGE_DIM : 0xFFu); }
+bool env_wt_dimmed(void) { return power_forced_stage() == (uint8_t)POWER_STAGE_DIM; }
+bool env_wt_dim_applied(void) { return env_wt_dimmed() && power_val_cap() <= 64u; }   /* power.c's DIM_VAL */
+#endif
 void env_settings_flush(void) {
     kb_eeconfig_flush();
     eeconfig_force_flush_rgb_matrix();
