@@ -29,16 +29,18 @@ static struct {
 } t;
 
 void flash_tidy_task(void) {
+    if (t.blocked) {
+        /* After a failure, none more until input is seen: a new pause. Read
+         * before the threshold, which a failed program passes empty (the
+         * store resets its log whatever the program did: codex); a stored
+         * activity time would alias where this can't. Its timer read is
+         * paid only while blocked. */
+        if (last_input_activity_elapsed() >= DARK_IDLE_MS) return;
+        t.blocked = false;
+    }
     if (wear_leveling_log_used() < TIDY_BYTES) return;
     uint32_t idle = last_input_activity_elapsed();
-    if (idle < DARK_IDLE_MS) {
-        /* Input seen: a new pause. A failure leaves the log full enough to
-         * get here every pass, so no key in between goes unseen; a stored
-         * activity time would alias where this can't (codex). */
-        t.blocked = false;
-        return;
-    }
-    if (t.blocked) return;
+    if (idle < DARK_IDLE_MS) return;
     uint8_t kind;
     if (sn32f2xx_led_committed_dark()) {
         kind = TIDY_DARK;
