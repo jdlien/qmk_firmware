@@ -939,7 +939,7 @@ static uint32_t drive_now[3] = {0};   /* the committed frame's channel sums: r, 
 static uint32_t drive_since  = 0;     /* when it was committed, ms */
 static uint64_t drive_acc[3] = {0};   /* sum x ms since the last take, per colour */
 static uint32_t drive_lit    = 0;     /* ms with any channel lit, since the last take */
-static uint8_t  commits      = 0;     /* frames committed, wrapping (sn32f2xx_led_commits()) */
+static uint8_t  commits      = 0;     /* flushes, wrapping (sn32f2xx_led_commits()) */
 
 static void drive_close(uint32_t now) {
     uint32_t dt = now - drive_since;
@@ -969,6 +969,7 @@ uint8_t sn32f2xx_led_commits(void) {
 }
 
 void sn32f2xx_flush(void) {
+    commits++;   /* every render's, changed or not: a Solid frame after a dim changes nothing (codex) */
     if (led_state_buf_update_required) {
         /* The row ISR reads led_state[] to set each channel's duty, and this
          * memcpy runs on the MAIN LOOP -- so without a lock the ISR can land
@@ -995,7 +996,6 @@ void sn32f2xx_flush(void) {
         drive_now[0] = sr;
         drive_now[1] = sg;
         drive_now[2] = sb;
-        commits++;
     }
 }
 

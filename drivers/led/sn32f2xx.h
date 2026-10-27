@@ -101,10 +101,12 @@ uint64_t sn32f2xx_led_drive_take(uint32_t now_ms, uint32_t *lit_ms, uint64_t rgb
  * replaces it. Main-thread only. */
 bool sn32f2xx_led_committed_dark(void);
 
-/* ak820pro (2026-10-27): frames committed to the LEDs by sn32f2xx_flush(),
- * wrapping. A caller that changed what renders waits for it to move twice:
- * a change made this pass reaches the LEDs only at a later flush, and a pass
- * blocked meanwhile (a consolidation) flushes nothing. Main-thread only. */
+/* ak820pro (2026-10-27): sn32f2xx_flush()'s calls, wrapping: one at the end
+ * of each of rgb_matrix's renders, whether the frame changed or not (a
+ * steady Solid changes nothing). A caller that changed what renders waits
+ * for it to move twice: the render under way may have begun before the
+ * change, the next one began after it; and a pass blocked meanwhile (a
+ * consolidation) flushes nothing. Main-thread only. */
 uint8_t sn32f2xx_led_commits(void);
 
 /* ak820pro (2026-10-27): what the row ISR does while an internal-flash

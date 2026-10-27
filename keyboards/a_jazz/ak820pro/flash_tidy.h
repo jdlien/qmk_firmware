@@ -16,8 +16,8 @@
  * very noticeable flicker"), and it comes mid-use, at whatever save filled
  * the log.
  *
- * So the board consolidates first, once the log is a quarter full, at a
- * moment nobody is watching the keys:
+ * So the board consolidates first, once the log is half full, at a moment
+ * nobody is watching the keys:
  *   - dark: the committed LED frame all off (the ladder's dark stage, Lights
  *     out, the lights cut, the RGB toggled off) and no key or knob for 30 s;
  *   - lit: no key or knob for 10 min (JD: "Someone who hasn't typed for ten
@@ -26,11 +26,18 @@
  *     other modes go dark (Balanced at 20 min, Power saver at 3, Lights out
  *     at once), and the pass that darkens before the deep sleep is a dark
  *     one: flash_tidy_task() runs just before sleep_task().
- * One try a pause (a failure waits for the next key), never with the menu
+ * After a failure none more until a key or the knob; never with the menu
  * open, in a wake's recovery or on the battery's reserve. A full log still
- * consolidates where it fills, as before; the early one leaves it ~3/4 of a
- * log of headroom (~45 settings changes, ~12 profile saves) for the next
- * stretch of use. */
+ * consolidates where it fills, as before: now only after half a log of
+ * writes without a pause (~30 settings changes, ~8 profile saves).
+ *
+ * ⚠️ Every consolidation, early or forced, erases the only copy before it
+ * writes it back: a power loss inside its ~58 ms (a slider flip, the pack
+ * dying) loses the settings and the keymap (flash.sh's backups restore
+ * them). The early ones add none of their own kind of risk, but at most
+ * double the count: at half full, never more than one per half log written
+ * (codex: a quarter would allow four). The erases' wear is as small: 20,000
+ * cycles at least (docs/sn32f299.md). */
 
 /* Each pass, from housekeeping_task_kb(), just before sleep_task(). */
 void flash_tidy_task(void);
