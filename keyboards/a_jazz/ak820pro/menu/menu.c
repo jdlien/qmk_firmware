@@ -202,7 +202,9 @@ static const char *label_of(uint8_t node) {
         case N_LIGHTS: return "Lights";
         case N_BOOT:   return "Bootloader";
         case N_DEFAULTS: return "Reset settings";   /* 10-27 */
+#ifdef MENU_WTEST
         case N_WTEST:  return "Write test";         /* 10-27, dev */
+#endif
         case N_IND:    return "Indicators";
         case N_CONN:   return "Connection";
         case N_LOCKS:  return "Lock lights";
@@ -283,8 +285,9 @@ static union {
     uint8_t batt_ready;     /* Both: batt_hours_ready() last seen, for menu_tick() */
     struct {                /* 10-27, dev: the write test's */
         uint8_t  left;      /* Ten writes: still to come */
-        uint8_t  dim;       /* Dim + write: 1 the write waits for the dim */
+        uint8_t  dim;       /* Dim + write: 1 waiting for the cap, 2 for its frame on the LEDs */
         uint16_t next;      /* 16-bit ms: the next of the ten */
+        uint16_t dim_at;    /* 16-bit ms: the dim's write, once 2 */
     } wt;
 } pg;
 enum { CK_OK = 1, CK_JUMP = 2 };   /* set; a read that wasn't the last's time on, for menu_tick() */
@@ -511,7 +514,9 @@ static uint8_t screen_title(void) {
         case N_LIGHTS: return T_LIGHTS;
         case N_BOOT:   return T_BOOT;
         case N_DEFAULTS: return T_DEFAULTS;
+#ifdef MENU_WTEST
         case N_WTEST:  return T_WTEST;
+#endif
         case N_IND:    return T_IND;
         case N_CONN:
         case N_CONNINFO: return T_CONN;
@@ -580,11 +585,13 @@ static const char *title_text(uint8_t id) {
         case T_RENAMED:    return "Renamed";
         case T_DEFAULTS:   return "Reset settings";       /* 10-27 */
         case T_DEFAULTS_DONE: return "Settings reset";
+#ifdef MENU_WTEST
         case T_WTEST:      return "Write test";           /* 10-27, dev */
         case T_WT_DONE:    return "Written";
         case T_WT_NONE:    return "No spare byte";        /* VIA's macros fill the buffer */
         case T_WT_CLEAN:   return "Cleaned up";
         case T_WT_FAIL:    return "Write failed";
+#endif
         default: break;
     }
     if (id >= T_TOPIC0 && id < T_TOPIC0 + 4) return menu_help_titles[id - T_TOPIC0];
@@ -606,7 +613,9 @@ static const char *title_icon(uint8_t id) {
         case T_SCREEN: return icon_of(N_SCREEN);
         case T_BOOT:   return icon_of(N_BOOT);
         case T_DEFAULTS: return icon_of(N_DEFAULTS);
+#ifdef MENU_WTEST
         case T_WTEST:  return icon_of(N_DIAG);
+#endif
         case T_IND:
         case T_LOCKS:
         case T_CHGL:   return icon_of(N_IND);
@@ -1959,14 +1968,17 @@ static void wt_click(uint8_t i, uint32_t now) {
             } else {
                 env_wt_dim(true);
                 wt_dimmed = 1;
-                pg.wt.dim = 1;   /* the write waits for the cap (wt_tick()) */
+                pg.wt.dim = 1;   /* the write waits for the cap, then its frame (wt_tick()) */
             }
             break;
         default: break;
     }
 }
 /* Each pass on the page: the ten writes' next, the dim's write once the cap
- * is on the LEDs. True when the page's state moved. */
+ * is on the LEDs. The cap changes before the frame it dims is rendered and
+ * flushed (codex), so the write waits WT_FRAME_MS more: a few of rgb_matrix's
+ * flushes. True when the page's state moved. */
+#define WT_FRAME_MS 50u
 static bool wt_tick(uint32_t now) {
     bool moved = false;
     if (pg.wt.left && (int16_t)((uint16_t)now - pg.wt.next) >= 0) {
@@ -1976,7 +1988,10 @@ static bool wt_tick(uint32_t now) {
         pg.wt.next = (uint16_t)(pg.wt.next + 1000u);
         moved      = true;
     }
-    if (pg.wt.dim && env_wt_dim_applied()) {
+    if (pg.wt.dim == 1u && env_wt_dim_applied()) {
+        pg.wt.dim    = 2;
+        pg.wt.dim_at = (uint16_t)(now + WT_FRAME_MS);
+    } else if (pg.wt.dim == 2u && (int16_t)((uint16_t)now - pg.wt.dim_at) >= 0) {
         pg.wt.dim = 0;
         wt_flash(env_wt_write(), now);
         moved = true;

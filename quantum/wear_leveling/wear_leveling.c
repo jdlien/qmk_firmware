@@ -323,10 +323,21 @@ static wear_leveling_status_t wear_leveling_consolidate_force(void) {
 }
 
 /**
- * ak820pro: a consolidation on demand (wear_leveling.h).
+ * ak820pro: a consolidation on demand (wear_leveling.h), unlocked and locked
+ * as wear_leveling_write() does it: the backing store's unlock is where a
+ * board drains what must finish before a program (the EFL's pre-write hook).
  */
 wear_leveling_status_t wear_leveling_consolidate(void) {
-    return wear_leveling_consolidate_force();
+    backing_store_lock_status_t lock_status = wear_leveling_unlock();
+    if (lock_status == STATUS_FAILURE) {
+        wear_leveling_lock();
+        return WEAR_LEVELING_FAILED;
+    }
+    wear_leveling_status_t status = wear_leveling_consolidate_force();
+    if (lock_status == STATUS_SUCCESS && wear_leveling_lock() == STATUS_FAILURE) {
+        status = WEAR_LEVELING_FAILED;
+    }
+    return status;
 }
 
 /**
