@@ -1921,6 +1921,12 @@ static bool    txt_placed = false;   /* its x is set and its vacated cells clear
  * last thing housekeeping_task_kb() does, clears this once a pass. */
 static bool    batt_painted_this_pass = false;
 #define BATT_TXT_CHUNK   3           /* glyphs per call: 10x23 is ~2.5 ms each */
+/* The text slot, from the icon slot's right edge to the bezel margin: 76 px,
+ * 7 cells of the 10 px face. An 8-cell text (BATT_TEXT_MAX: Both's "99% 160h")
+ * closes its space to BATT_TXT_THIN px: 74 px, its first glyph 3 px clear of
+ * the bulb (JD, 10-26). */
+#define BATT_TXT_ROOM    (PANEL_WIDTH - 4 - (BOLT_X + ICON_SLOT_W))
+#define BATT_TXT_THIN    4
 static uint8_t batt_last_bulb = SLOT_NO_BULB;   /* the mode's bulb draw_battery() last wanted */
 
 /* A bulb is up and the mode it shows has changed (Fn+B, or the low cap): the
@@ -1943,7 +1949,7 @@ static void draw_battery(bool force) {
     static uint8_t  last_txt_x = PANEL_WIDTH;  /* where the percent text starts   */
     static uint8_t  last_txt_w = 0;            /* ...and how wide it is            */
     static bool     last_absent = false;       /* no pack fitted: cross, no number */
-    static char     last_txt[8] = "\x01";      /* what the text slot says ("\x01": never drawn) */
+    static char     last_txt[BATT_TEXT_MAX + 1] = "\x01";   /* what the text slot says ("\x01": never drawn) */
 
     /* The level is battery.c's, from the CH582F's `5C` -- a voltmeter on the
      * pack -- in whole percent (tenths with BATTERY_SHOW_TENTHS). Never VDD, which this row used to show: on battery
@@ -1953,7 +1959,7 @@ static void draw_battery(bool force) {
      * yet the bar stays down and the slot says what is known instead. */
     battery_state_t st   = battery_state();
     uint8_t         batt = battery_level_pct();   /* 0xFF unknown */
-    char            txt[8];
+    char            txt[BATT_TEXT_MAX + 1];
 #ifdef BATTERY_SHOW_TENTHS
     uint16_t        pm   = battery_level_permille();
 #endif
@@ -1965,11 +1971,12 @@ static void draw_battery(bool force) {
 #endif
     else if (batt <= 100) {
         /* The percent, with the hours of use under 10 h ("18% 6h"); or the
-         * hours of use ("160h", the menu's Battery: JD, 10-25) once the
-         * estimate is ready. graphics/batt_text.c has the rules. */
+         * hours of use ("160h", the menu's Battery: JD, 10-25), or both
+         * ("85% 160h", JD 10-26), once the estimate is ready.
+         * graphics/batt_text.c has the rules. */
         _Static_assert(sizeof(txt) == BATT_TEXT_MAX + 1u, "the text slot's cells and its NUL");
         batt_level_text(txt, batt, st == BATTERY_STATE_BATTERY, battery_time_left_min(),
-                        battery_avg_minutes() >= 60u, kb_eeconfig_get_batt_hours());
+                        battery_avg_minutes() >= 60u, kb_eeconfig_get_batt_view());
     }
     /* "Charge", not "Charging": at 10 px a cell that is 80 px against the 76
      * between the icon slot and the bezel margin, and it would start inside
@@ -2104,11 +2111,18 @@ static void draw_battery(bool force) {
      *
      * Painted BATT_TXT_CHUNK glyphs a call, since one glyph is ~2.5 ms of
      * synchronous LCD work and "No Batt" whole was ~17.5 ms (codex, flash 2c
-     * finding 2). The font is monospaced (lcd_flash_text_width), so glyph i
-     * sits at x + i * w / n. A text that changes mid-way restarts at its own
-     * x: everything left of it is cleared, and the rest is overpainted. */
+     * finding 2). The font is monospaced, so glyph i sits at x + i * adv,
+     * less `thin` past a text's space when the text is wider than the slot:
+     * every cell paints its background, the space's too, so the glyph after
+     * it overpaints the space's right part and the cells still cover x to the
+     * margin. A text that changes mid-way restarts at its own x: everything
+     * left of it is cleared, and the rest is overpainted. */
     if (batt_dirty & BATT_DIRTY_TEXT) {
-        uint8_t n = (uint8_t)strlen(txt);
+        uint8_t     n    = (uint8_t)strlen(txt);
+        uint16_t    adv  = lcd_font_advance(FONT_STATUS);
+        const char *sp   = strchr(txt, ' ');
+        uint16_t    thin = (sp && n * adv > BATT_TXT_ROOM && adv > BATT_TXT_THIN)
+                               ? (uint16_t)(adv - BATT_TXT_THIN) : 0u;
         if (!n) {
             if (last_txt_w) {
                 lcd_clear_rect(last_txt_x, STATUS_Y, last_txt_w, lcd_font_height(FONT_STATUS));
@@ -2119,7 +2133,7 @@ static void draw_battery(bool force) {
             return;
         }
         if (!txt_placed) {
-            uint16_t w     = lcd_flash_text_width(FONT_STATUS, txt);
+            uint16_t w     = (uint16_t)(n * adv - thin);
             uint16_t x     = (uint16_t)(PANEL_WIDTH - 4 - w);
             bool     clear = x > last_txt_x;
             if (clear)
@@ -2132,12 +2146,12 @@ static void draw_battery(bool force) {
              * glyphs in one pass). */
             if (clear) return;
         }
-        char    chunk[BATT_TXT_CHUNK + 1];
         uint8_t k = (uint8_t)(n - txt_done);
         if (k > BATT_TXT_CHUNK) k = BATT_TXT_CHUNK;
-        memcpy(chunk, &txt[txt_done], k);
-        chunk[k] = '\0';
-        lcd_draw_flash_text(FONT_STATUS, (uint16_t)(last_txt_x + txt_done * (last_txt_w / n)), STATUS_Y, chunk);
+        for (uint8_t i = txt_done; i < txt_done + k; i++) {
+            uint16_t gx = (uint16_t)(last_txt_x + i * adv - (sp && &txt[i] > sp ? thin : 0u));
+            lcd_draw_flash_glyph(FONT_STATUS, txt[i], gx, STATUS_Y);
+        }
         txt_done = (uint8_t)(txt_done + k);
         if (txt_done >= n) { txt_done = 0; txt_placed = false; batt_dirty &= (uint8_t)~BATT_DIRTY_TEXT; }
         return;

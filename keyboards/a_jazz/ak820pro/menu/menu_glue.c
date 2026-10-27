@@ -14,6 +14,7 @@
 #include "rtc/rtc.h"
 #include "graphics/display.h"
 #include "graphics/lcd_bus.h"
+#include "graphics/batt_text.h"   /* BATT_VIEW_*, checked against kb_eeconfig's */
 #include "battery.h"
 #include "power.h"
 #include "kb_eeconfig.h"
@@ -84,8 +85,8 @@ bool env_clock_now(env_time_t *t) {
 uint16_t env_rtc_tick(void) { return (uint16_t)rtc_get_seconds(); }
 /* P4: the battery readout. The dashboard reads the setting each time it
  * composes the text, so the menu's close (the staged restore) shows it. */
-bool env_batt_hours(void) { return kb_eeconfig_get_batt_hours(); }
-void env_batt_hours_set(bool h) { kb_eeconfig_set_batt_hours(h); }
+uint8_t env_batt_view(void) { return kb_eeconfig_get_batt_view(); }
+void env_batt_view_set(uint8_t v) { kb_eeconfig_set_batt_view(v); }
 void env_batt_facts(env_batt_t *b) {
     b->pct         = battery_level_pct();
     b->on_battery  = battery_state() == BATTERY_STATE_BATTERY;
@@ -168,8 +169,10 @@ _Static_assert(PROF_BASE + PROF_BLOCK_SIZE == TOTAL_EEPROM_BYTE_COUNT, "the prof
 #define PROF_MACRO_ADDR (VIA_EEPROM_CONFIG_END + DYNAMIC_KEYMAP_LAYER_COUNT * MATRIX_ROWS * MATRIX_COLS * 2 + \
                          DYNAMIC_KEYMAP_LAYER_COUNT * NUM_ENCODERS * 2 * 2)
 _Static_assert(PROF_MACRO_ADDR + DYNAMIC_KEYMAP_MACRO_EEPROM_SIZE == PROF_BASE, "the macros end just below the profile block");
-_Static_assert(DISPLAY_CLOCK_MODE_COUNT == 6 && POWER_MODE_COUNT == 4 && KB_BATT_VIEW_PERCENT == 1 && KB_BATT_VIEW_HOURS == 2,
-               "profiles.c's ranges");
+_Static_assert(DISPLAY_CLOCK_MODE_COUNT == 6 && POWER_MODE_COUNT == 4 && KB_BATT_VIEW_PERCENT == 1 && KB_BATT_VIEW_HOURS == 2 &&
+               KB_BATT_VIEW_BOTH == 3, "profiles.c's ranges");
+_Static_assert(BATT_VIEW_PERCENT == KB_BATT_VIEW_PERCENT && BATT_VIEW_HOURS == KB_BATT_VIEW_HOURS &&
+               BATT_VIEW_BOTH == KB_BATT_VIEW_BOTH, "batt_text.h's views are kb_eeconfig's");
 void env_prof_read(uint16_t addr, void *dst, uint8_t n) { eeprom_read_block(dst, (const void *)(uintptr_t)addr, n); }
 uint8_t env_prof_write(uint16_t addr, const void *src, uint8_t n) {
     switch (wear_leveling_write(addr, src, n)) {

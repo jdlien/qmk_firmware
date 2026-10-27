@@ -48,6 +48,7 @@ enum {
     N_PLOAD, N_PSAVE, N_PDELETE,                                /* 53-55: its actions; as frames, Save's and Delete's
                                                                  * confirms, the slot in the cursor */
     N_PRENAME,                                                  /* 56: P5c, Rename; as a frame its page, the slot in the cursor */
+    N_BV2,                                                      /* 57: Battery's third readout, Both (JD, 10-26) */
     N_COUNT
 };
 _Static_assert(N_COUNT <= 63, "a row's node is 6 bits");
@@ -67,7 +68,7 @@ static const uint8_t diag_rows[]  = {N_BACK, N_HEALTH, N_CAMERA, N_RESET};
 static const uint8_t help_rows[]  = {N_BACK, N_TOPIC0, N_TOPIC1, N_TOPIC2, N_TOPIC3};
 static const uint8_t power_rows[] = {N_BACK, N_POW0, N_POW1, N_POW2, N_POW3};
 static const uint8_t clock_rows[] = {N_BACK, N_CLK0, N_CLK1, N_CLK2, N_CLK3, N_CLK4, N_CLK5};
-static const uint8_t batt_rows[]  = {N_BACK, N_BV0, N_BV1};   /* P4 */
+static const uint8_t batt_rows[]  = {N_BACK, N_BV0, N_BV1, N_BV2};   /* P4; Both, 10-26 */
 /* P5d: Profiles' rows are Back, the saved slots in slot order, then Save
  * new (row_count(), row_node()), no empty slot shown (JD, 10-26: "just a
  * 'Save New' makes more sense than finite grayed out unused slots"). */
@@ -95,10 +96,16 @@ static int8_t clk_row(uint8_t node) {
     return -1;
 }
 static const char *clock_example(uint8_t row, char *buf);   /* by row_sig(), below */
-/* P4: the battery readout, by its row (0 percent, 1 hours), and the top
- * level's value. */
-static const char *const batt_full[2]  = {"Percent", "Hours of use"};
-static const char *const batt_short[2] = {"Percent", "Hours"};
+/* P4: the battery readout, by its row (0 percent, 1 hours, 2 both: JD,
+ * 10-26), and the top level's value. A row is its view less one
+ * (BATT_VIEW_*). */
+static const char *const batt_full[3]  = {"Percent", "Hours of use", "Both"};
+static const char *const batt_short[3] = {"Percent", "Hours", "Both"};
+/* A Battery row's index (0-2), or -1. */
+static int8_t bv_row(uint8_t node) {
+    if (node == N_BV0 || node == N_BV1) return (int8_t)(node - N_BV0);
+    return node == N_BV2 ? 2 : -1;
+}
 /* P4 (JD, 10-25): the choice previews each readout as the dashboard shows it
  * on battery, and a note under it says why the hours don't show yet. Read
  * live: the rows' signatures follow the text (row_sig), so a change repaints
@@ -106,13 +113,17 @@ static const char *const batt_short[2] = {"Percent", "Hours"};
 static bool batt_hours_ready(const env_batt_t *b) {
     return b->on_battery && b->avg_minutes >= 60u && b->left_min != 0xFFFFu;
 }
-static const char *batt_preview(bool hours, char *buf) {   /* buf: BATT_TEXT_MAX + 1 at least */
+static const char *batt_preview(uint8_t view, char *buf) {   /* buf: BATT_TEXT_MAX + 1 at least */
     env_batt_t b;
     env_batt_facts(&b);
     if (b.pct > 100u) return "--";
     if (b.pct == 0u && b.on_battery) return "Low";
-    if (hours && !batt_hours_ready(&b)) return "--";
-    batt_level_text(buf, b.pct, b.on_battery, b.left_min, b.avg_minutes >= 60u, hours);
+    if (view == BATT_VIEW_HOURS && !batt_hours_ready(&b)) return "--";
+    if (view == BATT_VIEW_BOTH && !batt_hours_ready(&b)) {   /* the level, and the hours to come: "85% --" */
+        snprintf(buf, BATT_TEXT_MAX + 1u, "%u%% --", (unsigned)b.pct);
+        return buf;
+    }
+    batt_level_text(buf, b.pct, b.on_battery, b.left_min, b.avg_minutes >= 60u, view);
     return buf;
 }
 static void batt_note(uint8_t line, char *buf, size_t n) {
@@ -194,7 +205,7 @@ static const char *label_of(uint8_t node) {
     if (node >= N_TOPIC0 && node <= N_TOPIC3) return menu_help_titles[node - N_TOPIC0];
     if (node >= N_POW0 && node <= N_POW3) return power_full[node - N_POW0];
     if (clk_row(node) >= 0) return clock_full[clk_row(node)];
-    if (node >= N_BV0 && node <= N_BV1) return batt_full[node - N_BV0];
+    if (bv_row(node) >= 0) return batt_full[bv_row(node)];
     return "";
 }
 
@@ -376,7 +387,7 @@ static bool is_preview(uint8_t node) { return node == N_EFFECT || node == N_LIGH
 static bool is_choice(uint8_t node) { return node == N_POWER || node == N_CLOCK || node == N_BATT || is_preview(node); }
 static bool is_option(uint8_t node) {   /* a row a check box marks: a choice's option, or a slot (P3; P5b's) */
     return (node >= N_POW0 && node <= N_CLK3) || node == N_EFFOPT || node == N_LTSOPT || (node >= N_BT0 && node <= N_BT2) ||
-           (node >= N_BV0 && node <= N_BV1) || node == N_CLK4 || node == N_CLK5 || is_pslot(node);
+           bv_row(node) >= 0 || node == N_CLK4 || node == N_CLK5 || is_pslot(node);
 }
 static bool is_ind_editor(uint8_t node) { return node == N_LOCKS || node == N_CHGL; }   /* P2a */
 static bool is_editor(uint8_t node) { return node == N_SCREEN || (node >= N_BRIGHT && node <= N_SPEED) || is_ind_editor(node); }
@@ -420,7 +431,7 @@ static uint8_t saved_row(uint8_t node) {
     if (node == N_POWER) return (uint8_t)(1u + (model_power & 3u));
     if (node == N_EFFECT) return (uint8_t)(effect_index(me_saved()) + 1);
     if (node == N_LIGHTS) return me_saved() ? 2u : 1u;
-    if (node == N_BATT) return env_batt_hours() ? 2u : 1u;   /* P4 */
+    if (node == N_BATT) return env_batt_view();   /* P4: a view's row is its value, 1-3 */
     for (uint8_t i = 0; i < CLOCK_ROWS; i++)
         if (clock_enum[i] == model_clock) return (uint8_t)(1u + i);
     return 1;
@@ -859,9 +870,9 @@ static row_t row_at(uint8_t r) {
         return x;
     }
     uint8_t i = (uint8_t)(f->top + r), val;
-    if (f->node == N_BATT && r >= 4u && r <= 6u) {   /* P4: the hours' note, under the choice; not selectable */
+    if (f->node == N_BATT && r >= 5u && r <= 7u) {   /* P4: the hours' note, under the choice; not selectable */
         x.kind = RK_NOTE;
-        x.line = (uint8_t)(r - 4u);
+        x.line = (uint8_t)(r - 5u);
         return x;
     }
     if (is_pslot(f->node) && r >= PSUM_ROW0 && r < PSUM_ROW0 + PSUM_LINES) {   /* P5b: the summary; not selectable */
@@ -877,7 +888,7 @@ static row_t row_at(uint8_t r) {
     x.lit  = i == f->cursor;
     if (x.node == N_POWER) x.val = model_power & 3u;
     else if (x.node == N_CLOCK) x.val = model_clock < CLOCK_ROWS ? model_clock : 0u;
-    else if (x.node == N_BATT) x.val = env_batt_hours() ? 1u : 0u;   /* P4: only the menu changes it, so no latch */
+    else if (x.node == N_BATT) x.val = (uint8_t)(env_batt_view() - 1u);   /* P4: only the menu changes it, so no latch */
     else if (x.node == N_CONN) x.val = link_code();   /* P3: the link, link_names[] */
     else if (x.node == N_PAIRNOW) x.val = (uint8_t)(link_slot() > 2u ? 2u : link_slot());   /* the slot it pairs */
     else if (x.node >= N_BT0 && x.node <= N_BT2) {   /* the current slot: its check, and its link's word */
@@ -1031,10 +1042,10 @@ static void row_text(const row_t *x, char *out) {
     if (x->node == N_POWER) value = power_short[x->val & 3u];
     else if (x->node == N_CLOCK) value = clock_short_by_enum[x->val % CLOCK_ROWS];
     else if (clk_row(x->node) >= 0 && clk_row(x->node) < 5) value = clock_example((uint8_t)clk_row(x->node), buf);
-    else if (x->node == N_BATT) value = batt_short[x->val & 1u];
+    else if (x->node == N_BATT) value = batt_short[x->val % 3u];
     else if (x->node == N_CONN) value = link_names[x->val % 5u];          /* P3 */
     else if (x->node >= N_BT0 && x->node <= N_BT2) value = link_words[x->val % 5u];
-    else if (x->node == N_BV0 || x->node == N_BV1) value = batt_preview(x->node == N_BV1, buf);   /* P4 */
+    else if (bv_row(x->node) >= 0) value = batt_preview((uint8_t)(bv_row(x->node) + 1), buf);   /* P4 */
     else if (x->node == N_PROFILES) value = prof_value(x, buf);           /* P5b */
     else if (x->node == N_PSLOT) value = MT_TRI_R;                        /* a saved slot opens its page */
     else if (x->node == N_PNEW) value = x->val ? "Full" : "";            /* P5d */
@@ -1076,6 +1087,10 @@ static uint32_t batt_key(const row_t *x) {
         if (!ready) return 3;
         uint32_t h = b.left_min < 60u ? 0u : b.left_min / 60u;
         return 4u | (h > 999u ? 999u : h) << 3;
+    }
+    if (x->node == N_BV2) {                        /* "85% --", "85% 160h", "18% <1h", "100%" past 8 cells */
+        uint32_t h = !ready ? 1023u : b.left_min < 60u ? 1000u : b.left_min / 60u > 999u ? 999u : b.left_min / 60u;
+        return 0x20000u | (uint32_t)b.pct << 10 | h;
     }
     /* "85%", or under 10 h "18% 6h", "18% <1h" (batt_level_text()) */
     uint32_t h = ready && b.left_min < 600u ? (b.left_min < 60u ? 10u : b.left_min / 60u) : 15u;
@@ -1164,7 +1179,7 @@ static uint16_t row_sig(const row_t *x) {
      * the text cost 19 ms passes on the board), in 0x1000-0x1FFF (no other
      * kind's), with the bullet and the lit bit as RK_ITEM's. A collision only
      * delays a repaint to the text's next change. */
-    if (x->kind == RK_NOTE || (x->kind == RK_ITEM && (x->node == N_BV0 || x->node == N_BV1))) {
+    if (x->kind == RK_NOTE || (x->kind == RK_ITEM && bv_row(x->node) >= 0)) {
         uint32_t k = batt_key(x) ^ ((uint32_t)x->node << 24) ^ ((uint32_t)x->line << 30);
         uint16_t h = 0x811Cu;
         for (uint8_t i = 0; i < 4u; i++, k >>= 8) h = (uint16_t)((h ^ (uint8_t)k) * 0x0193u);
@@ -1800,7 +1815,7 @@ static menu_result_t activate(uint32_t now) {
     if (is_choice(f->node)) {   /* commit the option under the cursor */
         uint8_t i = (uint8_t)(f->cursor - 1u);
         if (f->node == N_POWER) { env_power_set(i); model_power = i; }
-        else if (f->node == N_BATT) env_batt_hours_set(i == 1u);   /* P4 */
+        else if (f->node == N_BATT) env_batt_view_set((uint8_t)(i + 1u));   /* P4: row i is view i + 1 */
         else { env_clock_set(clock_enum[i]); model_clock = clock_enum[i]; }
         flash(T_SAVED, now);
         return pop(now);

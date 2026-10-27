@@ -14,6 +14,7 @@
 #define PROF_POWER_MODES   4u   /* POWER_MODE_COUNT */
 #define PROF_BVIEW_PERCENT 1u   /* KB_BATT_VIEW_PERCENT */
 #define PROF_BVIEW_HOURS   2u   /* KB_BATT_VIEW_HOURS */
+#define PROF_BVIEW_BOTH    3u   /* KB_BATT_VIEW_BOTH (JD, 10-26) */
 
 /* A restore's transaction (3 B): the host's token; the pages received, in
  * order (bits 0-4, a count: P5d's nine pages outgrew P5a's five bits of a
@@ -94,7 +95,7 @@ bool prof_rec_valid(const uint8_t *rec) {
     if ((f & PF_LOCKS) && rec[PR_LOCKS] > ENV_IND_MAX) return false;
     if ((f & PF_CHARGING) && rec[PR_CHARGING] > ENV_IND_MAX) return false;
     if ((f & PF_CLOCK) && rec[PR_CLOCK] >= PROF_CLOCK_MODES) return false;
-    if ((f & PF_BVIEW) && rec[PR_BVIEW] != PROF_BVIEW_PERCENT && rec[PR_BVIEW] != PROF_BVIEW_HOURS) return false;
+    if ((f & PF_BVIEW) && (rec[PR_BVIEW] < PROF_BVIEW_PERCENT || rec[PR_BVIEW] > PROF_BVIEW_BOTH)) return false;
     if ((f & PF_POWER) && rec[PR_POWER] >= PROF_POWER_MODES) return false;
     if ((f & PF_NAME) && !name_ok(&rec[PR_NAME])) return false;
     return true;
@@ -234,7 +235,7 @@ static void capture_body(uint8_t *rec, uint8_t fields) {
     rec[PR_LOCKS]    = env_ind_level(ENV_IND_LOCKS);
     rec[PR_CHARGING] = env_ind_level(ENV_IND_CHARGING);
     rec[PR_CLOCK]    = env_clock_mode();
-    rec[PR_BVIEW]    = env_batt_hours() ? PROF_BVIEW_HOURS : PROF_BVIEW_PERCENT;
+    rec[PR_BVIEW]    = env_batt_view();
     if (fields & PF_POWER) rec[PR_POWER] = env_power_mode();
 }
 void prof_capture(uint8_t *rec, uint8_t fields) {
@@ -278,7 +279,7 @@ uint8_t prof_apply(const uint8_t *rec, bool live) {
     if (f & PF_LOCKS) env_ind_set(ENV_IND_LOCKS, rec[PR_LOCKS], true);
     if (f & PF_CHARGING) env_ind_set(ENV_IND_CHARGING, rec[PR_CHARGING], true);
     if (f & PF_CLOCK) env_clock_set(rec[PR_CLOCK]);
-    if (f & PF_BVIEW) env_batt_hours_set(rec[PR_BVIEW] == PROF_BVIEW_HOURS);
+    if (f & PF_BVIEW) env_batt_view_set(rec[PR_BVIEW]);
     if (live && (f & PF_POWER)) env_power_set(rec[PR_POWER]);   /* never a profile's (Decided 2) */
     return st;
 }

@@ -63,13 +63,15 @@ void kb_eeconfig_set_power_mode(uint8_t mode);
 bool kb_eeconfig_get_ind_level(uint8_t which, uint8_t *level);
 void kb_eeconfig_set_ind_level(uint8_t which, uint8_t level);
 
-/* The battery readout (the menu's P4): hours of use rather than percent.
- * The byte's encoding is frozen: 0 unset, 1 percent, 2 hours; unset or
- * garbage reads percent. */
+/* The battery readout (the menu's P4): percent, hours of use, or both.
+ * The byte's encoding is frozen: 0 unset, 1 percent, 2 hours, 3 both (JD,
+ * 10-26; a firmware from before reads it as garbage); unset or garbage reads
+ * percent. */
 #define KB_BATT_VIEW_PERCENT 1u
 #define KB_BATT_VIEW_HOURS   2u
-bool kb_eeconfig_get_batt_hours(void);
-void kb_eeconfig_set_batt_hours(bool hours);
+#define KB_BATT_VIEW_BOTH    3u
+uint8_t kb_eeconfig_get_batt_view(void);   /* KB_BATT_VIEW_* */
+void    kb_eeconfig_set_batt_view(uint8_t view);   /* ignores anything else */
 
 /* A change is waiting for its deferred flash write (a sleep's precondition). */
 bool kb_eeconfig_write_pending(void);

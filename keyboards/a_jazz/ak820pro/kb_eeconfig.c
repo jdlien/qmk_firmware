@@ -38,7 +38,7 @@ typedef struct __attribute__((packed)) {
     uint8_t power_mode_p1;     // power mode (power_mode_t) + 1; 0 = unset
     uint8_t ind_locks_p1;      // the lock lights' level (0-100) + 1; 0 = unset
     uint8_t ind_charging_p1;   // the charging light's level (0-100) + 1; 0 = unset
-    uint8_t batt_view;         // the battery readout: 0 unset, 1 percent, 2 hours (frozen; P4)
+    uint8_t batt_view;         // the battery readout: 0 unset, 1 percent, 2 hours, 3 both (frozen; P4)
 } kb_config_t;
 _Static_assert(sizeof(kb_config_t) == 10, "block layout is assign-only; do not grow casually");
 _Static_assert(sizeof(kb_config_t) == EECONFIG_KB_DATA_SIZE, "config.h EECONFIG_KB_DATA_SIZE must match the struct");
@@ -199,13 +199,13 @@ void kb_eeconfig_set_ind_level(uint8_t which, uint8_t level) {
     kb_mark_dirty();
 }
 
-bool kb_eeconfig_get_batt_hours(void) {
-    return kb_config.batt_view == KB_BATT_VIEW_HOURS;   /* unset or garbage: percent */
+uint8_t kb_eeconfig_get_batt_view(void) {
+    uint8_t v = kb_config.batt_view;
+    return (v == KB_BATT_VIEW_HOURS || v == KB_BATT_VIEW_BOTH) ? v : KB_BATT_VIEW_PERCENT;   /* unset or garbage: percent */
 }
 
-void kb_eeconfig_set_batt_hours(bool hours) {
-    uint8_t v = hours ? KB_BATT_VIEW_HOURS : KB_BATT_VIEW_PERCENT;
-    if (kb_config.batt_view == v) return;
+void kb_eeconfig_set_batt_view(uint8_t v) {
+    if (v < KB_BATT_VIEW_PERCENT || v > KB_BATT_VIEW_BOTH || kb_config.batt_view == v) return;
     kb_config.batt_view = v;
     kb_mark_dirty();
 }
