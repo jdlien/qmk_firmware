@@ -17,6 +17,7 @@
 #include "profiles.h"   /* P5b: the settings profiles' pages */
 #include "../graphics/res/menu_text_pages.h"
 #include "../graphics/batt_text.h"   /* P4: the Battery choice previews the dashboard's text */
+#include "../graphics/power_bulb.h"  /* 10-27: the Power choice's bulbs, the battery row's */
 
 /* --- The tree ---------------------------------------------------------------
  * Every row a node of its own (options included: the top level's "Clock 24h"
@@ -1276,11 +1277,34 @@ static bool row_split(uint8_t s) {
  * that row. */
 #define RULE_CHUNK 3u
 static bool row_ruled(const row_t *x) { return x->kind == RK_PNOTE && x->line == 0u; }
+/* 10-27 (JD: "use the power mode icons that we show on the battery row,
+ * right aligned on the right edge"): a Power option's row ends in its mode's
+ * bulb, the dashboard's (graphics/power_bulb.c), at x 111-123 beside the
+ * trail's column: a chunk of its own, last, every pixel row at once, and the
+ * text's right half stops at x 110, so no pixel is painted twice. Its
+ * colours don't follow the cursor or the saved option: the node's, so the
+ * row's signature holds it. */
+#define BULB_X       111u
+#define BULB_CHUNK_W (TEXT_X + 20u * MT_CELL_W + 1u - BULB_X)   /* 14: the bulb's 13 and the trail */
+_Static_assert(BULB_CHUNK_W == BULB_W + 1u && BULB_H == ROW_H, "the bulb: a row's height, right-aligned on its cells");
+_Static_assert(BULB_CHUNK_W * ROW_H * 2u <= MB_PASS_BYTES, "the bulb: one piece");
+static bool row_bulb(const row_t *x) { return x->kind == RK_ITEM && x->node >= N_POW0 && x->node <= N_POW3; }
 static uint8_t l_chunks(uint8_t s) {
     if (s == S_SEP || s == S_BAR) return 1;
     if (!is_row(s)) return 2;
+    row_t   x = row_at((uint8_t)(s - S_ROW0));
+    uint8_t n = row_ruled(&x) || row_icon_colour(&x) != 0 ? 4 : 3;   /* the rule, or a split row's icon chunk */
+    return row_bulb(&x) ? (uint8_t)(n + 1u) : n;                    /* the bulb last */
+}
+/* The bulb's chunk, the row's last; 0xFF none. */
+static uint8_t bulb_chunk(uint8_t s) {
+    if (!is_row(s)) return 0xFFu;
     row_t x = row_at((uint8_t)(s - S_ROW0));
-    return row_ruled(&x) || row_icon_colour(&x) != 0 ? 4 : 3;   /* the rule, or a split row's icon chunk */
+    return row_bulb(&x) ? (uint8_t)(l_chunks(s) - 1u) : 0xFFu;
+}
+static void bulb_row(const void *v, uint16_t row, uint16_t *px, uint16_t w) {
+    const uint8_t mode = *(const uint8_t *)v;
+    for (uint16_t i = 0; i < w; i++) px[i] = MB_PANEL(power_bulb_px(mode, (uint8_t)i, (uint8_t)row, 0u));
 }
 static uint8_t rows_per_piece(void) { return (uint8_t)(MB_PASS_BYTES / (CHUNK_MAX * 2u)); }   /* 4 */
 /* A split row's cells 2-9 are narrower, so their pieces take 5 pixel rows: 3
@@ -1291,6 +1315,7 @@ static uint8_t rows_per_piece(void) { return (uint8_t)(MB_PASS_BYTES / (CHUNK_MA
 static uint8_t rows_per_split(void) { return (uint8_t)(MB_PASS_BYTES / (SPLIT_W * 2u)); }   /* 5 */
 static uint8_t l_pieces(uint8_t s, uint8_t c) {
     if (s == S_SEP || s == S_BAR || (is_row(s) && c == 0)) return 1;   /* a row's lead: every pixel row at once */
+    if (c == bulb_chunk(s)) return 1;                                  /* 10-27: the bulb, the same */
     if (is_row(s) && c == RULE_CHUNK) {                               /* the summary's rule: one fill */
         row_t x = row_at((uint8_t)(s - S_ROW0));
         if (row_ruled(&x)) return 1;
@@ -1312,7 +1337,7 @@ _Static_assert(2u * MT_CELL_W * MT_CELL_H * 2u <= MB_PASS_BYTES && ((2u * MT_CEL
  * row (`row`) has the 4 px lead, with `cursor` (a code, or 0) in it in
  * `cursor_fg`; the title and the confirm's lines a 1 px one. */
 static ms_paint_t text_piece(const char *cells, uint16_t y, bool row, uint8_t cursor, uint16_t cursor_fg, uint8_t c,
-                             uint8_t p, uint16_t fg, uint16_t icon_fg) {
+                             uint8_t p, uint16_t fg, uint16_t icon_fg, bool bulb) {
     const uint8_t  lead  = row ? ROW_LEAD : 1u;
     mt_line_t      l     = {cells, 20, lead, 1, false, false, cursor};
     const bool     lc    = row && c == 0;              /* the row's lead */
@@ -1329,9 +1354,9 @@ static ms_paint_t text_piece(const char *cells, uint16_t y, bool row, uint8_t cu
     } else if (ic) {                       /* [4, 16) */
         c0 = lead;
         w  = (uint16_t)(2u * MT_CELL_W);
-    } else {                               /* [4, 64), [64, 125); split: [16, 64) */
+    } else {                               /* [4, 64), [64, 125); split: [16, 64); a bulb's row: [64, 111) */
         c0 = k == 1 ? (uint16_t)(lead + (split ? 2u * MT_CELL_W : 0u)) : (uint16_t)(lead + HALF_W);
-        w  = k == 1 ? (uint16_t)(split ? SPLIT_W : HALF_W) : (uint16_t)(HALF_W + 1u);
+        w  = k == 1 ? (uint16_t)(split ? SPLIT_W : HALF_W) : bulb ? (uint16_t)(BULB_X - (TEXT_X - lead + c0)) : (uint16_t)(HALF_W + 1u);
     }
     const uint8_t  rpp  = split && c == 2 ? rows_per_split() : rows_per_piece();   /* as l_pieces() */
     const bool     all  = lc || ic;        /* one piece, every pixel row */
@@ -1374,9 +1399,14 @@ static ms_paint_t l_paint(uint8_t s, uint8_t c, uint8_t p) {
         size_t      ni = strlen(ic), n = strlen(tt);
         memcpy(cells, ic, ni);
         memcpy(cells + ni, tt, n > 20 - ni ? 20 - ni : n);
-        return text_piece(cells, 0, false, 0, 0, c, p, pal[MP_WHITE], 0);
+        return text_piece(cells, 0, false, 0, 0, c, p, pal[MP_WHITE], 0, false);
     }
     row_t x = row_at((uint8_t)(s - S_ROW0));
+    if (row_bulb(&x) && c == bulb_chunk(s)) {   /* 10-27 */
+        uint8_t mode = (uint8_t)(x.node - N_POW0);
+        return mb_rows(BULB_X, (uint16_t)(ROW_Y0 + (s - S_ROW0) * ROW_H), BULB_CHUNK_W, ROW_H, bulb_row, &mode)
+                   ? MS_PAINT_DONE : MS_PAINT_FAILED;
+    }
     if (c == RULE_CHUNK && row_ruled(&x)) {
         uint16_t y = (uint16_t)(ROW_Y0 + (s - S_ROW0) * ROW_H);
         return mb_fill(4, y, 123, y, pal[MP_GREY]) ? MS_PAINT_DONE : MS_PAINT_FAILED;
@@ -1389,7 +1419,7 @@ static ms_paint_t l_paint(uint8_t s, uint8_t c, uint8_t p) {
                                      : pal[MP_DIM];
     /* The cursor (JD, 10-24): in the lit row's lead, in its own colour. */
     return text_piece(cells, (uint16_t)(ROW_Y0 + (s - S_ROW0) * ROW_H), true, x.lit ? (uint8_t)MT_CURSOR[0] : 0u,
-                      pal[MP_CURSOR], c, p, fg, row_icon_colour(&x));
+                      pal[MP_CURSOR], c, p, fg, row_icon_colour(&x), row_bulb(&x));
 }
 
 /* A Clock example's tick (10-25): the right half only, its cells 10-19 and
@@ -1489,7 +1519,7 @@ static ms_paint_t c_paint(uint8_t s, uint8_t c, uint8_t p) {
                   (node == N_BOOT ? boot_lines : node == N_DEFAULTS ? defaults_lines : c_lines)[confirm_page & 1u][i]);
     size_t n = strlen(buf);
     memcpy(cells, buf, n > 20 ? 20 : n);
-    return text_piece(cells, (node == N_CONNINFO ? info_y : c_y)[i], false, 0, 0, c, p, pal[MP_WHITE], 0);
+    return text_piece(cells, (node == N_CONNINFO ? info_y : c_y)[i], false, 0, 0, c, p, pal[MP_WHITE], 0, false);
 }
 static const ms_layout_t L_CONFIRM = {6, c_sig, c_chunks, c_pieces, c_paint, 0, 0, 0};
 
@@ -1659,7 +1689,7 @@ static ms_paint_t e_paint(uint8_t s, uint8_t c, uint8_t p) {
     memset(cells, ' ', 20);
     cells[20] = '\0';
     memcpy(cells, ln, strlen(ln));
-    return text_piece(cells, (uint16_t)(HINT_Y0 + (s - vs - 1u) * ROW_H), false, 0, 0, c, p, pal[MP_WHITE], 0);
+    return text_piece(cells, (uint16_t)(HINT_Y0 + (s - vs - 1u) * ROW_H), false, 0, 0, c, p, pal[MP_WHITE], 0, false);
 }
 static const ms_layout_t L_RANGE = {2 + BAR_N + 1 + 3, e_sig, e_chunks, e_pieces, e_paint, 0, 0, 0};
 static const ms_layout_t L_HUE   = {2 + ENV_N + 1 + 3, e_sig, e_chunks, e_pieces, e_paint, 0, 0, 0};

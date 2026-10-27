@@ -19,6 +19,7 @@
 #include "indicators.h"   /* charge_is_charging + battery_is_absent */
 #include "battery.h"      /* VDD for the debug page */
 #include "power.h"        /* the battery row's bulb: power_lights_mode */
+#include "power_bulb.h"   /* its art, shared with the menu's Power page (10-27) */
 /* Also included further down beside the connection-state code, which is where
  * it historically lived; #pragma once makes the duplicate free. Hoisted because
  * the Fn+D debug page sits above that point and reads the battery and TX
@@ -1777,73 +1778,10 @@ static const uint8_t bolt_runs[][4] = {
 #define CROSS_Y_NUDGE 1
 #define CROSS_Y_OFF (((BOLT_H - CROSS_WH) / 2) + CROSS_Y_NUDGE)
 
-/* The power mode's bulb (plans/POWER-MODE-ICONS-PLAN.md), in the same slot on
- * battery, where the bolt and the cross never show; on USB every mode is
- * Always on, and the slot is theirs. One bulb losing its light: lit with
- * rays (Always on), lit (Balanced), dimmed (Power saver), unlit and struck
- * through (Lights out). The slash is the usual mark for "switched off" (a
- * muted bell); an X would echo the no-pack cross in this slot. Lights out is
- * the mode whose screen is dark but for a few seconds after a message, so its
- * bulb must read at a glance, and the slash parts it from Saver by shape,
- * not by fill alone. The bulb is cut back a pixel wherever it touches the
- * slash, at an edge or a corner, so the slash lies over it. '#' is the
- * outline or the lit glass, '*' the dimmed glass, '=' the collar, '+' the
- * screw base and '/' the slash. Row 0 is the slot's top, so the rays reach
- * it and the bulb sits on the battery's bottom row. */
-#define BULB_W 13
-#define BULB_H 14
-static const char bulb_art[POWER_MODE_COUNT][BULB_H][BULB_W + 1] = {
-    [POWER_MODE_FULL] = {
-        "......#......", ".#.........#.", "..#.......#..", ".....###.....",
-        "...#######...", "##.#######.##", "..#########..", "..#########..",
-        "..#########..", "...#######...", "....#####....", "....=====....",
-        "....+++++....", ".....+++.....",
-    },
-    [POWER_MODE_NORMAL] = {
-        ".............", ".............", ".............", ".....###.....",
-        "...#######...", "...#######...", "..#########..", "..#########..",
-        "..#########..", "...#######...", "....#####....", "....=====....",
-        "....+++++....", ".....+++.....",
-    },
-    [POWER_MODE_SAVER] = {
-        ".............", ".............", ".............", ".....###.....",
-        "...##***##...", "...#*****#...", "..#*******#..", "..#*******#..",
-        "..#*******#..", "...#*****#...", "....#***#....", "....=====....",
-        "....+++++....", ".....+++.....",
-    },
-    [POWER_MODE_MINIMAL] = {
-        ".............", ".............", ".//..........", "..//..##.....",
-        "...//...##...", "....//...#...", "..#..//...#..", "..#...//..#..",
-        "..#....//....", "...#....//...", "....#....//..", "....====..//.",
-        "....+++++....", ".....+++.....",
-    },
-};
-/* Mid grey (0x8410) was near-illegible as 5x7 text here (COL_AMPM); Saver's
- * glass is a filled area and survives it. The first base on the panel (3 wide,
- * 0x8C71, and 0x4228 under Saver and Lights out) barely showed, so it is 5
- * wide and lighter: still darker than the white glass, lighter than Saver's
- * grey glass. Its top row is a darker collar, which parts it from the glass
- * the way a real bulb's does, without the black gap that squashed the glass.
- * The glass changes with the mode, the metal does not, except in Lights out,
- * which is slate all over so the whole bulb looks switched off; on the panel
- * the slate reads nearly grey. Its slash is light grey, clearly not white yet
- * well apart from the slate (chosen on the panel from four shades). Never yellow
- * (the bolt's, in the bolt's place) or red and amber (a low battery, on this
- * row). */
-#define COL_BULB_BASE       0xB5B6   /* #B4B4B4: the screw base */
-#define COL_BULB_COLLAR     0x632C   /* #646464: the collar, the base's top row */
-#define COL_BULB_DIM        0x8410   /* #808080: Saver's glass */
-#define COL_BULB_OFF        0x8D18   /* #8EA2C6: Lights out's outline, slate */
-#define COL_BULB_OFF_BASE   0x6BD2   /* #6B7994: Lights out's base, a darker slate */
-#define COL_BULB_OFF_COLLAR 0x4AAD   /* #4C566A: Lights out's collar */
-#define COL_BULB_OFF_SLASH  0xDEFB   /* #DCDCDC: Lights out's slash */
-/* Per mode: '#', '*', '+', '=', '/'. */
-static const uint16_t bulb_cols[POWER_MODE_COUNT][5] = {
-    [POWER_MODE_FULL]    = {COL_FG, 0, COL_BULB_BASE, COL_BULB_COLLAR, 0},
-    [POWER_MODE_NORMAL]  = {COL_FG, 0, COL_BULB_BASE, COL_BULB_COLLAR, 0},
-    [POWER_MODE_SAVER]   = {COL_FG, COL_BULB_DIM, COL_BULB_BASE, COL_BULB_COLLAR, 0},
-    [POWER_MODE_MINIMAL] = {COL_BULB_OFF, 0, COL_BULB_OFF_BASE, COL_BULB_OFF_COLLAR, COL_BULB_OFF_SLASH},
-};
+/* The power mode's bulb (plans/POWER-MODE-ICONS-PLAN.md) in the same slot:
+ * its art and colours are graphics/power_bulb.c's since 10-27, which the
+ * menu's Power page draws too. */
+_Static_assert(BULB_MODES == POWER_MODE_COUNT && COL_FG == 0xFFFF, "power_bulb.c's modes and glass are this row's");
 #define SLOT_NO_BULB 0xFFu
 
 /* The slot is the union of the three: the bulb's rays make it 13 wide and
@@ -1890,10 +1828,8 @@ static void draw_bolt_slot(bool absent, bool chrg, uint8_t bulb) {
                      (uint8_t)(bolt_runs[i][3] + BOLT_DY), COL_BOLT);
     } else if (bulb < POWER_MODE_COUNT) {
         for (uint8_t y = 0; y < BULB_H; y++)
-            for (uint8_t x = 0; x < BULB_W; x++) {
-                char c = bulb_art[bulb][y][x];
-                if (c != '.') tile[y * ICON_SLOT_W + x] = bulb_cols[bulb][c == '#' ? 0 : c == '*' ? 1 : c == '+' ? 2 : c == '=' ? 3 : 4];
-            }
+            for (uint8_t x = 0; x < BULB_W; x++)
+                tile[y * ICON_SLOT_W + x] = power_bulb_px(bulb, x, y, tile[y * ICON_SLOT_W + x]);
     }
     /* CPU pushes share SPI0 with the DMA blits. lcd_blit_ram quiesces the bus
      * itself (bus_quiesce); the explicit wait is draw_ampm's pattern, and free
