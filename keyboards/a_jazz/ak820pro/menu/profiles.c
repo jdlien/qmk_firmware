@@ -518,25 +518,33 @@ static void write_active(void) {
  * Previous keys load one; either named (env_prof_switched()). A side
  * without one keeps nothing of its own: arriving at it changes nothing. A
  * bounce back to the side it was on changes nothing either. Refused by the
- * latch: nothing applied or kept, the side still moves. */
+ * latch: nothing applied or kept, the side still moves.
+ * Codex (10-27): an open preview goes back before anything is kept, so the
+ * side's own settings are, never a preview's. And the side arrived at's
+ * settings are saved at once, before the side left's record: the change of
+ * computers that flips this switch often flips the slider too, which browns
+ * the board out, and a cut in the settings' deferred write (5 s) would find
+ * the record moved on while the saved settings were still the old side's.
+ * A cut between the two writes loses the side left's changes only. */
 static void settle_side(void) {
     uint8_t now = (side & SD_MAC) ? SD_SETTLED : 0u;
     if ((side & SD_SETTLED) == now) return;
     uint8_t keep[PROF_REC], rec[PROF_REC];
-    uint8_t x = cur_side();
-    bool    kept = prof_active_rec(rec) < PROF_USER;
-    if (kept) {   /* the side left, as it is now */
-        prof_capture(keep, PF_SIDE);
-        keep[PR_STATE] = (uint8_t)(PS_LAST | x);
-    }
+    uint8_t x     = cur_side();
+    bool    kept  = prof_active_rec(rec) < PROF_USER;
     side          = (uint8_t)((side & ~SD_SETTLED) | now);
     uint8_t s     = prof_active_rec(rec), st = writable();
     bool    taken = false;
-    if (st == PROF_OK) {
+    if (st == PROF_OK && (kept || s < PROF_USER)) {
+        cancel_previews();
+        if (kept) {   /* the side left, as it is now */
+            prof_capture(keep, PF_SIDE);
+            keep[PR_STATE] = (uint8_t)(PS_LAST | x);
+        }
         if (s < PROF_USER) {
-            cancel_previews();
             taken = last_of(cur_side(), rec);   /* read before the side left's goes in */
             st    = taken ? prof_apply(rec, false) : prof_load(s);
+            env_settings_flush();
         }
         if (kept)
             last_put(keep);
@@ -622,8 +630,10 @@ static uint8_t commit(void) {
 /* --- Reset settings (10-27) ------------------------------------------------- */
 
 uint8_t prof_reset(void) {
-    uint8_t st = writable();
-    if (st == PROF_BUSY) return st;
+    /* Not writable()'s answer: under the latch it says WRITE_FAILED before
+     * it looks at a recovery (codex, 10-27). */
+    if (env_recovering() || prof_restore_open()) return PROF_BUSY;
+    uint8_t        st;
     env_defaults_t d;
     uint8_t        rec[PROF_REC];
     env_defaults(&d);
