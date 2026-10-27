@@ -1833,9 +1833,13 @@ static menu_result_t activate(uint32_t now) {
                 ms_invalidate_rows(S_ROW0 + 1u, CLOCK_EXAMPLES);
             }
             if (node == N_BATT) {
+                /* Its rows repaint whole, as the Clock's: a quick re-entry
+                 * can find a row's last text still committed with a
+                 * signature the new text's hashes to (codex, Both's fix). */
                 env_batt_t b;
                 env_batt_facts(&b);
                 pg.batt_ready = batt_hours_ready(&b) ? 1u : 0u;
+                ms_invalidate_rows(S_ROW0 + 1u, MENU_ROWS - 1u);
             }
             push(node, saved_row(node));
             show(false, false, now);
