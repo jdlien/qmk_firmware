@@ -112,7 +112,7 @@ static matrix_row_t  shared_matrix[MATRIX_ROWS]; // scan values
  * (The old matrix_locked interlock that paired with it is gone; the scheme it
  * balanced coverage for no longer exists.) */
 static volatile bool matrix_scanned = false;
-volatile bool        sn32f2xx_pgm_scan = false;   /* sn32f2xx.h: straight through a flash program (ak820pro, 10-27) */
+volatile bool        sn32f2xx_pgm_scan = true;    /* sn32f2xx.h: straight through a flash program (ak820pro, 10-27) */
 #endif // SHARED MATRIX
 /* +1 so a channel at FULL brightness still has a match to hit.
  *
@@ -734,7 +734,7 @@ static void rgb_callback(PWMDriver *pwmp) {
         if (scan_only) shared_matrix_rgb_disable_output();
     }
     if (scan_only) {
-        if (EFLD1.state != FLASH_PGM || sn32f2xx_pgm_scan) {   /* as below: no scan inside a flash program, unless asked */
+        if (EFLD1.state != FLASH_PGM || sn32f2xx_pgm_scan) {   /* as below: the scan through a flash program, unless the guard is asked for */
             uint8_t last = scan_only_row;
             if (++scan_only_row >= ROWS_PER_HAND) scan_only_row = 0;
             shared_matrix_scan_keys(shared_matrix, scan_only_row, last);
@@ -742,10 +742,15 @@ static void rgb_callback(PWMDriver *pwmp) {
     } else
 #endif
     // Scan the rgb and key matrix
-    if (EFLD1.state != FLASH_PGM || sn32f2xx_pgm_scan) {   /* ak820pro: straight through a program when asked */
+    if (EFLD1.state != FLASH_PGM || sn32f2xx_pgm_scan) {   /* ak820pro: straight through a program, the default since 10-27 */
         update_pwm_channels(pwmp);
     } else {
-        /* A flash program is in progress. The old guard merely SKIPPED the
+        /* The 09-01 guard, now only where sn32f2xx_pgm_scan is false (a dev
+         * build's write test, to compare): sn32f2xx.h. Its account below
+         * of masked windows freezing a row was corrected on 10-04 (masked
+         * 10-20 us a line, the ISR running between), and JD's eye on the
+         * write test (10-27) found the scan through a program invisible.
+         * A flash program is in progress. The old guard merely SKIPPED the
          * advance, which left the currently-selected mux row energized --
          * and the masked program windows then freeze it there for the whole
          * multi-ms operation, so that row shows its live colour slot at
@@ -934,6 +939,7 @@ static uint32_t drive_now[3] = {0};   /* the committed frame's channel sums: r, 
 static uint32_t drive_since  = 0;     /* when it was committed, ms */
 static uint64_t drive_acc[3] = {0};   /* sum x ms since the last take, per colour */
 static uint32_t drive_lit    = 0;     /* ms with any channel lit, since the last take */
+static uint16_t commits      = 0;     /* frames committed, wrapping (sn32f2xx_led_commits()) */
 
 static void drive_close(uint32_t now) {
     uint32_t dt = now - drive_since;
@@ -956,6 +962,10 @@ uint64_t sn32f2xx_led_drive_take(uint32_t now_ms, uint32_t *lit_ms, uint64_t rgb
 
 bool sn32f2xx_led_committed_dark(void) {
     return (drive_now[0] | drive_now[1] | drive_now[2]) == 0;
+}
+
+uint16_t sn32f2xx_led_commits(void) {
+    return commits;
 }
 
 void sn32f2xx_flush(void) {
@@ -985,6 +995,7 @@ void sn32f2xx_flush(void) {
         drive_now[0] = sr;
         drive_now[1] = sg;
         drive_now[2] = sb;
+        commits++;
     }
 }
 

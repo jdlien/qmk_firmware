@@ -19,6 +19,7 @@
 #include "indicators.h"               /* battery_is_absent for HC_CONN */
 #include "battery.h"                  /* VDD for HC_CONN */
 #include "flash_stats.h"              /* HC_FLASHW */
+#include "flash_tidy.h"               /* HC_FLASHW page 4 */
 #include "loop_acct.h"                /* HC_ACCT */
 #include "power.h"                    /* HC_DEVHOOK op 14 */
 #include "sleep.h"                    /* HC_DEVHOOK op 14, subs 3 and 4; op 24 */
@@ -785,7 +786,11 @@ static void health_command(uint8_t *data, uint8_t length) {
             health_reset();
             break;
         case HC_FLASHW:
-            if (length < 32 || !flash_stats_fill(data[3], &data[4])) data[0] = RTC_UNHANDLED;
+            if (data[3] == FLASH_TIDY_PAGE && length >= 32) {   /* 10-27: the early cleanup's (flash_tidy.h) */
+                flash_tidy_fill(&data[4]);
+            } else if (length < 32 || !flash_stats_fill(data[3], &data[4])) {
+                data[0] = RTC_UNHANDLED;
+            }
             break;
         case HC_ACCT:
             if (length < 32) {

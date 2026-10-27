@@ -29,6 +29,7 @@
 #include "sleep.h"         /* the deep sleep, and the dev builds' light-sleep bits */
 #include "loop_acct.h"     /* D1: ACCT() around each board task */
 #include "flash_stats.h"   /* C1: flash write sessions by writer */
+#include "flash_tidy.h"    /* the emulated EEPROM's cleanup, early (10-27) */
 #include "menu/menu_glue.h" /* the configuration menu: plans/CONFIG-MENU-BUILD-PLAN.md */
 #include "menu/menu_edit.h" /* P1b's edit transaction: its writers' hooks (C6) */
 #include "menu/profiles.h"  /* P5a: a restore's timeout */
@@ -665,6 +666,11 @@ void housekeeping_task_kb(void) {
     // kick certifies a COMPLETED pass. A kick at entry would hand a freshly
     // wedged pass another full timeout and prove nothing about what follows.
     watchdog_kick();
+
+    /* The emulated EEPROM's cleanup, early, at a dark or idle moment
+     * (flash_tidy.h): just before the sleep, so the pass that darkens before
+     * a deep sleep runs it first. */
+    flash_tidy_task();
 
     /* The deep sleep, the ladder's last stage, in every build (and the dev
      * builds' light-sleep bits): after the kick, so a yield or a sleep starts

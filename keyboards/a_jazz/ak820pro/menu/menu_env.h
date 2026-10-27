@@ -106,7 +106,8 @@ void     env_defaults(env_defaults_t *d);
  * runs (false: every row dark, true: the scan straight through); one small
  * write, the spare byte past VIA's macros toggled (ENV_WR_*, or ENV_WT_NONE
  * when the macros leave none spare); a consolidation, true when done; the
- * power ladder's Dim stage forced or released, and whether it is forced. */
+ * power ladder's Dim stage forced or released, and whether it is forced; the
+ * LED frames committed, wrapping (sn32f2xx_led_commits()). */
 #define ENV_WT_NONE 0xFFu
 bool     env_wt_scan(void);
 void     env_wt_set_scan(bool on);
@@ -114,7 +115,8 @@ uint8_t  env_wt_write(void);
 bool     env_wt_cleanup(void);
 void     env_wt_dim(bool on);
 bool     env_wt_dimmed(void);
-bool     env_wt_dim_applied(void);   /* forced, and the ladder's cap in force: the dim on the LEDs */
+bool     env_wt_dim_applied(void);   /* forced, and the ladder's cap in force: the dim rendering */
+uint16_t env_wt_frames(void);
 #endif
 /* P5c, Rename's capture: the debounced matrix idle (the knob masked) and
  * QMK's tapping holding nothing; the one-shots cleared; the default layer's

@@ -341,6 +341,14 @@ wear_leveling_status_t wear_leveling_consolidate(void) {
 }
 
 /**
+ * ak820pro: the write log's bytes in use (wear_leveling.h).
+ */
+uint32_t wear_leveling_log_used(void) {
+    const uint32_t start = (WEAR_LEVELING_LOGICAL_SIZE) + 8; // +8 due to the FNV1a_64 of the consolidated area
+    return wear_leveling.write_address > start ? wear_leveling.write_address - start : 0;
+}
+
+/**
  * Potential write of the current cache to the backing store.
  * Skipped if the current write log position is not at the end of the backing store.
  * During this operation, there is the potential for data loss if a power loss occurs.

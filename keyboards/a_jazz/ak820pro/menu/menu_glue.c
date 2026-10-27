@@ -258,6 +258,7 @@ bool env_wt_cleanup(void) { return wear_leveling_consolidate() != WEAR_LEVELING_
 void env_wt_dim(bool on) { power_force_stage(on ? (uint8_t)POWER_STAGE_DIM : 0xFFu); }
 bool env_wt_dimmed(void) { return power_forced_stage() == (uint8_t)POWER_STAGE_DIM; }
 bool env_wt_dim_applied(void) { return env_wt_dimmed() && power_val_cap() <= 64u; }   /* power.c's DIM_VAL */
+uint16_t env_wt_frames(void) { return sn32f2xx_led_commits(); }
 #endif
 void env_settings_flush(void) {
     kb_eeconfig_flush();

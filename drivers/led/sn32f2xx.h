@@ -101,13 +101,23 @@ uint64_t sn32f2xx_led_drive_take(uint32_t now_ms, uint32_t *lit_ms, uint64_t rgb
  * replaces it. Main-thread only. */
 bool sn32f2xx_led_committed_dark(void);
 
+/* ak820pro (2026-10-27): frames committed to the LEDs by sn32f2xx_flush(),
+ * wrapping. A caller that changed what renders waits for it to move twice:
+ * a change made this pass reaches the LEDs only at a later flush, and a pass
+ * blocked meanwhile (a consolidation) flushes nothing. Main-thread only. */
+uint16_t sn32f2xx_led_commits(void);
+
 /* ak820pro (2026-10-27): what the row ISR does while an internal-flash
- * program runs (EFLD1.state == FLASH_PGM). false (the default): every mux row
- * de-selected, the board dark for the program's length (the 09-01 guard).
- * true: the scan runs straight through, as between programs; interrupts are
- * masked only for each line's 10-20 us window, so a row is at most that late.
- * A dev build's write test switches it at run time to compare the two by eye
- * (plans/BACKLOG.md, "The LED blink at an internal-flash write"). */
+ * program runs (EFLD1.state == FLASH_PGM). true (the default): the scan runs
+ * straight through, as between programs; interrupts are masked only for each
+ * line's 10-20 us window, so a row is at most that late. false: every mux row
+ * de-selected, the board dark for the program's length (the 09-01 guard). A
+ * dev build's write test switches it at run time to compare the two by eye
+ * (plans/BACKLOG.md, "The LED blink at an internal-flash write"): JD saw a
+ * consolidation as "a very noticeable flicker" under the guard and "a more
+ * subtle flicker" scanning, and an ordinary write as nothing under either.
+ * What scanning leaves is the erase, which neither changes: the CPU, the ISR
+ * with it, stalls for each page (docs/sn32f299.md, p. 251). */
 extern volatile bool sn32f2xx_pgm_scan;
 
 /* Scale every LED's output by scale/256 (255 = unscaled) below the rgb_matrix

@@ -45,11 +45,19 @@ wear_leveling_status_t wear_leveling_write(uint32_t address, const void* value, 
 
 /**
  * ak820pro (2026-10-27): a consolidation now, as a full write log forces one:
- * the backing store erased and the cache written back. A dev build's write
- * test (the configuration menu's) fires it on demand. Additive: nothing else
- * calls it.
+ * the backing store erased and the cache written back. The board's
+ * flash_tidy.c runs it early, where the LEDs' blink can't be seen, and a dev
+ * build's write test (the configuration menu's) on demand. Additive: nothing
+ * else calls it.
  */
 wear_leveling_status_t wear_leveling_consolidate(void);
+
+/**
+ * ak820pro (2026-10-27): the bytes of the write log in use, 0 just after a
+ * consolidation; the log fills at WEAR_LEVELING_BACKING_SIZE -
+ * WEAR_LEVELING_LOGICAL_SIZE - 8, and the write that fills it consolidates.
+ */
+uint32_t wear_leveling_log_used(void);
 
 /**
  * Reads logical data from the cache.

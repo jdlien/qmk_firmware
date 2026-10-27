@@ -285,9 +285,10 @@ static union {
     uint8_t batt_ready;     /* Both: batt_hours_ready() last seen, for menu_tick() */
     struct {                /* 10-27, dev: the write test's */
         uint8_t  left;      /* Ten writes: still to come */
-        uint8_t  dim;       /* Dim + write: 1 waiting for the cap, 2 for its frame on the LEDs */
+        uint8_t  dim;       /* Dim + cleanup: 1 waiting for the cap, 2 for its frames on the LEDs */
         uint16_t next;      /* 16-bit ms: the next of the ten */
-        uint16_t dim_at;    /* 16-bit ms: the dim's write, once 2 */
+        uint16_t dim_at;    /* 16-bit ms: the dim's cleanup at the soonest, once 2 */
+        uint16_t frames;    /* env_wt_frames() when the cap was on */
     } wt;
 } pg;
 enum { CK_OK = 1, CK_JUMP = 2 };   /* set; a read that wasn't the last's time on, for menu_tick() */
@@ -371,7 +372,7 @@ static uint8_t pfs_saved(void);
 static uint8_t pfs_nth(uint8_t k);
 #ifdef MENU_WTEST
 enum { WT_STRATEGY = 1, WT_ONE, WT_TEN, WT_CLEAN, WT_DIM, WT_ROWS };
-static const char *const wt_labels[WT_ROWS] = {"", "Strategy", "One write", "Ten writes", "Cleanup", "Dim + write"};
+static const char *const wt_labels[WT_ROWS] = {"", "Strategy", "One write", "Ten writes", "Cleanup", "Dim + cleanup"};
 static void wt_leave(void);   /* with the page's other functions, before activate() */
 #endif
 static uint8_t row_count(uint8_t node) {
@@ -1927,11 +1928,12 @@ static void edit_turn(int8_t turns, uint32_t now) {
 /* --- 10-27, dev builds: the write test -----------------------------------------
  * JD: "a suite I can trigger from the cool new menu system ... and see what
  * looks better". Strategy switches what the LEDs do during a flash program
- * (Blank, every row dark: the 09-01 guard; Scan: straight through); One
- * write and Ten writes (one a second) write a spare byte, as a setting's
- * save does; Cleanup forces the store's consolidation, the long one; Dim +
- * write forces the ladder's Dim and writes as the dim lands (JD: "if the
- * blink coincided with the keyboard going dim"), a click again releasing it.
+ * (Scan: straight through, the default since JD's eye on this page; Blank,
+ * every row dark: the 09-01 guard); One write and Ten writes (one a second)
+ * write a spare byte, as a setting's save does; Cleanup forces the store's
+ * consolidation, the long one; Dim + cleanup forces the ladder's Dim and
+ * consolidates once the dim is on the LEDs (JD: "doing the cleanup on
+ * dimming could help"), stopping the ten writes, a click again releasing it.
  * Leaving the page or the session stops the writes and releases the dim, but
  * only a dim this page forced (wt_dimmed): a bench's forced stage stays. */
 static uint8_t wt_dimmed;
@@ -1967,17 +1969,20 @@ static void wt_click(uint8_t i, uint32_t now) {
                 wt_undim();
             } else {
                 env_wt_dim(true);
-                wt_dimmed = 1;
-                pg.wt.dim = 1;   /* the write waits for the cap, then its frame (wt_tick()) */
+                wt_dimmed  = 1;
+                pg.wt.dim  = 1;   /* the cleanup waits for the cap, then its frames (wt_tick()) */
+                pg.wt.left = 0;   /* alone: the ten's writes can't land in the wait */
             }
             break;
         default: break;
     }
 }
-/* Each pass on the page: the ten writes' next, the dim's write once the cap
- * is on the LEDs. The cap changes before the frame it dims is rendered and
- * flushed (codex), so the write waits WT_FRAME_MS more: a few of rgb_matrix's
- * flushes. True when the page's state moved. */
+/* Each pass on the page: the ten writes' next, the dim's cleanup once the
+ * cap is on the LEDs. The cap changes before the frame it dims is rendered
+ * and flushed (codex), so the cleanup waits for two frames committed after
+ * it, and WT_FRAME_MS at least: a pass blocked meanwhile (a consolidation)
+ * commits none, where a wait by the clock alone would pass (codex, the fix's
+ * review). True when the page's state moved. */
 #define WT_FRAME_MS 50u
 static bool wt_tick(uint32_t now) {
     bool moved = false;
@@ -1991,9 +1996,11 @@ static bool wt_tick(uint32_t now) {
     if (pg.wt.dim == 1u && env_wt_dim_applied()) {
         pg.wt.dim    = 2;
         pg.wt.dim_at = (uint16_t)(now + WT_FRAME_MS);
-    } else if (pg.wt.dim == 2u && (int16_t)((uint16_t)now - pg.wt.dim_at) >= 0) {
+        pg.wt.frames = env_wt_frames();
+    } else if (pg.wt.dim == 2u && (int16_t)((uint16_t)now - pg.wt.dim_at) >= 0 &&
+               (uint16_t)(env_wt_frames() - pg.wt.frames) >= 2u) {
         pg.wt.dim = 0;
-        wt_flash(env_wt_write(), now);
+        flash(env_wt_cleanup() ? T_WT_CLEAN : T_WT_FAIL, now);
         moved = true;
     }
     return moved;
