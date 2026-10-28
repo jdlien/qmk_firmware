@@ -99,3 +99,20 @@ static inline void pcf_sync_written(pcf_sync_t *s) {
 static inline bool pcf_sync_retry_due(const pcf_sync_t *s, uint32_t now_s) {
     return s->stale && !s->no_retry && !s->pending && (int32_t)(now_s - s->retry_at) >= 0;
 }
+
+/* May the writer start? Only where nobody is watching the LEDs (10-27): each
+ * PCF transaction holds the row ISR off (rtc.c, ak820_i2c_xfer_begin()), the
+ * LEDs are off for it, up to 3.4 ms, and a write is three bursts over a
+ * second, which JD saw after every 5-minute sync and filmed at 240 fps
+ * (docs/leds.md, "The other flicker"). So it starts once the committed frame
+ * is dark (every deep sleep comes after the dark, and waits on `pending`) or
+ * after PCF_SYNC_UNSEEN_IDLE_MS without a key or the knob. The writer plans
+ * from the board's clock when it starts, so a late write is as accurate as an
+ * early one; the PCF stays stale until it lands, which only a power loss
+ * meanwhile would see, and the host's next sync corrects that. JD: "Update
+ * the clock, only write the RTC when we sleep or after a pretty long
+ * no-typing delay." */
+#define PCF_SYNC_UNSEEN_IDLE_MS 600000u
+static inline bool pcf_sync_may_start(bool dark, uint32_t idle_ms) {
+    return dark || idle_ms >= PCF_SYNC_UNSEEN_IDLE_MS;
+}

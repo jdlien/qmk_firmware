@@ -16,6 +16,7 @@
 #include "../ak820pro.h"
 #include "../sleep.h"              /* the deep sleep's pass budget */
 #include "../overrun_diag.h"       /* dev: each transaction's kind and spans */
+#include "drivers/led/sn32f2xx.h"  /* the committed frame's dark: the PCF write's start */
 
 #include <time.h>
 
@@ -1514,6 +1515,11 @@ static void pcf_machine_step(void)
     switch (ps_state) {
     case PS_IDLE:
         if (!pcf_pending) return;
+        /* Only the start waits for nobody watching (rtc_pcf_sync.h): a run
+         * under way finishes, so STOP is never held while the lights are on.
+         * The sleep waits on the pending write and on the dark both, so the
+         * write comes first. */
+        if (!pcf_sync_may_start(sn32f2xx_led_committed_dark(), last_input_activity_elapsed())) return;
         if (pcf_backoff) {
             if ((int32_t)(rtc_seconds_count - pcf_backoff_until) < 0) return;
             pcf_backoff = false;
