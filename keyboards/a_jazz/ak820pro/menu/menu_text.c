@@ -5,18 +5,26 @@
 #include <string.h>
 
 #include "../graphics/res/font_small_mono.h"
+#include "../graphics/res/font_menu_mono.h"   /* Large's: here only, its one definition (the song text's too) */
 
 _Static_assert(MT_CELL_W == FONT_MONO_W && MT_CELL_H == FONT_MONO_H, "menu_text.h's cell is the face's");
-_Static_assert(FONT_MONO_XFIRST == 0x80 && FONT_MONO_N - FONT_MONO_ASCII == 44, "menu_text.h's MT_LSAQUO..MT_I_RESET");
+_Static_assert(MT_CELL_W_L == FONT_LARGE_W && MT_CELL_H_L == FONT_LARGE_H, "menu_text.h's Large cell is the face's");
+_Static_assert(FONT_MONO_XFIRST == 0x80 && FONT_MONO_N - FONT_MONO_ASCII == 46, "menu_text.h's MT_LSAQUO..MT_I_FONT");
+_Static_assert(FONT_LARGE_N == FONT_MONO_N, "the faces share their codes");
 
-static const uint8_t *glyph(uint8_t code) {
-    if (code >= FONT_MONO_FIRST && code < FONT_MONO_FIRST + FONT_MONO_ASCII) return font_small_mono[code - FONT_MONO_FIRST];
+/* A code's index in either table: '?' for a code the faces lack. */
+static uint8_t index_of(uint8_t code) {
+    if (code >= FONT_MONO_FIRST && code < FONT_MONO_FIRST + FONT_MONO_ASCII) return (uint8_t)(code - FONT_MONO_FIRST);
     if (code >= FONT_MONO_XFIRST && code < FONT_MONO_XFIRST + (FONT_MONO_N - FONT_MONO_ASCII))
-        return font_small_mono[FONT_MONO_ASCII + (code - FONT_MONO_XFIRST)];
-    return font_small_mono['?' - FONT_MONO_FIRST];
+        return (uint8_t)(FONT_MONO_ASCII + (code - FONT_MONO_XFIRST));
+    return (uint8_t)('?' - FONT_MONO_FIRST);
 }
+static const uint8_t *glyph(uint8_t face, uint8_t code) {
+    return face == MT_LARGE ? font_large_mono[index_of(code)] : font_small_mono[index_of(code)];
+}
+const uint8_t *mt_glyph_large(uint8_t code) { return font_large_mono[index_of(code)]; }
 
-uint16_t mt_width(const mt_line_t *l) { return (uint16_t)(l->lead + l->cells * MT_CELL_W + l->trail); }
+uint16_t mt_width(const mt_line_t *l) { return (uint16_t)(l->lead + l->cells * mt_cell_w(l->face) + l->trail); }
 
 /* Set columns [a, b) of the band (band-relative, already clipped) in every row. */
 static void ink_cols(uint8_t *bits, uint8_t stride, uint8_t rows, uint16_t a, uint16_t b) {
@@ -24,18 +32,20 @@ static void ink_cols(uint8_t *bits, uint8_t stride, uint8_t rows, uint16_t a, ui
         for (uint8_t r = 0; r < rows; r++) bits[(uint16_t)r * stride + (i >> 3)] |= (uint8_t)(0x80u >> (i & 7u));
 }
 
-/* A cell at a time, not a column at a time: each glyph row's six bits are
- * shifted into place with two byte ORs. Per column, the M0 under the row
+/* A cell at a time, not a column at a time: each glyph row's six (Large's
+ * eight) bits are shifted into place with two byte ORs. Per column, the M0 under the row
  * ISR's load spent ~4 ms of a 488 B piece composing and expanding (op 27
  * sub 10, 10-24), against ~4.3 ms for a whole fill piece. */
 void mt_bits(const mt_line_t *l, uint16_t c0, uint16_t w, uint8_t r0, uint8_t rows, uint8_t *bits, uint8_t stride) {
     memset(bits, 0, (size_t)stride * rows);
+    const uint8_t  cw   = mt_cell_w(l->face);
+    const uint8_t  mask = l->face == MT_LARGE ? 0xFFu : 0xFCu;   /* the cell's columns: Small's six are bits 7..2 */
     const uint16_t end  = (uint16_t)(c0 + w);                    /* line columns [c0, end) */
-    const uint16_t text = (uint16_t)(l->lead + l->cells * MT_CELL_W);
+    const uint16_t text = (uint16_t)(l->lead + l->cells * cw);
     /* The edges, ink only (background is the zeroed bits). A lead glyph's
      * columns land where they are, cut to the band: lead <= a cell. */
     if (l->lead_glyph && c0 < l->lead) {
-        const uint8_t *g   = glyph(l->lead_glyph) + r0;
+        const uint8_t *g   = glyph(l->face, l->lead_glyph) + r0;
         const uint16_t lim = end < l->lead ? end : l->lead;
         for (uint16_t i = c0; i < lim; i++)
             for (uint8_t r = 0; r < rows; r++)
@@ -45,13 +55,13 @@ void mt_bits(const mt_line_t *l, uint16_t c0, uint16_t w, uint8_t r0, uint8_t ro
     /* The cells the band reaches, each clipped to it. */
     if (end <= l->lead || c0 >= text) return;
     const size_t len   = strlen(l->s);
-    uint8_t      first = c0 > l->lead ? (uint8_t)((c0 - l->lead) / MT_CELL_W) : 0;
-    uint16_t     past  = (uint16_t)((end - l->lead + MT_CELL_W - 1) / MT_CELL_W);   /* one past: clamped before it narrows (codex) */
+    uint8_t      first = c0 > l->lead ? (uint8_t)((c0 - l->lead) / cw) : 0;
+    uint16_t     past  = (uint16_t)((end - l->lead + cw - 1) / cw);   /* one past: clamped before it narrows (codex) */
     uint8_t      last  = past > l->cells ? l->cells : (uint8_t)past;
-    int16_t x = (int16_t)(l->lead + first * MT_CELL_W - c0);   /* the cell's column 0, band-relative; < 0 if cut */
-    for (uint8_t cell = first; cell < last; cell++, x = (int16_t)(x + MT_CELL_W)) {
+    int16_t x = (int16_t)(l->lead + first * cw - c0);   /* the cell's column 0, band-relative; < 0 if cut */
+    for (uint8_t cell = first; cell < last; cell++, x = (int16_t)(x + cw)) {
         if (cell >= len) break;   /* spaces: background */
-        const uint8_t *g = glyph((uint8_t)l->s[cell]) + r0;
+        const uint8_t *g = glyph(l->face, (uint8_t)l->s[cell]) + r0;
         /* Clipped to the band. A cell cut on the left: shifted left by the
          * cut, so its first visible column sits at band column 0 and the cut
          * ones fall off the byte. On the right: no bit at or past w. The cell
@@ -62,7 +72,7 @@ void mt_bits(const mt_line_t *l, uint16_t c0, uint16_t w, uint8_t r0, uint8_t ro
         const uint8_t  rmask  = room >= 8u ? 0xFFu : (uint8_t)(0xFFu << (8u - room));
         const uint8_t  byte = (uint8_t)(base >> 3), sh = (uint8_t)(base & 7u);
         for (uint8_t r = 0; r < rows; r++) {
-            const uint8_t gb = (uint8_t)(((g[r] & 0xFCu) << lshift) & rmask);   /* six columns, bits 7..2 */
+            const uint8_t gb = (uint8_t)(((g[r] & mask) << lshift) & rmask);   /* the cell's columns */
             if (!gb) continue;
             const uint16_t v   = (uint16_t)((uint16_t)gb << 8 >> sh);
             uint8_t       *row = bits + (uint16_t)r * stride + byte;

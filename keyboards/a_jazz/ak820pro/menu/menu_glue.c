@@ -87,6 +87,13 @@ uint16_t env_rtc_tick(void) { return (uint16_t)rtc_get_seconds(); }
  * composes the text, so the menu's close (the staged restore) shows it. */
 uint8_t env_batt_view(void) { return kb_eeconfig_get_batt_view(); }
 void env_batt_view_set(uint8_t v) { kb_eeconfig_set_batt_view(v); }
+/* 10-28, the menu's face: the readout's byte's bit 2 (kb_eeconfig.c). The
+ * song text reads it when it queues a line, so a change asks for the lines
+ * again (display_text_refont()). */
+_Static_assert(ENV_FONT_LARGE == KB_FONT_LARGE && ENV_FONT_SMALL == KB_FONT_SMALL, "menu_env.h's faces are kb_eeconfig's");
+uint8_t env_font(void) { return kb_eeconfig_get_font(); }
+void    env_font_set(uint8_t f) { kb_eeconfig_set_font(f); }
+void    env_text_refont(void) { display_text_refont(); }
 void env_batt_facts(env_batt_t *b) {
     b->pct         = battery_level_pct();
     b->on_battery  = battery_state() == BATTERY_STATE_BATTERY;

@@ -7,6 +7,7 @@
 #include "graphics/display.h"
 #include "graphics/playback.h"
 #include "graphics/batt_text.h"   /* the battery readout's text (P4) */
+#include "graphics/text_fit.h"    /* the song text's budgets and cut, per face (B6) */
 #include "lcd_bus.h"
 
 #include <string.h>
@@ -90,6 +91,14 @@ _Static_assert(PANEL_WIDTH <= 255, "draw_battery() keeps x and widths in a byte"
  * at 6x13 by hand, so there is no rasteriser to lose to. See mkbdfatlas.py. */
 #define FONT_SMALL      ASSET_IOSEVKA_MEDIUM_13    // dense: 6px advance
 #define FONT_SMALL_ADV  6
+/* The host text slot's other face, the menu's Font setting at Large, its
+ * default (plans/MENU-8X16-PLAN.md, B6): Terminus Bold 8x16, the menu's own
+ * table in internal flash, cropped to its rows 1-14. Not an asset: lcd_bus.h's
+ * pseudo font id, drawn by the CPU. Only the slot's two lines and its single
+ * line of 12 or more characters use it; the overlay, the 20px single line,
+ * the debug and camera pages and the bootloader splash keep their faces. */
+#define FONT_SONG_LARGE     LCD_FONT_SONG_LARGE
+#define FONT_SONG_LARGE_ADV LCD_FONT_SONG_LARGE_W   /* 8 */
 
 /* Align the text with the TRANSPORT ICON, not with the band.
  *
@@ -107,10 +116,15 @@ _Static_assert(PANEL_WIDTH <= 255, "draw_battery() keeps x and widths in a byte"
  *   13px face (Cozette, 6x14 cell): caps row 2, baseline row 9  -> centre 5.5
  *                                   descenders to row 12; Q's tail to row 10
  *   20px face (Iosevka, 10x23 cell): caps row 4, baseline row 18 -> centre 11
+ *   Large (Terminus Bold, its 8x16 cell's rows 1-14 as an 8x14 cell, from
+ *   font_menu_mono.h, not the atlas): caps row 1, baseline row 10 -> centre
+ *                                   5.5; descenders to row 13
  *
  * draw_text_icon paints rows y..y+11 for all three icons, so the icon's centre
  * is y + 5.5. For the 13px face that makes the icon's y exactly the text's CELL
- * TOP (5.5 == 5.5); no offset of any kind is needed. */
+ * TOP (5.5 == 5.5); no offset of any kind is needed. Large's crop has the same
+ * centre in a cell of the same height, so the same holds for it: its lines sit
+ * where Cozette's do, and the icon does not move with the face. */
 /* Line pitch for the two-line case: the 13px cell is 14 rows and a glyph blit
  * paints its whole cell, so lines sit exactly one cell apart with no overlap.
  * The cell's 14th row is blank, which is the inter-line gap. */
@@ -128,7 +142,7 @@ _Static_assert(PANEL_WIDTH <= 255, "draw_battery() keeps x and widths in a byte"
 
 /* Single-line offsets: where the text CELL starts. The icon is then centred on
  * whichever face is in use -- see the cap-band figures above. */
-#define TEXT_FONT_DY    8    /* 13px face */
+#define TEXT_FONT_DY    8    /* 13px face, and Large: the same cell height and cap centre (above) */
 #define TEXT_BIG_DY     2    /* 20px face */
 /* (128 - TEXT_X - 2) / 10px advance = 11 glyphs in the big face. */
 #define TEXT_BIG_MAX    11
@@ -2332,6 +2346,24 @@ static bool draw_locks_staged(bool first) {
  * derived facts; keep them provably in sync with the geometry. */
 _Static_assert(DISPLAY_TEXT_MAX_L0 == (PANEL_WIDTH - TEXT_X) / FONT_SMALL_ADV, "line-0 budget vs icon gutter");
 _Static_assert(DISPLAY_TEXT_MAX_L1 == (PANEL_WIDTH - TEXT_X2) / FONT_SMALL_ADV, "line-1 budget vs full width");
+/* The faces' budgets (text_fit.h), cut when a line is queued: Small's are the
+ * host's, so Small shows what it always has; Large's follow from the same x
+ * and its 8 px advance (B6). text_buf keeps the host's whole line either way. */
+_Static_assert(TEXT_FACE_LARGE == KB_FONT_LARGE && TEXT_FACE_SMALL == KB_FONT_SMALL, "text_fit.h's faces are kb_eeconfig's");
+_Static_assert(TEXT_FIT_SMALL_L0 == DISPLAY_TEXT_MAX_L0 && TEXT_FIT_SMALL_L1 == DISPLAY_TEXT_MAX_L1, "Small's budgets are the host's");
+_Static_assert(TEXT_FIT_LARGE_L0 == (PANEL_WIDTH - TEXT_X) / FONT_SONG_LARGE_ADV, "Large's line-0 budget vs icon gutter");
+_Static_assert(TEXT_FIT_LARGE_L1 == (PANEL_WIDTH - TEXT_X2) / FONT_SONG_LARGE_ADV, "Large's line-1 budget vs full width");
+/* Every cell a Large line can ask for is on the panel, which is what lets the
+ * pseudo font's failure path be a fault's alone (lcd_bus.c): across for each
+ * line's x, down for the two lines' y and the single line's. They stay in the
+ * band besides, above the clock, as Cozette's do (the cell is 14 rows too). */
+_Static_assert(TEXT_X + TEXT_FIT_LARGE_L0 * FONT_SONG_LARGE_ADV <= PANEL_WIDTH, "Large's line 0 on the panel");
+_Static_assert(TEXT_X2 + TEXT_FIT_LARGE_L1 * FONT_SONG_LARGE_ADV <= PANEL_WIDTH, "Large's line 1 on the panel");
+_Static_assert(LCD_FONT_SONG_LARGE_H == TEXT_LINE_H, "Large's cell is the lines' pitch, as Cozette's");
+_Static_assert(TEXT_Y + TEXT_LINE_H + LCD_FONT_SONG_LARGE_H <= PANEL_HEIGHT && TEXT_Y + TEXT_FONT_DY + LCD_FONT_SONG_LARGE_H <= PANEL_HEIGHT,
+               "Large's lines on the panel");
+_Static_assert(TEXT_Y + TEXT_LINE_H + LCD_FONT_SONG_LARGE_H < CLOCK_Y && TEXT_Y + TEXT_FONT_DY + LCD_FONT_SONG_LARGE_H < CLOCK_Y,
+               "and in the band, its gap row kept");
 
 // Blank after this long with no update. Without it the panel would happily show
 // last night's track forever if the host agent dies, the machine sleeps, or the
@@ -2344,10 +2376,14 @@ _Static_assert(DISPLAY_TEXT_MAX_L1 == (PANEL_WIDTH - TEXT_X2) / FONT_SMALL_ADV, 
 #define COL_ICON_PAUSE 0xFFE0                 // amber
 #define COL_ICON_STOP  0xF800                 // red
 
-/* TWO lines. Line 0 is the primary (song title); line 1 is secondary (artist).
- * Kept as separate buffers rather than one wrapped string because the producer
- * knows the semantic split and we do not -- wrapping "Bohemian Rhapsody" mid
- * word would look worse than truncating it. */
+/* TWO lines, in the producer's order: ak820text.py's push_line() and the
+ * daemon put the ARTIST on line 0, beside the icon, and the TITLE on line 1,
+ * the wider line; a title alone takes line 0. Kept as separate buffers rather
+ * than one wrapped string because the producer knows the semantic split and
+ * we do not -- wrapping "Bohemian Rhapsody" mid word would look worse than
+ * truncating it. Each keeps the host's whole line (19 and 21); the face's
+ * budget cuts it when it is queued (queue_text_line), so a change of face
+ * needs nothing resent. */
 #define TEXT_LINES 2
 static char     text_buf[TEXT_LINES][DISPLAY_TEXT_MAX + 1] = {{0}};
 static uint8_t  text_icon    = DISPLAY_ICON_NONE;
@@ -2521,6 +2557,33 @@ void display_clear_text(void) {
     text_icon    = DISPLAY_ICON_NONE;
     text_present = false;
     text_dirty   = true;
+}
+
+/* The face changed (font_set(): the menu's Font page, Reset settings, or the
+ * live record over raw HID, which comes with the menu closed and the same
+ * track up, so nothing else would mark the slot). The slot is queued again
+ * through its ordinary paths, which read the face as each line is queued;
+ * queue_line sees a line in another font as moved and queues every glyph,
+ * and each new cell paints whole, so only columns the old run covered and
+ * the new one doesn't are cleared. Not a new message: band_gen is left alone,
+ * so Lights out lights nothing for it. How each case ends in the new face:
+ *   - another owner (the menu, Fn+D, the animation): housekeeping skips the
+ *     slot and text_dirty waits; the restore at the exit discards the queue,
+ *     clears the panel and its forced text stage queues the lines afresh,
+ *     clearing text_dirty, in the face of that moment;
+ *   - the restore under way: its forced stage, if it is still to come, reads
+ *     the new face; if it has run, text_dirty outlives it (only
+ *     draw_text_slot() clears it) and the next tick after DONE repaints;
+ *   - an overlay holding the band: the line is the overlay's, in its own
+ *     face, and diffs to nothing; its release marks the slot again and the
+ *     text comes back in the new face;
+ *   - mid-repaint: queued glyphs keep their own font ids and finish, as does
+ *     a staged sequence; the shadows say what was queued, so the next
+ *     sequence moves whatever went out in the old face;
+ *   - the 20px single line: its font doesn't change, so it diffs to nothing.
+ * No new state: a flag already read every tick. */
+void display_text_refont(void) {
+    text_dirty = true;
 }
 
 /* How long the shown title has left before its expiry, from its stamp, not
@@ -3269,11 +3332,12 @@ static void queue_line(uint8_t slot, uint16_t font, uint16_t x, uint16_t y,
         uint16_t nw   = (uint16_t)(n * adv);
         if (oadv && oh) {
             if (oy == y && oh == h) {
-                /* Same row, same face (the clock format change, a playback
-                 * relayout at the same size): the new cells will overwrite
-                 * everything they cover, so clear ONLY the columns the old
-                 * run vacates. The old digits stay up until each cell is
-                 * repainted -- no black flash. */
+                /* Same row, same height (the clock format change, a playback
+                 * relayout at the same size, the song text's change of face:
+                 * both its faces are 14 rows, B6): the new cells will
+                 * overwrite everything they cover, so clear ONLY the columns
+                 * the old run vacates. The old digits stay up until each cell
+                 * is repainted -- no black flash. */
                 if (ox < x) band_clear(ox, oy, (uint16_t)(x - ox), oh);
                 if (ox + ow > x + nw)
                     band_clear((uint16_t)(x + nw), oy, (uint16_t)(ox + ow - (x + nw)), oh);
@@ -3393,6 +3457,20 @@ static uint8_t     ts_icon;
 static uint16_t    ts_icon_y;
 static bool        ts_heavy_this_pass = false;
 
+/* Host text line `line` into its slot (the same number) at x, y, in the face
+ * the menu's Font setting picks now: Small, Cozette, exactly as before; Large,
+ * the pseudo font. Cut to the face's budget on the way (text_fit.c), the
+ * buffer kept whole, so queue_line diffs and shadows only what is shown. The
+ * 20px single line doesn't come here: its face is the setting's in neither. */
+static void queue_text_line(uint8_t line, uint16_t x, uint16_t y) {
+    const uint8_t face = kb_eeconfig_get_font();
+    char          cut[DISPLAY_TEXT_MAX + 1];   /* the stack's, for the call: no static RAM */
+    const uint8_t n = text_fit_len(face, line, text_buf[line]);
+    memcpy(cut, text_buf[line], n);
+    cut[n] = '\0';
+    queue_line(line, face == TEXT_FACE_SMALL ? FONT_SMALL : FONT_SONG_LARGE, x, y, cut);
+}
+
 static void text_line_step(uint8_t line) {
     /* What the sequence started with, unless it has gone since (the text
      * expired, the overlay released): then the line retires, and text_dirty
@@ -3404,13 +3482,12 @@ static void text_line_step(uint8_t line) {
         if (line == 0) queue_line(0, FONT_STATUS, CONN_STATUS_X, TEXT_Y + TEXT_BIG_DY, conn_status_str);
         else retire_line(1);
     } else if (lay == TS_TWO) {
-        if (line == 0) queue_line(0, FONT_SMALL, TEXT_X, TEXT_Y, text_buf[0]);
-        else queue_line(1, FONT_SMALL, TEXT_X2, TEXT_Y + TEXT_LINE_H, text_buf[1]);
+        if (line == 0) queue_text_line(0, TEXT_X, TEXT_Y);
+        else queue_text_line(1, TEXT_X2, TEXT_Y + TEXT_LINE_H);
     } else if (lay == TS_ONE) {
         if (line == 0) {
-            bool big = strlen(text_buf[0]) <= TEXT_BIG_MAX;
-            queue_line(0, big ? FONT_STATUS : FONT_SMALL, TEXT_X,
-                       TEXT_Y + (big ? TEXT_BIG_DY : TEXT_FONT_DY), text_buf[0]);
+            if (strlen(text_buf[0]) <= TEXT_BIG_MAX) queue_line(0, FONT_STATUS, TEXT_X, TEXT_Y + TEXT_BIG_DY, text_buf[0]);
+            else queue_text_line(0, TEXT_X, TEXT_Y + TEXT_FONT_DY);
         } else retire_line(1);
     } else {
         retire_line(line);
@@ -3516,6 +3593,8 @@ static void draw_text_slot(bool force) {
         /* Centre on the CAP band, not the cell -- see the measured figures at
          * the top of this file. The icon centre is y+5.5; the 13px cap band
          * centre is cell_top+5.5, so the icon's y IS the text's cell top.
+         * Large's crop has the same centre at the same y, so neither y here
+         * depends on the face, and a change of face leaves the icon alone.
          *
          * The 20px case cannot land exactly: its cap centre is cell_top+11
          * against the icon's +5.5, so the ideal y is fractional (x.5). It is
@@ -3555,12 +3634,11 @@ static void draw_text_slot(bool force) {
         queue_line(0, FONT_STATUS, CONN_STATUS_X, TEXT_Y + TEXT_BIG_DY, conn_status_str);
         retire_line(1);
     } else if (text_present && text_buf[1][0]) {
-        queue_line(0, FONT_SMALL, TEXT_X,  TEXT_Y,               text_buf[0]);
-        queue_line(1, FONT_SMALL, TEXT_X2, TEXT_Y + TEXT_LINE_H, text_buf[1]);
+        queue_text_line(0, TEXT_X,  TEXT_Y);
+        queue_text_line(1, TEXT_X2, TEXT_Y + TEXT_LINE_H);
     } else if (text_present && text_buf[0][0]) {
-        bool big = strlen(text_buf[0]) <= TEXT_BIG_MAX;
-        queue_line(0, big ? FONT_STATUS : FONT_SMALL, TEXT_X,
-                   TEXT_Y + (big ? TEXT_BIG_DY : TEXT_FONT_DY), text_buf[0]);
+        if (strlen(text_buf[0]) <= TEXT_BIG_MAX) queue_line(0, FONT_STATUS, TEXT_X, TEXT_Y + TEXT_BIG_DY, text_buf[0]);
+        else queue_text_line(0, TEXT_X, TEXT_Y + TEXT_FONT_DY);
         retire_line(1);
     } else {
         retire_line(0);

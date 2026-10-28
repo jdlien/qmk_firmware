@@ -15,6 +15,12 @@
 #define PROF_BVIEW_PERCENT 1u   /* KB_BATT_VIEW_PERCENT */
 #define PROF_BVIEW_HOURS   2u   /* KB_BATT_VIEW_HOURS */
 #define PROF_BVIEW_BOTH    3u   /* KB_BATT_VIEW_BOTH (JD, 10-26) */
+/* 10-28: the menu's face, bit 2 of the LIVE record's PR_BVIEW, set Small, and
+ * only at HC_PROFILES' edges (4 packs it, 5 takes it out), so flash.sh keeps
+ * it. Saved profiles and the last record never carry it: the capture, the
+ * `*`'s compare, the range check and the apply all stay face-free, and the
+ * readout's setter keeps the face. */
+#define PROF_BVIEW_SMALL   0x04u
 
 /* A restore's transaction (3 B): the host's token; the pages received, in
  * order (bits 0-4, a count: P5d's nine pages outgrew P5a's five bits of a
@@ -675,8 +681,13 @@ uint8_t prof_reset(void) {
  *                                             only once 0 to p - 1 are in (PROF_BAD before), a page again
  *                                             as often as it likes
  *   3  commit:        [5] token            -> [6] status (commit(), above); the transaction closes either way
- *   4  the live record                     -> [4..30] it (fields PF_LIVE), [31] status
- *   5  apply one:     [4..30] a record     -> [31] status (PROF_OK_EFFECT_SKIPPED: an effect this build lacks)
+ *   4  the live record                     -> [4..30] it (fields PF_LIVE), [31] status. 10-28: PR_BVIEW's bit 2
+ *                                             the face, set Small, the crc taken over it
+ *   5  apply one:     [4..30] a record     -> [31] status (PROF_OK_EFFECT_SKIPPED: an effect this build lacks).
+ *                                             10-28: the crc checked as it came; a record of exactly PF_LIVE
+ *                                             has PR_BVIEW's bit 2 taken out before the checks and sets the
+ *                                             face once applied (clear, as an earlier firmware's: Large); any
+ *                                             other record leaves the face alone
  *   6  flush                               -> [4] status: kb_eeconfig's and the RGB config's deferred writes now,
  *                                             and the pending active slot's (P5b): WRITE_FAILED if it failed, or
  *                                             while the latch holds (any profile write failed since the boot)
@@ -764,20 +775,36 @@ bool prof_hid(uint8_t *d) {
             cancel_previews();
             memset(&d[4], 0, 28);
             prof_capture(&d[4], PF_LIVE);
+            if (env_font() == ENV_FONT_SMALL) {   /* 10-28: the face packed, the crc taken again */
+                d[4 + PR_BVIEW] |= PROF_BVIEW_SMALL;
+                d[4 + PR_CRC] = body_crc(&d[4]);
+            }
             d[31] = PROF_OK;
             return true;
-        case 5:
-            if (d[4 + PR_STATE] != PS_SAVED_V1) {
+        case 5: {
+            /* 10-28: the crc as the record came, then a live record's face
+             * taken out and the crc taken again, so the shared checks and
+             * the apply never see it. */
+            uint8_t *r     = &d[4];
+            bool     live  = r[PR_FIELDS] == PF_LIVE;
+            bool     small = live && (r[PR_BVIEW] & PROF_BVIEW_SMALL);
+            if (live && r[PR_CRC] == body_crc(r)) {
+                r[PR_BVIEW] &= (uint8_t)~PROF_BVIEW_SMALL;
+                r[PR_CRC] = body_crc(r);
+            }
+            if (r[PR_STATE] != PS_SAVED_V1) {
                 d[31] = PROF_FORMAT;
-            } else if (!prof_rec_valid(&d[4])) {
+            } else if (!prof_rec_valid(r)) {
                 d[31] = PROF_INVALID;
             } else if (env_recovering()) {
                 d[31] = PROF_BUSY;
             } else {
                 cancel_previews();
-                d[31] = prof_apply(&d[4], true);
+                d[31] = prof_apply(r, true);
+                if (live) menu_font_set(small ? ENV_FONT_SMALL : ENV_FONT_LARGE);
             }
             return true;
+        }
         case 6:
             cancel_previews();
             memset(&d[4], 0, 28);

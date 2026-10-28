@@ -18,6 +18,7 @@
 #include "../rtc/rtc.h"
 #include "../ak820pro.h"
 #include "../menu/panel_owner.h"   /* op 27's sticky failure bits (dev builds) */
+#include "../menu/menu_text.h"     /* mt_glyph_large(): the song text's Large face (B6) */
 
 /* graphics/display.c: the animation's start is admitted by the panel owner
  * (C1), and its stop hands the panel back with a restore. */
@@ -788,6 +789,7 @@ bool flash_assets_init(void) {
 uint8_t flash_assets_count(void) { return fa_count; }
 
 const flash_asset_t *flash_asset(uint16_t id) {
+    if (id == LCD_FONT_SONG_LARGE) return NULL;   /* the pseudo font: not the index's, whatever it holds */
     for (uint8_t i = 0; i < fa_count; i++)
         if (fa_tab[i].id == id) return &fa_tab[i];
     return NULL;
@@ -815,6 +817,38 @@ void lcd_draw_flash_glyph(uint16_t font_id, char c, uint16_t x, uint16_t y) {
     blit_flash_sync(FLASH_ASSET_BASE + a->off + tile, x, y, a->cell_w, a->cell_h);
 }
 
+/* The song text's Large glyph (plans/MENU-8X16-PLAN.md, B6): rows 1-14 of
+ * Terminus Bold's 16 (every printable ASCII glyph inks only those, the
+ * backtick's top row aside), the whole 8x14 cell, background included, in the
+ * colours the atlases bake, white on black (mkraw.py). 224 B of pixels sent
+ * by the CPU in the pump's pass, where Cozette's glyph is a DMA: B8 times it.
+ *
+ * Safe where the pump calls it, on the main thread with the bus idle (the
+ * caller's lcd_blit_busy() test, before anything is touched):
+ *   - the scratch is free: its users acquire and release it within one call,
+ *     never across passes, and only the main thread uses it;
+ *   - no DMA is in flight, and none can start under the send: only the main
+ *     thread arms one. lcd_stream_begin()'s quiesce finds nothing to wait for;
+ *   - the panel is the dashboard's: only its queue holds these glyphs, and a
+ *     change of owner drops that queue (display.c's po_apply), as the restore's
+ *     first step does, so none paints over the menu, Fn+D or the animation.
+ *
+ * Always true: the glyph is consumed. The pump reads false as busy and would
+ * retry a failure forever. A send given up has latched a loss already, and a
+ * rectangle off the panel, which lcd_stream_begin() refuses without one, is
+ * latched here; either way the display's recovery repaints. display.c's
+ * asserts keep every text slot position on the panel, so that is a fault's
+ * path, not layout's. */
+_Static_assert(LCD_FONT_SONG_LARGE > 0xFFu && LCD_FONT_SONG_LARGE != 0xFFFFu, "no index mkraw.py writes, nor an erased entry, holds the pseudo font's id");
+_Static_assert(LCD_FONT_SONG_LARGE_W == MT_CELL_W_L && LCD_FONT_SONG_LARGE_H + 2 == MT_CELL_H_L, "the crop: the face's rows 1-14");
+static bool song_large_glyph(char c, uint16_t x, uint16_t y) {
+    uint8_t ch = (uint8_t)c;
+    if (ch < 0x20u || ch > 0x7Eu) ch = ' ';   /* as the atlas: ASCII, else a space (the slot sends nothing else) */
+    if (!lcd_blit_mono(mt_glyph_large(ch) + 1, 1, x, y, LCD_FONT_SONG_LARGE_W, LCD_FONT_SONG_LARGE_H, 0xFFFFu, 0x0000u))
+        blit_lost = true;
+    return true;
+}
+
 /* Arm ONE glyph's flash->LCD DMA and return immediately.
  *
  * The blocking wrapper (blit_flash_sync) is what made a 20-glyph line cost
@@ -828,10 +862,12 @@ void lcd_draw_flash_glyph(uint16_t font_id, char c, uint16_t x, uint16_t y) {
  * every pixel through spi1_rw(), which is a full spiExchange() driver call PER
  * BYTE -- ~5.5 KB of them for one 12-char line at 20px. Do not re-derive it.
  *
- * Returns false if the bus is busy (nothing armed; try again next pass) or the
- * glyph is not in the atlas. */
+ * Returns false only while the bus is busy (nothing armed; try again next
+ * pass). A glyph with nothing to draw is consumed (true), and the pseudo
+ * font's glyph is drawn by song_large_glyph(), above. */
 bool lcd_draw_flash_glyph_try(uint16_t font_id, char c, uint16_t x, uint16_t y) {
     if (lcd_blit_busy()) return false;
+    if (font_id == LCD_FONT_SONG_LARGE) return song_large_glyph(c, x, y);
     const flash_asset_t *a = flash_asset(font_id);
     if (!a || a->fmt != 1) return true;            /* nothing to draw: consume it */
     uint8_t ch = (uint8_t)c;
@@ -844,11 +880,13 @@ bool lcd_draw_flash_glyph_try(uint16_t font_id, char c, uint16_t x, uint16_t y) 
 }
 
 uint16_t lcd_font_advance(uint16_t font_id) {
+    if (font_id == LCD_FONT_SONG_LARGE) return LCD_FONT_SONG_LARGE_W;
     const flash_asset_t *a = flash_asset(font_id);
     return (a && a->fmt == 1) ? a->cell_w : 0;
 }
 
 uint16_t lcd_font_height(uint16_t font_id) {
+    if (font_id == LCD_FONT_SONG_LARGE) return LCD_FONT_SONG_LARGE_H;
     const flash_asset_t *a = flash_asset(font_id);
     return (a && a->fmt == 1) ? a->cell_h : 0;
 }

@@ -10,7 +10,8 @@
  * accessors. The block is 10 bytes (bt_profile, rtc_period u16,
  * lcd_brightness+1, clock_mode+1 -- appended 2026-09-01, growing the block
  * from 4; the battery level, the power mode, the two indicator levels and
- * the battery readout followed; kb_eeconfig.c has the layout) and its
+ * the battery readout followed, the menu's face in the readout's byte;
+ * kb_eeconfig.c has the layout) and its
  * layout is ASSIGN-ONLY: existing on-device bytes
  * must keep their meaning, and 0 means "unset" for every field added after
  * first ship (a fresh block is zeros).
@@ -64,14 +65,24 @@ bool kb_eeconfig_get_ind_level(uint8_t which, uint8_t *level);
 void kb_eeconfig_set_ind_level(uint8_t which, uint8_t level);
 
 /* The battery readout (the menu's P4): percent, hours of use, or both.
- * The byte's encoding is frozen: 0 unset, 1 percent, 2 hours, 3 both (JD,
- * 10-26; a firmware from before reads it as garbage); unset or garbage reads
- * percent. */
+ * The encoding is frozen: 0 unset, 1 percent, 2 hours, 3 both (JD, 10-26; a
+ * firmware from before reads it as garbage), in bits 0-1 of its byte since
+ * 10-28; unset or garbage reads percent. The setter keeps the face. */
 #define KB_BATT_VIEW_PERCENT 1u
 #define KB_BATT_VIEW_HOURS   2u
 #define KB_BATT_VIEW_BOTH    3u
 uint8_t kb_eeconfig_get_batt_view(void);   /* KB_BATT_VIEW_* */
 void    kb_eeconfig_set_batt_view(uint8_t view);   /* ignores anything else */
+
+/* The menu's face (10-28, plans/MENU-8X16-PLAN.md B5): Large, Terminus Bold
+ * 8x16, or Small, Cozette 6x14. Bit 2 of the readout's byte, set Small, so a
+ * zeroed block reads Large, the default; a byte with any of bits 3-7 set is
+ * garbage as a whole and reads Large and percent. The setter keeps the
+ * readout. */
+#define KB_FONT_LARGE 0u
+#define KB_FONT_SMALL 1u
+uint8_t kb_eeconfig_get_font(void);          /* KB_FONT_* */
+void    kb_eeconfig_set_font(uint8_t font);  /* ignores anything else */
 
 /* A change is waiting for its deferred flash write (a sleep's precondition). */
 bool kb_eeconfig_write_pending(void);

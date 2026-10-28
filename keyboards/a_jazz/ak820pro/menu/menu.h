@@ -33,6 +33,10 @@ uint8_t       menu_screen_id(void);                       /* op 27 sub 5, byte 1
 uint8_t       menu_cursor(void);                          /* byte 15: the cursor, a topic's top line, the confirm's page */
 void          menu_bootloader_refused(uint32_t now);      /* env_bootloader() couldn't release the keys: "Try again" */
 bool          menu_long_wait(void);                       /* P3: the Pairing page starting or advertising: the backstop */
+/* 10-28, the Font setting (ENV_FONT_*): the one way to change the face: saves
+ * it, re-lays out an open menu, repaints the song text. */
+void          menu_font_set(uint8_t font);
+void          menu_refont(void);   /* menu_font_set()'s: the open menu's frames and layout in the new face */
 
 /* P5c, Rename (plans/SETTINGS-PROFILES-PLAN.md, "Rename"): the one page that
  * takes typing. menu_key() sees every key event but the knob's, before QMK

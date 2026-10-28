@@ -78,8 +78,11 @@ uint8_t display_clock_mode_next(uint8_t mode);
  *
  * icon: 0 none, 1 play, 2 pause, 3 stop. Deliberately an ICON ID rather than a
  * "media state" so other producers can reuse it without the name lying. */
-/* Host text is drawn in the 14px face (7px advance) rather than the 20px one,
- * because this is the slot where cramming matters -- song titles.
+/* Host text is drawn in the 14px face (6px advance) rather than the 20px one,
+ * because this is the slot where cramming matters -- song titles. With the
+ * menu's Font set to Large (10-28, plans/MENU-8X16-PLAN.md) it is Terminus
+ * Bold cropped to 8x14 instead, 14 and 15 characters: the text is kept whole
+ * and cut when drawn (graphics/text_fit.c), so these budgets stay the host's.
  *
  * The two lines have DIFFERENT budgets, because only line 0 sits beside the
  * transport icon. Line 0 starts at TEXT_X (14) and gets (128 - 14) / 6 = 19;
@@ -106,7 +109,8 @@ enum display_text_icon {
 
 void display_set_text(uint8_t icon, const char *s, uint8_t len);
 
-/* Two-line variant. line 0 = primary (song title), line 1 = secondary (artist).
+/* Two-line variant. The producer decides what goes where: the daemon and
+ * ak820text.py put the artist on line 0 and the title on line 1.
  * The icon belongs to the slot, not a line, so it is only read from line 0.
  * Setting line 0 via display_set_text() clears line 1, so a single-line
  * producer cannot strand a stale second line. */
@@ -114,6 +118,8 @@ void display_set_text_line(uint8_t line, uint8_t icon, const char *s, uint8_t le
 /* The slot's icon alone, its lines kept; a no-op when no text is shown. */
 void display_set_text_icon(uint8_t icon);
 void display_clear_text(void);
+/* The menu's face changed (10-28): the lines queued again in the face now set. */
+void display_text_refont(void);
 /* Read-only views of the text slot and the playback state (display.c), for
  * tests: no drawing, no state change. */
 uint8_t display_get_text_line(uint8_t line, char *out, uint8_t max, uint8_t *icon, bool *present);

@@ -10,8 +10,20 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define MT_CELL_W 6    /* FONT_MONO_W */
+#define MT_CELL_W 6    /* FONT_MONO_W: Small's cell */
 #define MT_CELL_H 14   /* FONT_MONO_H */
+
+/* The two faces (plans/MENU-8X16-PLAN.md, 10-28): Small, Cozette 6x14,
+ * today's; Large, Terminus Bold 8x16 (FONT_LARGE_*). The same codes in
+ * both. A line says which it draws in. */
+#define MT_SMALL    0u
+#define MT_LARGE    1u
+#define MT_CELL_W_L 8    /* FONT_LARGE_W */
+#define MT_CELL_H_L 16   /* FONT_LARGE_H */
+#define MT_CELL_W_MAX MT_CELL_W_L
+#define MT_CELL_H_MAX MT_CELL_H_L
+static inline uint8_t mt_cell_w(uint8_t face) { return face == MT_LARGE ? MT_CELL_W_L : MT_CELL_W; }
+static inline uint8_t mt_cell_h(uint8_t face) { return face == MT_LARGE ? MT_CELL_H_L : MT_CELL_H; }
 
 /* The face's extras, as string pieces (the generator's order: its
  * FONT_MONO_* names; menu_text.c checks the count, the host tests each
@@ -48,6 +60,7 @@
 #define MT_I_RENAME     "\xa8"       /* the pencil, */
 #define MT_I_DELETE     "\xa9\xaa"   /* the trashcan */
 #define MT_I_RESET      "\xab"       /* Reset settings (10-27): the anticlockwise circle arrow */
+#define MT_I_FONT       "\xac\xad"   /* Font (10-28): a large A and a small one */
 
 /* A line as a slot paints it: `lead` pixels, then `cells` glyph cells (the
  * string, padded with spaces, codes the face hasn't shown as '?'), then
@@ -61,11 +74,17 @@ typedef struct {
     uint8_t     lead, trail;
     bool        lead_ink, trail_ink;
     uint8_t     lead_glyph;   /* 0: none; else a code, over lead_ink */
+    uint8_t     face;         /* MT_SMALL (0, so a line that doesn't say is Small) or MT_LARGE */
 } mt_line_t;
 
 uint16_t mt_width(const mt_line_t *l);   /* in pixels */
 
 /* Rows [r0, r0 + rows) of the line's columns [c0, c0 + w), into `bits`: rows
  * of `stride` bytes, column c0 in bit 7 of each row's first byte. The caller
- * keeps r0 + rows <= MT_CELL_H and w <= stride * 8. */
+ * keeps r0 + rows <= its face's cell height and w <= stride * 8. */
 void mt_bits(const mt_line_t *l, uint16_t c0, uint16_t w, uint8_t r0, uint8_t rows, uint8_t *bits, uint8_t stride);
+
+/* Large's glyph for a code, its 16 rows ('?' for a code the face lacks):
+ * the dashboard's song text draws its rows 1-14 (plans/MENU-8X16-PLAN.md,
+ * B6). */
+const uint8_t *mt_glyph_large(uint8_t code);

@@ -69,6 +69,17 @@ void lcd_flash_init(void);
 bool     lcd_draw_flash_glyph_try(uint16_t font_id, char c, uint16_t x, uint16_t y);
 uint16_t lcd_font_advance(uint16_t font_id);
 uint16_t lcd_font_height(uint16_t font_id);
+/* The song text's Large face (plans/MENU-8X16-PLAN.md, B6): a pseudo font id
+ * for Terminus Bold's rows 1-14, an 8x14 cell, from the menu's table in
+ * internal flash and sent by the CPU. Never a flash asset's: mkraw.py numbers
+ * the assets by their sorted index, counted in a byte (FLASH_ASSET_COUNT is
+ * 12, FA_MAX 32), an erased index entry reads 0xFFFF, and flash_asset()
+ * refuses it besides. The three calls above know it; the other flash paths
+ * (an image, lcd_draw_flash_glyph, lcd_draw_flash_text, lcd_flash_text_width)
+ * draw nothing and measure 0 for it, as for any id the index lacks. */
+#define LCD_FONT_SONG_LARGE   0x0816u
+#define LCD_FONT_SONG_LARGE_W 8
+#define LCD_FONT_SONG_LARGE_H 14
 
 // --- external flash WRITE path (Stage D provisioning) -----------------------
 // Device-asynchronous: the command returns as soon as it is on the wire, then

@@ -38,6 +38,14 @@ uint8_t  env_batt_view(void);           /* P4: the dashboard's battery readout, 
 typedef struct { uint8_t pct; bool on_battery; uint16_t left_min, avg_minutes; } env_batt_t;
 void     env_batt_facts(env_batt_t *b);
 void     env_batt_view_set(uint8_t v);  /* kb_eeconfig_set_batt_view(): draw_battery() reads it there */
+/* 10-28, the Font setting (plans/MENU-8X16-PLAN.md B5): the menu's face, in
+ * the readout's byte, each setter keeping the other's field; and the song
+ * text told to draw again in the face now set (display_text_refont()). */
+#define  ENV_FONT_LARGE 0u              /* Terminus Bold 8x16, the default */
+#define  ENV_FONT_SMALL 1u              /* Cozette 6x14 */
+uint8_t  env_font(void);                /* kb_eeconfig_get_font() */
+void     env_font_set(uint8_t f);       /* kb_eeconfig_set_font(): saved, nothing redrawn */
+void     env_text_refont(void);         /* display_text_refont() */
 
 /* P1b's primitives (menu_edit.c's): each one QMK or board call in
  * menu_glue.c; the host's fakes copy their semantics. QMK's mode and HSV

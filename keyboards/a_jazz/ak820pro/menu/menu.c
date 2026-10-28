@@ -52,9 +52,10 @@ enum {
     N_BV2,                                                      /* 57: Battery's third readout, Both (JD, 10-26) */
     N_DEFAULTS,                                                 /* 58: Reset settings (JD, 10-27), its confirm as a frame */
     N_WTEST, N_WROW,                                            /* 59-60: dev builds' write test (10-27); a row's index in val */
+    N_FONT, N_FOPT,                                             /* 61-62: Font (10-28), its page; an option, its face in val */
     N_COUNT
 };
-_Static_assert(N_COUNT <= 63, "a row's node is 6 bits");
+_Static_assert(N_COUNT <= 63, "a row's node is 6 bits");   /* 63 since Font: the next node widens row_sig */
 _Static_assert(MENU_HELP_TOPICS == 4, "Help's four topics");
 static bool is_pslot(uint8_t node) { return node == N_PSLOT; }
 
@@ -62,9 +63,11 @@ static bool is_pslot(uint8_t node) { return node == N_PSLOT; }
  * Diagnostics under Bootloader on page two. P5b (JD, 10-25): Profiles is
  * page one's last row, and Bootloader moves to the top of page two, with the
  * system items. 10-27: Reset settings under Bootloader (JD: "we still
- * haven't filled out a second page yet, so this could go on there"). */
+ * haven't filled out a second page yet, so this could go on there").
+ * 10-28: Font under Bootloader; in Large, seven a page, Exit is page
+ * three's alone. */
 static const uint8_t top_rows[]   = {N_LIGHT, N_SCREEN, N_CONN,     N_POWER, N_IND,  N_CLOCK, N_BATT,
-                                     N_PROFILES, N_BOOT, N_DEFAULTS, N_DIAG, N_HELP, N_ABOUT, N_EXIT};
+                                     N_PROFILES, N_BOOT, N_FONT, N_DEFAULTS, N_DIAG, N_HELP, N_ABOUT, N_EXIT};
 static const uint8_t light_rows[] = {N_BACK, N_EFFECT, N_BRIGHT, N_HUE, N_SAT, N_SPEED, N_LIGHTS};
 static const uint8_t ind_rows[]   = {N_BACK, N_LOCKS, N_CHGL};
 static const uint8_t conn_rows[]  = {N_BACK, N_BT0, N_BT1, N_BT2, N_PAIRNOW};   /* P3: on BT */
@@ -85,11 +88,52 @@ static const uint8_t batt_rows[]  = {N_BACK, N_BV0, N_BV1, N_BV2};   /* P4; Both
  * new (row_count(), row_node()), no empty slot shown (JD, 10-26: "just a
  * 'Save New' makes more sense than finite grayed out unused slots"). */
 static const uint8_t pslot_rows[] = {N_BACK, N_PLOAD, N_PSAVE, N_PRENAME, N_PDELETE};   /* P5c: Rename before Delete */
+
+/* --- The faces (plans/MENU-8X16-PLAN.md, 10-28) -------------------------------
+ * Small, Cozette 6x14: the menu as it was, 20 columns and 8 rows. Large,
+ * Terminus Bold 8x16: 15 columns and 7 rows, the mock-up's (core.js's
+ * geometry()), with the shorter words and the behaviours it brought. Read
+ * where it's used, not latched: menu_refont() re-lays out an open menu when
+ * it changes. Both faces' text spans x 4-123 (20 x 6 = 15 x 8). */
+static uint8_t face(void) { return env_font() == ENV_FONT_SMALL ? MT_SMALL : MT_LARGE; }
+static bool    large(void) { return face() == MT_LARGE; }
+#define COLS_S 20
+#define ROWS_S 8
+#define ROWH_S 14
+#define COLS_L 15
+#define ROWS_L 7
+#define ROWH_L 16
+_Static_assert(COLS_S * MT_CELL_W == COLS_L * MT_CELL_W_L && ROWH_S == MT_CELL_H && ROWH_L == MT_CELL_H_L,
+               "both faces' text spans x 4-123, a row a cell high");
+_Static_assert(ROWS_L <= ROWS_S && ROWS_S <= MENU_ROWS, "menu.h's MENU_ROWS: the most rows a face shows");
+/* The editors' bands keep their heights in both faces: the envelope's 21
+ * rows, the bar's 10 (a band is one piece, asserted with the editors). */
+#define ENV_H 21u
+#define BAR_HT 10u
+typedef struct {
+    uint8_t cols, rows, row_y0, row_h;
+    uint8_t sep_y, title_r0;                 /* the title's separator; the title's first glyph row */
+    uint8_t c_y[4], info_y[4];               /* the confirms' lines; Connection off BT's */
+    uint8_t bar_yt, env_y0, strip_yt;        /* the range editor's bar; the hue editor's envelope, its strip */
+    uint8_t val_y[2];                        /* the editors' value: the range's, the hue's */
+    uint8_t hint_y0;                         /* the editors' hints, a row's pitch apart */
+    uint8_t bulb_dy;                         /* a bulb's first pixel row in its row */
+    uint8_t psum_lines, note_row0;           /* a slot's summary's lines (from PSUM_ROW0); Battery's notes' first row */
+} geom_t;
+static const geom_t geoms[2] = {
+    [MT_SMALL] = {COLS_S, ROWS_S, 15, ROWH_S, 14, 0, {22, 36, 72, 86}, {22, 36, 50, 86}, 51, 20, 22, {22, 44}, 72, 0, 3, 5},
+    [MT_LARGE] = {COLS_L, ROWS_L, 16, ROWH_L, 15, 1, {24, 40, 80, 96}, {24, 40, 56, 96}, 56, 22, 24, {24, 48}, 80, 1, 2, 4},
+};
+static const geom_t *geo(void) { return &geoms[face()]; }
+#define COLS ((uint8_t)geo()->cols)
+#define ROWS ((uint8_t)geo()->rows)
+
 /* A slot page's summary: three lines under its actions (Decided 10), as the
- * Battery page places its notes. */
+ * Battery page places its notes; Large's two. */
 #define PSUM_ROW0  5u
-#define PSUM_LINES 3u
-_Static_assert(sizeof pslot_rows <= PSUM_ROW0 && PSUM_ROW0 + PSUM_LINES <= MENU_ROWS, "the summary under the actions");
+#define PSUM_LINES (geo()->psum_lines)
+_Static_assert(sizeof pslot_rows <= PSUM_ROW0 && PSUM_ROW0 + 3u <= ROWS_S && PSUM_ROW0 + 2u <= ROWS_L,
+               "the summary under the actions (Large's at the limit: 7 of 7)");
 
 static const char *const power_full[4]  = {"Always on", "Balanced", "Power saver", "Lights out"};
 static const char *const power_short[4] = {"Always on", "Balanced", "Saver", "Lights out"};
@@ -147,8 +191,8 @@ static void batt_note(uint8_t line, char *buf, size_t n) {
      * no wait will bring the hours (codex). */
     if (b.on_battery && (b.pct == 0u || b.pct > 100u)) return;
     if (b.avg_minutes < 60u) {
-        static const char *const warm[2] = {"Hours show after an", "hour on battery:"};
-        if (line < 2u) snprintf(buf, n, "%s", warm[line]);
+        static const char *const warm[2][2] = {{"Hours show after an", "hour on battery:"}, {"Hours show once", "on battery 1 h:"}};
+        if (line < 2u) snprintf(buf, n, "%s", warm[large()][line]);
         else           snprintf(buf, n, "%u min to go.", (unsigned)(60u - b.avg_minutes));
     } else if (!b.on_battery && line < 2u) {
         static const char *const off[2] = {"Hours show only", "on battery."};
@@ -170,6 +214,14 @@ static const char *const slot_names[3] = {"Bluetooth 1", "Bluetooth 2", "Bluetoo
 /* Pair a device's row, by the slot it pairs (JD, 10-25: "Pair (a )device to
  * BT N"; with the "a" it's 21 cells). */
 static const char *const pair_labels[3] = {"Pair device to BT 1", "Pair device to BT 2", "Pair device to BT 3"};
+/* Large's (the mock-up's W_LABEL). */
+static const char *const slot_names_l[3]  = {"BT 1", "BT 2", "BT 3"};
+static const char *const pair_labels_l[3] = {"Pair to BT 1", "Pair to BT 2", "Pair to BT 3"};
+/* Help's topics in the face's wrap (gen_menu_text.py). */
+static const char *help_title(uint8_t t) { return (large() ? menu_help_titles_l : menu_help_titles)[t]; }
+static const char *help_line(uint8_t t, uint8_t i) {
+    return large() ? menu_help_lines_l[menu_help_start_l[t] + i] : menu_help_lines[menu_help_start[t] + i];
+}
 
 /* The live effect uses speed as its second colour (Alphas/Mods): Lighting's
  * row and editor are Second color then, not Speed (P1b). */
@@ -180,6 +232,23 @@ static bool two_tone(void) {
 }
 
 static const char *label_of(uint8_t node) {
+    if (large()) {   /* Large's shorter words (the mock-up's W_LABEL; Connection's always needed with its value) */
+        switch (node) {
+            case N_RESET:    return "Reset counts";
+            case N_EFFECT:   return "FX";
+            case N_DEFAULTS: return "Defaults";
+            case N_CONN:     return "Link";
+            case N_LOCKS:    return "Lock LEDs";
+            case N_PSAVE:    return "Save here";
+            case N_BV0:      return "%";       /* as the top level's value: "Percent" and "18% <1h" don't fit 13 */
+            case N_BV1:      return "Hours";
+            case N_SPEED:
+                if (two_tone()) return "2nd color";
+                break;
+            default: break;
+        }
+        if (node >= N_BT0 && node <= N_BT2) return slot_names_l[node - N_BT0];
+    }
     switch (node) {
         case N_POWER:  return "Power";
         case N_CLOCK:  return "Clock";
@@ -215,10 +284,11 @@ static const char *label_of(uint8_t node) {
         case N_PDELETE: return "Delete";
         case N_PRENAME: return "Rename";   /* P5c */
         case N_PNEW:   return "+ Save new";   /* P5d: the `+` in the check box's cells, the names' column */
+        case N_FONT:   return "Font";         /* 10-28 */
         default: break;
     }
     if (node >= N_BT0 && node <= N_BT2) return slot_names[node - N_BT0];
-    if (node >= N_TOPIC0 && node <= N_TOPIC3) return menu_help_titles[node - N_TOPIC0];
+    if (node >= N_TOPIC0 && node <= N_TOPIC3) return help_title((uint8_t)(node - N_TOPIC0));
     if (node >= N_POW0 && node <= N_POW3) return power_full[node - N_POW0];
     if (clk_row(node) >= 0) return clock_full[clk_row(node)];
     if (bv_row(node) >= 0) return batt_full[bv_row(node)];
@@ -248,6 +318,7 @@ static const char *icon_of(uint8_t node) {
         case N_PSAVE:  return MT_I_SAVE;
         case N_PRENAME: return MT_I_RENAME " ";
         case N_PDELETE: return MT_I_DELETE;
+        case N_FONT:   return MT_I_FONT;   /* 10-28: a large A and a small one */
         default:      return NULL;
     }
 }
@@ -293,7 +364,7 @@ static union {
 } pg;
 enum { CK_OK = 1, CK_JUMP = 2 };   /* set; a read that wasn't the last's time on, for menu_tick() */
 #define CLOCK_EXAMPLES 5u          /* the Clock page's rows 1-5 (Off has none) */
-_Static_assert(1 + CLOCK_ROWS <= MENU_ROWS, "the Clock page is one screen: its examples are slots S_ROW0 + 1-5");
+_Static_assert(1 + CLOCK_ROWS <= ROWS_L, "the Clock page is one screen in both faces (Large's at the limit, 7 of 7): its examples are slots S_ROW0 + 1-5");
 _Static_assert(sizeof pg == sizeof(env_about_t), "the Clock's time and Rename's name share About's 12 B");
 static uint32_t ft_last;                    /* P1b: the editor's last turn, ms (32-bit: the backstop is 180 s) */
 /* P5b: the profiles as the rows show them. Each row read the store itself
@@ -382,6 +453,7 @@ static uint8_t row_count(uint8_t node) {
     if (node == N_EFFECT) return (uint8_t)(1u + effects());
     if (node == N_LIGHTS) return 3;
     if (node == N_PROFILES) return (uint8_t)(2u + pfs_saved());   /* P5d: Back, the saved slots, Save new */
+    if (node == N_FONT) return 3;   /* Back, Small, Large */
     uint8_t n;
     (void)rows_of(node, &n);
     return n;
@@ -392,6 +464,11 @@ static uint8_t row_node(uint8_t node, uint8_t i, uint8_t *val) {
         if (!i) return N_BACK;
         *val = (uint8_t)(i - 1u);
         return node == N_EFFECT ? N_EFFOPT : N_LTSOPT;
+    }
+    if (node == N_FONT) {   /* 10-28: an option's face in val, MT_SMALL then MT_LARGE */
+        if (!i) return N_BACK;
+        *val = (uint8_t)(i - 1u);
+        return i < 3u ? N_FOPT : N_NONE;
     }
 #ifdef MENU_WTEST
     if (node == N_WTEST) {
@@ -425,10 +502,12 @@ static bool is_list(uint8_t node) {
 }
 static bool is_bt_screen(uint8_t node) { return node == N_CONN || node == N_PAIRING; }   /* P3: on BT only */
 static bool is_preview(uint8_t node) { return node == N_EFFECT || node == N_LIGHTS; }   /* P1b's previewing choices */
-static bool is_choice(uint8_t node) { return node == N_POWER || node == N_CLOCK || node == N_BATT || is_preview(node); }
+static bool is_choice(uint8_t node) {
+    return node == N_POWER || node == N_CLOCK || node == N_BATT || node == N_FONT || is_preview(node);
+}
 static bool is_option(uint8_t node) {   /* a row a check box marks: a choice's option, or a slot (P3; P5b's) */
     return (node >= N_POW0 && node <= N_CLK3) || node == N_EFFOPT || node == N_LTSOPT || (node >= N_BT0 && node <= N_BT2) ||
-           bv_row(node) >= 0 || node == N_CLK4 || node == N_CLK5 || is_pslot(node);
+           bv_row(node) >= 0 || node == N_CLK4 || node == N_CLK5 || is_pslot(node) || node == N_FOPT;
 }
 static bool is_ind_editor(uint8_t node) { return node == N_LOCKS || node == N_CHGL; }   /* P2a */
 static bool is_editor(uint8_t node) { return node == N_SCREEN || (node >= N_BRIGHT && node <= N_SPEED) || is_ind_editor(node); }
@@ -462,9 +541,11 @@ static int8_t effect_index(uint8_t mode) {
 /* An option's value: the effect's mode, or Lights' enable. */
 static uint8_t option_value(uint8_t node, uint8_t val) { return node == N_EFFOPT ? env_effect_mode(val) : val; }
 static uint8_t topic_lines(uint8_t node) {
-    uint8_t t = (uint8_t)(node - N_TOPIC0);
-    return (uint8_t)(menu_help_start[t + 1] - menu_help_start[t]);
+    uint8_t        t  = (uint8_t)(node - N_TOPIC0);
+    const uint8_t *st = large() ? menu_help_start_l : menu_help_start;
+    return (uint8_t)(st[t + 1] - st[t]);
 }
+#define ABOUT_LINES 8u   /* Small's eight rows; Large's seven scroll */
 /* A choice's saved option, by its row (1-4; a previewing choice's from the
  * edit's snapshot, not the live preview; 0, Back, for an effect the table
  * doesn't list). */
@@ -473,6 +554,7 @@ static uint8_t saved_row(uint8_t node) {
     if (node == N_EFFECT) return (uint8_t)(effect_index(me_saved()) + 1);
     if (node == N_LIGHTS) return me_saved() ? 2u : 1u;
     if (node == N_BATT) return env_batt_view();   /* P4: a view's row is its value, 1-3 */
+    if (node == N_FONT) return (uint8_t)(1u + face());   /* 10-28: Small's row, then Large's */
     for (uint8_t i = 0; i < CLOCK_ROWS; i++)
         if (clock_enum[i] == model_clock) return (uint8_t)(1u + i);
     return 1;
@@ -492,7 +574,8 @@ enum { T_TOP = 1, T_POWER, T_CLOCK, T_DIAG, T_HELP, T_ABOUT, T_TOPIC0, T_RESET =
        T_PFULL,                                                                             /* 61: P5d */
        T_PRENAME, T_RENAMED,                                                                /* 62-63: P5c */
        T_DEFAULTS, T_DEFAULTS_DONE,                                                         /* 64-65: Reset settings (10-27) */
-       T_WTEST, T_WT_DONE, T_WT_NONE, T_WT_CLEAN, T_WT_FAIL };                              /* 66-70: dev's write test */
+       T_WTEST, T_WT_DONE, T_WT_NONE, T_WT_CLEAN, T_WT_FAIL,                                /* 66-70: dev's write test */
+       T_FONT };                                                                            /* 71: 10-28 */
 _Static_assert(T_RESET == 11, "the title ids: the design's table");
 
 static uint8_t screen_title(void) {
@@ -529,12 +612,26 @@ static uint8_t screen_title(void) {
         case N_PSAVE:  return T_PSAVE;
         case N_PDELETE: return T_PDELETE;
         case N_PRENAME: return T_PRENAME;
+        case N_FONT:   return T_FONT;
         default:      return is_topic(n)   ? (uint8_t)(T_TOPIC0 + (n - N_TOPIC0))
                              : is_pslot(n) ? (uint8_t)(T_PSLOT0 + pslot)
                                            : T_TOP;
     }
 }
 static const char *title_text(uint8_t id) {
+    if (large()) {   /* Large's shorter words (the mock-up's W_TITLE) */
+        switch (id) {
+            case T_RESET:       return "Reset counts";
+            case T_HINT:        return "Turn + Click";
+            case T_CHGL:        return "Charging";
+            case T_PDELETE:     return "Delete";
+            case T_LOADED_NOFX: return "Loaded, no FX";
+            case T_PFULL:       return "Full: delete 1";
+            case T_PRENAME:     return "Rename";
+            case T_DEFAULTS:    return "Defaults";
+            default: break;
+        }
+    }
     switch (id) {
         case T_TOP:        return "Configuration";
         case T_POWER:      return "Power";
@@ -586,6 +683,7 @@ static const char *title_text(uint8_t id) {
         case T_RENAMED:    return "Renamed";
         case T_DEFAULTS:   return "Reset settings";       /* 10-27 */
         case T_DEFAULTS_DONE: return "Settings reset";
+        case T_FONT:       return "Font";                 /* 10-28 */
 #ifdef MENU_WTEST
         case T_WTEST:      return "Write test";           /* 10-27, dev */
         case T_WT_DONE:    return "Written";
@@ -595,7 +693,7 @@ static const char *title_text(uint8_t id) {
 #endif
         default: break;
     }
-    if (id >= T_TOPIC0 && id < T_TOPIC0 + 4) return menu_help_titles[id - T_TOPIC0];
+    if (id >= T_TOPIC0 && id < T_TOPIC0 + 4) return help_title((uint8_t)(id - T_TOPIC0));
     return "";   /* a slot's page: its name, in l_paint() */
 }
 /* A heading's icon, before its text (JD, 10-24): the wrench on the top level,
@@ -623,6 +721,7 @@ static const char *title_icon(uint8_t id) {
         case T_CONN:
         case T_PAIRING: return icon_of(N_CONN);
         case T_BATT:   return icon_of(N_BATT);
+        case T_FONT:   return icon_of(N_FONT);
         default:       return id >= T_LIGHT && id <= T_LIGHTS        ? icon_of(N_LIGHT)
                             : (id >= T_PROFILES && id <= T_PDELETE) || id == T_PRENAME ? icon_of(N_PROFILES)   /* P5b */
                                                                    : "";
@@ -633,12 +732,14 @@ static const char *title_icon(uint8_t id) {
 
 static void about_line(uint8_t line, char *out, size_t sz) {
     static const char *const link_state[5] = {"idle", "linking", "pairing", "connected", "rejected"};
+    const bool w = large();   /* Large's words (the mock-up's aboutLine()) */
     switch (line) {
         case 0:
-            snprintf(out, sz, "Firmware %08lx%s", (unsigned long)env_build_hash(), env_build_dirty() ? "+" : "");
+            snprintf(out, sz, w ? "FW %08lx%s" : "Firmware %08lx%s", (unsigned long)env_build_hash(), env_build_dirty() ? "+" : "");
             break;
-        case 1:
-            snprintf(out, sz, "%s, 0x%08lx", env_build_flavour(), (unsigned long)env_build_token());
+        case 1:   /* Large: "dev, 0x..." fits 15; a longer flavour drops the comma and the 0x */
+            snprintf(out, sz, w && strlen(env_build_flavour()) > 3u ? "%s %08lx" : "%s, 0x%08lx", env_build_flavour(),
+                     (unsigned long)env_build_token());
             break;
         case 2: {
             uint32_t m = pg.snap.uptime_s / 60u, d = m / 1440u, h = (m / 60u) % 24u;
@@ -656,17 +757,17 @@ static void about_line(uint8_t line, char *out, size_t sz) {
             break;
         case 5:
             if (pg.snap.left_min == ENV_UNKNOWN) snprintf(out, sz, "Left -");
-            else snprintf(out, sz, "Left %uh of use", pg.snap.left_min / 60u);
+            else snprintf(out, sz, w ? "Left: %uh" : "Left %uh of use", pg.snap.left_min / 60u);
             break;
         case 6:
-            snprintf(out, sz, "Mode %s", power_full[pg.snap.mode & 3u]);
+            snprintf(out, sz, "Mode %s", (w ? power_short : power_full)[pg.snap.mode & 3u]);
             break;
         default: {
             uint8_t tr = pg.snap.link & 3u, slot = (pg.snap.link >> 2) & 3u, st = (pg.snap.link >> 4) & 7u;
-            const char *s = st < 5 ? link_state[st] : "?";
+            const char *s = st < 5 ? link_state[st] : "?", *lk = w ? "" : "Link ";
             if (tr == ENV_LINK_USB) snprintf(out, sz, "Link USB");
-            else if (tr == ENV_LINK_24G) snprintf(out, sz, "Link 2.4G %s", s);
-            else snprintf(out, sz, "Link BT %u %s", (unsigned)(slot + 1u), s);
+            else if (tr == ENV_LINK_24G) snprintf(out, sz, "%s2.4G %s", lk, s);
+            else snprintf(out, sz, "%sBT %u %s", lk, (unsigned)(slot + 1u), s);
             break;
         }
     }
@@ -801,7 +902,7 @@ static void prof_list_fit(frame_t *f) {
     if (f->node != N_PROFILES) return;
     uint8_t n = row_count(N_PROFILES);
     if (f->cursor >= n) f->cursor = (uint8_t)(n - 1u);
-    f->top = (uint8_t)(f->cursor / MENU_ROWS * MENU_ROWS);
+    f->top = (uint8_t)(f->cursor / ROWS * ROWS);
 }
 /* P5e: the preview (JD, 10-26: "preload the profile as the user scrolls
  * over it"): a saved slot's lighting and LCD level, unsaved, in an
@@ -838,15 +939,15 @@ static void pv_show(uint8_t slot) {
 #define S_SEP   1
 #define S_BAR   2
 #define S_ROW0  3
-#define ROW_Y0  15
-#define ROW_H   14
+#define ROW_Y0  (geo()->row_y0)     /* 15; Large's 16 */
+#define ROW_H   (geo()->row_h)      /* 14; Large's 16 */
 #define TEXT_X  4
 #define ROW_LEAD 4
-#define HALF_W  (10u * MT_CELL_W)   /* ten cells */
+#define HALF_W  60u                 /* ten of Small's cells, seven and a half of Large's: x 64 in both */
 #define CHUNK_MAX (HALF_W + 1u)     /* 61: a lead or a trail pixel with them */
 #define BAR_X   125
-#define BAR_Y0  15
-#define BAR_H   (MENU_ROWS * ROW_H)
+#define BAR_Y0  ROW_Y0
+#define BAR_H   ((uint16_t)(ROWS * ROW_H))   /* 112 in both */
 #define BITS_MAX 64
 
 /* A row's content: what the slot shows, for its signature and its painter. */
@@ -924,15 +1025,15 @@ static row_t row_at(uint8_t r) {
         if (i < topic_lines(f->node)) { x.kind = RK_TEXT; x.line = i; x.node = f->node; }
         return x;
     }
-    if (f->node == N_ABOUT) {
-        x.kind = RK_ABOUT;
-        x.line = r;
+    if (f->node == N_ABOUT) {   /* Large's seven rows scroll its eight lines (10-28) */
+        uint8_t i = (uint8_t)(f->top + r);
+        if (i < ABOUT_LINES) { x.kind = RK_ABOUT; x.line = i; }
         return x;
     }
-    uint8_t i = (uint8_t)(f->top + r), val;
-    if (f->node == N_BATT && r >= 5u && r <= 7u) {   /* P4: the hours' note, under the choice; not selectable */
+    uint8_t i = (uint8_t)(f->top + r), val, nr = geo()->note_row0;
+    if (f->node == N_BATT && r >= nr && r < nr + 3u) {   /* P4: the hours' note, under the choice; not selectable */
         x.kind = RK_NOTE;
-        x.line = (uint8_t)(r - 5u);
+        x.line = (uint8_t)(r - nr);
         return x;
     }
     if (is_pslot(f->node) && r >= PSUM_ROW0 && r < PSUM_ROW0 + PSUM_LINES) {   /* P5b: the summary; not selectable */
@@ -969,7 +1070,8 @@ static row_t row_at(uint8_t r) {
         x.line = val == WT_STRATEGY ? env_wt_scan() : val == WT_TEN ? pg.wt.left != 0u : val == WT_DIM ? env_wt_dimmed() : 0u;
     }
 #endif
-    else if (x.node == N_EFFOPT || x.node == N_LTSOPT) x.val = val;
+    else if (x.node == N_EFFOPT || x.node == N_LTSOPT || x.node == N_FOPT) x.val = val;
+    else if (x.node == N_FONT) x.val = face();   /* 10-28: the value; only the menu and a restore change it */
     else if (value_which(x.node) >= 0) {
         x.kind = RK_VALUE;
         x.val  = live_value(x.node);
@@ -1011,12 +1113,28 @@ static const char *prof_value(const row_t *x, char *buf) {
  * show them; the screen and the clock. The bulb by the LEDs' line, not the
  * effect's, leaving the first line's icon cells empty under the actions'
  * (JD, 10-26); the text in one column from cell 2 (every effect's name
- * fits: the dashboard's band holds 12). out: 20 cells of spaces. */
+ * fits: the dashboard's band holds 12). out: COLS cells of spaces. Large's
+ * (the mock-up's): two lines from cell 0, the effect and its speed, then
+ * "H180 S100 B80", no bulb. */
 static void prof_summary(uint8_t slot, uint8_t line, char *out) {
     uint8_t rec[PROF_REC];
     char    b[24];
     size_t  n;
     if (!prof_slot(slot, rec)) return;
+    if (large() && line < 2u) {
+        if (!(rec[PR_FIELDS] & PF_LIGHTING)) return;
+        if (line == 1u) {
+            snprintf(b, sizeof b, "H%u S%u B%u", (unsigned)((rec[PR_HUE] * 360u) / 256u),
+                     (unsigned)((rec[PR_SAT] * 100u + 127u) / 255u), (unsigned)((rec[PR_VAL] * 100u + 127u) / 255u));
+            n = strlen(b);
+            memcpy(out, b, n > COLS_L ? COLS_L : n);
+            return;
+        }
+        if (!rec[PR_RGB_ON]) {
+            memcpy(out, "Lights off", 10);
+            return;
+        }
+    }
     if (line == 0u) {
         if (!(rec[PR_FIELDS] & PF_LIGHTING)) return;
         if (!rec[PR_RGB_ON]) {
@@ -1030,12 +1148,12 @@ static void prof_summary(uint8_t slot, uint8_t line, char *out) {
             snprintf(b, sizeof b, "+%u", (unsigned)((rec[PR_SPEED] * 360u) / 256u));
         else
             snprintf(b, sizeof b, "%u%%", (unsigned)((rec[PR_SPEED] * 100u + 127u) / 255u));
-        size_t vn = strlen(b);
-        memcpy(out + 20 - vn, b, vn);
+        size_t vn = strlen(b), at = large() ? 0u : 2u;   /* Large: in one column with the line under it */
+        memcpy(out + COLS - vn, b, vn);
         const char *name = fx >= 0 ? env_effect_name((uint8_t)fx) : "Unknown";   /* an effect this build lacks */
         n = strlen(name);
-        if (n > 20u - 2u - vn - 1u) n = 20u - 2u - vn - 1u;
-        memcpy(out + 2, name, n);
+        if (n > COLS - at - vn - 1u) n = COLS - at - vn - 1u;
+        memcpy(out + at, name, n);
     } else if (line == 1u) {
         memcpy(out, icon_of(N_LIGHT), 2);
         if (!(rec[PR_FIELDS] & PF_LIGHTING)) return;
@@ -1054,27 +1172,28 @@ static void prof_summary(uint8_t slot, uint8_t line, char *out) {
     }
 }
 
-/* The row's 20 cells. */
+/* The row's COLS cells (out: COLS_S + 1 at least). */
 static void row_text(const row_t *x, char *out) {
-    memset(out, ' ', 20);
-    out[20] = '\0';
+    const uint8_t N = COLS;
+    memset(out, ' ', N);
+    out[N] = '\0';
     char buf[24];
     if (x->kind == RK_TEXT) {
-        const char *s = menu_help_lines[menu_help_start[x->node - N_TOPIC0] + x->line];
+        const char *s = help_line((uint8_t)(x->node - N_TOPIC0), x->line);
         size_t      n = strlen(s);
-        memcpy(out, s, n > 20 ? 20 : n);
+        memcpy(out, s, n > N ? N : n);
         return;
     }
     if (x->kind == RK_ABOUT) {
         about_line(x->line, buf, sizeof buf);
         size_t n = strlen(buf);
-        memcpy(out, buf, n > 20 ? 20 : n);
+        memcpy(out, buf, n > N ? N : n);
         return;
     }
     if (x->kind == RK_NOTE) {
         batt_note(x->line, buf, sizeof buf);
         size_t n = strlen(buf);
-        memcpy(out, buf, n > 20 ? 20 : n);
+        memcpy(out, buf, n > N ? N : n);
         return;
     }
     if (x->kind == RK_PNOTE) {
@@ -1090,37 +1209,53 @@ static void row_text(const row_t *x, char *out) {
         }
         const char *label = label_of(x->node);
         size_t      ln    = strlen(label);
-        memcpy(out + at, label, ln);
+        memcpy(out + at, label, ln > N - at ? N - at : ln);
         fmt_value(x->node, x->val, buf, sizeof buf);
-        size_t vn = strlen(buf), room = at + ln + 1u < 20u ? 20u - at - ln - 1u : 0u;
+        if (ln > N - at) ln = N - at;
+        size_t vn = strlen(buf), room = at + ln + 1u < N ? N - at - ln - 1u : 0u;
         if (vn > room) vn = room;
-        memcpy(out + 20 - vn, buf, vn);
+        memcpy(out + N - vn, buf, vn);
         return;
     }
     if (x->kind != RK_ITEM) return;
     char        nm[PROF_NAME + 1];
+    const bool  w     = large();
     const char *label = x->node == N_EFFOPT   ? env_effect_name(x->val)
                       : x->node == N_LTSOPT   ? (x->val ? "On" : "Off")
-                      : x->node == N_PAIRNOW  ? pair_labels[x->val % 3u]
+                      : x->node == N_FOPT     ? (x->val == MT_SMALL ? "Small" : "Large")   /* 10-28 */
+                      : x->node == N_PAIRNOW  ? (w ? pair_labels_l : pair_labels)[x->val % 3u]
                       : x->node == N_PSLOT    ? pslot_label(x->val, nm)   /* P5b */
 #ifdef MENU_WTEST
-                      : x->node == N_WROW     ? wt_labels[x->val % WT_ROWS]   /* 10-27 */
+                      : x->node == N_WROW     ? (w && x->val == WT_DIM ? "Dim+cleanup" : wt_labels[x->val % WT_ROWS])   /* 10-27 */
 #endif
                                               : label_of(x->node);
     const char *value = "";
-    if (x->node == N_POWER) value = power_short[x->val & 3u];
+    if (x->node == N_POWER) value = w ? "" : power_short[x->val & 3u];   /* Large: its bulb (row_bulb()) */
     else if (x->node == N_CLOCK) value = clock_short_by_enum[x->val % CLOCK_ROWS];
+    else if (clk_row(x->node) >= 0 && w) label = clk_row(x->node) < 5 ? clock_example((uint8_t)clk_row(x->node), buf) : "Off";
     else if (clk_row(x->node) >= 0 && clk_row(x->node) < 5) value = clock_example((uint8_t)clk_row(x->node), buf);
-    else if (x->node == N_BATT) value = batt_short[x->val % 3u];
+    else if (x->node == N_BATT) value = w && x->val % 3u == 0u ? "%" : batt_short[x->val % 3u];
+    else if (x->node == N_FONT) value = x->val == MT_SMALL ? "Small" : "Large";   /* 10-28 */
     else if (x->node == N_CONN) value = link_names[x->val % 5u];          /* P3 */
     else if (x->node >= N_BT0 && x->node <= N_BT2) value = link_words[x->val % 5u];
     else if (bv_row(x->node) >= 0) value = batt_preview((uint8_t)(bv_row(x->node) + 1), buf);   /* P4 */
-    else if (x->node == N_PROFILES) value = prof_value(x, buf);           /* P5b */
+    else if (x->node == N_PROFILES && w) {   /* Large: the active slot's name for the label (the mock-up's "iv") */
+        if (x->val < PROF_SLOTS) {
+            uint8_t rec[PROF_REC];
+            (void)prof_slot(x->val, rec);
+            prof_name(x->val, rec, nm);
+            size_t room = x->line ? COLS_L - 5u : COLS_L - 4u;
+            if (strlen(nm) > room) nm[room] = '\0';
+            if (x->line) strcat(nm, "*");
+            label = nm;
+        }
+        value = MT_TRI_R;
+    } else if (x->node == N_PROFILES) value = prof_value(x, buf);         /* P5b */
     else if (x->node == N_PSLOT) value = MT_TRI_R;                        /* a saved slot opens its page */
     else if (x->node == N_PNEW) value = x->val ? "Full" : "";            /* P5d */
 #ifdef MENU_WTEST
     else if (x->node == N_WROW)   /* 10-27: the strategy; Ten writes running; the dim held */
-        value = x->val == WT_STRATEGY ? (x->line ? "Scan" : "Blank") : x->line ? (x->val == WT_TEN ? "Writing" : "On") : "";
+        value = x->val == WT_STRATEGY ? (x->line ? "Scan" : "Blank") : x->line ? (x->val == WT_TEN && !w ? "Writing" : "On") : "";
 #endif
     else if (x->node == N_DIAG || x->node == N_HELP || x->node == N_ABOUT || x->node == N_HEALTH ||
              x->node == N_CAMERA || x->node == N_RESET || is_topic(x->node) || x->node == N_LIGHT || x->node == N_BOOT ||
@@ -1136,10 +1271,12 @@ static void row_text(const row_t *x, char *out) {
             memcpy(out, x->node >= N_BT0 && x->node <= N_BT2 ? link_icons[x->val % 5u] : MT_CHECK_BOX, 2);
         at = 2;                                            /* in line with "◀ Back" */
     }
+    if (w && x->node == N_PSLOT && strlen(label) > N - 4u) nm[N - 4u] = '\0';   /* Large: the name cut to 11, its ▶ clear */
     size_t ln = strlen(label), vn = strlen(value);
-    if (at + ln > 20) ln = 20 - at;
+    if (at + ln > N) ln = N - at;
+    if (w && vn && at + ln + 1u + vn > N) ln = at + vn + 1u < N ? N - at - vn - 1u : 0u;   /* Large: a space before the value (the mock-up's fitPair) */
     memcpy(out + at, label, ln);
-    if (vn) memcpy(out + 20 - vn, value, vn);
+    if (vn) memcpy(out + N - vn, value, vn);
 }
 
 /* What a Battery row's text is made of, as batt_preview() and batt_note()
@@ -1291,16 +1428,17 @@ static void bar_state(uint8_t *count, uint8_t *top) {
     frame_t *f = cur();
     *top       = f->top;
     if (is_topic(f->node)) *count = topic_lines(f->node);
-    else if (f->node == N_ABOUT) *count = 8;
+    else if (f->node == N_ABOUT) *count = ABOUT_LINES;
     else *count = row_count(f->node);
-    /* A list pages by 8, so its last page's top can pass count - 8 (nine rows:
-     * 8); the thumb sits at the end then (codex: it was drawn off the panel). */
-    if (*count > MENU_ROWS && *top > *count - MENU_ROWS) *top = (uint8_t)(*count - MENU_ROWS);
+    /* A list pages by a screen, so its last page's top can pass count - ROWS
+     * (nine rows: 8); the thumb sits at the end then (codex: it was drawn off
+     * the panel). */
+    if (*count > ROWS && *top > *count - ROWS) *top = (uint8_t)(*count - ROWS);
 }
 static uint16_t bar_sig(void) {
     uint8_t count, top;
     bar_state(&count, &top);
-    if (count <= MENU_ROWS) return 0xFFFFu;
+    if (count <= ROWS) return 0xFFFFu;
     return (uint16_t)(((uint16_t)(count & 63u) << 8) | (top & 63u));
 }
 
@@ -1348,10 +1486,15 @@ static bool row_ruled(const row_t *x) { return x->kind == RK_PNOTE && x->line ==
  * option: a move or a commit repaints the text, never the bulb (the board,
  * 10-27: a move between two bulbs' rows took ~340 ms against ~230). */
 #define BULB_X       111u
-#define BULB_CHUNK_W (TEXT_X + 20u * MT_CELL_W + 1u - BULB_X)   /* 14: the bulb's 13 and the trail */
-_Static_assert(BULB_CHUNK_W == BULB_W + 1u && BULB_H == ROW_H, "the bulb: a row's height, right-aligned on its cells");
-_Static_assert(BULB_CHUNK_W * ROW_H * 2u <= MB_PASS_BYTES, "the bulb: one piece");
-static bool row_bulb(const row_t *x) { return x->kind == RK_ITEM && x->node >= N_POW0 && x->node <= N_POW3; }
+#define BULB_CHUNK_W (TEXT_X + COLS_S * MT_CELL_W + 1u - BULB_X)   /* 14: the bulb's 13 and the trail */
+_Static_assert(BULB_CHUNK_W == BULB_W + 1u && BULB_H == ROWH_S && 1u + BULB_H <= ROWH_L,
+               "the bulb: Small's row's height; Large's, a row down in its 16 (the mock-up's BULB_DY)");
+_Static_assert(BULB_CHUNK_W * ROWH_L * 2u <= MB_PASS_BYTES, "the bulb: one piece, Large's taller row too (448 B)");
+/* Large's top level shows the power mode as its bulb, no name (the mock-up's
+ * "icons and values"). */
+static bool row_bulb(const row_t *x) {
+    return x->kind == RK_ITEM && ((x->node >= N_POW0 && x->node <= N_POW3) || (x->node == N_POWER && large()));
+}
 static uint8_t l_chunks(uint8_t s) {
     if (s == S_SEP || s == S_BAR) return 1;
     if (!is_row(s)) return 2;
@@ -1365,17 +1508,21 @@ static bool bulb_at(uint8_t s) {
     row_t x = row_at((uint8_t)(s - S_ROW0));
     return row_bulb(&x);
 }
+typedef struct { uint8_t mode, dy; } bulb_ctx_t;   /* dy: Large's bulb a pixel row down; row 0's 255 is background */
 static void bulb_row(const void *v, uint16_t row, uint16_t *px, uint16_t w) {
-    power_bulb_row(*(const uint8_t *)v, (uint8_t)row, px, (uint8_t)w, 0u, true);   /* MB_PANEL's order */
+    const bulb_ctx_t *b = v;
+    power_bulb_row(b->mode, (uint8_t)(row - b->dy), px, (uint8_t)w, 0u, true);   /* MB_PANEL's order */
 }
 _Static_assert(MB_PANEL(0x1234u) == 0x3412u, "power_bulb_row()'s swap is MB_PANEL()");
-static uint8_t rows_per_piece(void) { return (uint8_t)(MB_PASS_BYTES / (CHUNK_MAX * 2u)); }   /* 4 */
+static uint8_t rows_per_piece(void) { return (uint8_t)(MB_PASS_BYTES / (CHUNK_MAX * 2u)); }   /* 4, both faces */
 /* A split row's cells 2-9 are narrower, so their pieces take 5 pixel rows: 3
  * pieces, not 4, which pays for the icon's own piece. Each piece costs about
  * a pass whatever its size: the top level's white icons (JD, 10-25) added 8
  * pieces, ~100 ms, to its repaint until this. */
-#define SPLIT_W (HALF_W - 2u * MT_CELL_W)   /* 48 */
-static uint8_t rows_per_split(void) { return (uint8_t)(MB_PASS_BYTES / (SPLIT_W * 2u)); }   /* 5 */
+#define SPLIT_W_S (HALF_W - 2u * MT_CELL_W)     /* 48 */
+#define SPLIT_W_L (HALF_W - 2u * MT_CELL_W_L)   /* 44 */
+#define SPLIT_W   (large() ? SPLIT_W_L : SPLIT_W_S)
+static uint8_t rows_per_split(void) { return (uint8_t)(MB_PASS_BYTES / (SPLIT_W * 2u)); }   /* 5, both faces */
 static uint8_t l_pieces(uint8_t s, uint8_t c) {
     if (bulb_at(s)) {                                                  /* 10-27: the bulb, every pixel row at once */
         if (c == 0) return 1;
@@ -1389,23 +1536,31 @@ static uint8_t l_pieces(uint8_t s, uint8_t c) {
     const bool split = is_row(s) && row_split(s);
     if (split && c == 1) return 1;                                     /* the icon's two cells: every row at once too */
     uint8_t r = split && c == 2 ? rows_per_split() : rows_per_piece();
-    return (uint8_t)((MT_CELL_H + r - 1u) / r);
+    uint8_t h = (uint8_t)(mt_cell_h(face()) - (s == S_TITLE ? geo()->title_r0 : 0u));   /* Large's title: glyph rows 1-15 */
+    return (uint8_t)((h + r - 1u) / r);
 }
 _Static_assert(MB_PASS_BYTES / (CHUNK_MAX * 2u) >= 1 && (MB_PASS_BYTES / (CHUNK_MAX * 2u)) * ((CHUNK_MAX + 7u) / 8u) <= BITS_MAX,
                "a half-row piece: whole pixel rows, its bits in the buffer");
-_Static_assert(MB_PASS_BYTES / (SPLIT_W * 2u) <= MT_CELL_H && (MB_PASS_BYTES / (SPLIT_W * 2u)) * ((SPLIT_W + 7u) / 8u) <= BITS_MAX,
+_Static_assert(MB_PASS_BYTES / (SPLIT_W_S * 2u) <= MT_CELL_H && (MB_PASS_BYTES / (SPLIT_W_S * 2u)) * ((SPLIT_W_S + 7u) / 8u) <= BITS_MAX &&
+               MB_PASS_BYTES / (SPLIT_W_L * 2u) <= MT_CELL_H_L && (MB_PASS_BYTES / (SPLIT_W_L * 2u)) * ((SPLIT_W_L + 7u) / 8u) <= BITS_MAX,
                "a split row's cells 2-9: whole pixel rows, its bits in the buffer");
-_Static_assert(ROW_LEAD * MT_CELL_H * 2u <= MB_PASS_BYTES && ROW_LEAD <= 8u && MT_CELL_H <= BITS_MAX, "a row's lead: one piece");
-_Static_assert(2u * MT_CELL_W * MT_CELL_H * 2u <= MB_PASS_BYTES && ((2u * MT_CELL_W + 7u) / 8u) * MT_CELL_H <= BITS_MAX,
-               "a row's icon (two cells): one piece");
+_Static_assert(ROW_LEAD * MT_CELL_H_MAX * 2u <= MB_PASS_BYTES && ROW_LEAD <= 8u && MT_CELL_H_MAX <= BITS_MAX, "a row's lead: one piece");
+_Static_assert(2u * MT_CELL_W * MT_CELL_H * 2u <= MB_PASS_BYTES && ((2u * MT_CELL_W + 7u) / 8u) * MT_CELL_H <= BITS_MAX &&
+               2u * MT_CELL_W_L * MT_CELL_H_L * 2u <= MB_PASS_BYTES && ((2u * MT_CELL_W_L + 7u) / 8u) * MT_CELL_H_L <= BITS_MAX,
+               "a row's icon (two cells): one piece (Large's exactly 512 B, at the limit)");
+#define RPP_ (MB_PASS_BYTES / (CHUNK_MAX * 2u))
+_Static_assert((MT_CELL_H_L - 1u + RPP_ - 1u) / RPP_ == (MT_CELL_H_L + RPP_ - 1u) / RPP_,
+               "Large's title (15 rows) takes the pieces of a full line: c_pieces() and e_pieces() count by the title");
 
-/* One piece of a 20-cell text slot at y: chunk c, piece p's pixel rows. A
+/* One piece of a COLS-cell text slot at y: chunk c, piece p's pixel rows. A
  * row (`row`) has the 4 px lead, with `cursor` (a code, or 0) in it in
- * `cursor_fg`; the title and the confirm's lines a 1 px one. */
+ * `cursor_fg`; the title and the confirm's lines a 1 px one. g0: the first
+ * glyph row drawn, at y (Large's title, 1: its rows 1-15 at y 0-14). */
 static ms_paint_t text_piece(const char *cells, uint16_t y, bool row, uint8_t cursor, uint16_t cursor_fg, uint8_t c,
-                             uint8_t p, uint16_t fg, uint16_t icon_fg, bool bulb) {
+                             uint8_t p, uint16_t fg, uint16_t icon_fg, bool bulb, uint8_t g0) {
     const uint8_t  lead  = row ? ROW_LEAD : 1u;
-    mt_line_t      l     = {cells, 20, lead, 1, false, false, cursor};
+    const uint8_t  fc    = face(), cw = mt_cell_w(fc), ch = (uint8_t)(mt_cell_h(fc) - g0);
+    mt_line_t      l     = {cells, COLS, lead, 1, false, false, cursor, fc};
     const bool     lc    = row && c == 0;              /* the row's lead */
     const bool     split = row && icon_fg != 0;        /* P3: cells 0-1 a chunk of their own */
     const bool     ic    = split && c == 1;            /* that chunk */
@@ -1417,42 +1572,43 @@ static ms_paint_t text_piece(const char *cells, uint16_t y, bool row, uint8_t cu
     } else if (lc) {                       /* [0, 4) */
         c0 = 0;
         w  = lead;
-    } else if (ic) {                       /* [4, 16) */
+    } else if (ic) {                       /* [4, 16); Large's [4, 20) */
         c0 = lead;
-        w  = (uint16_t)(2u * MT_CELL_W);
-    } else {                               /* [4, 64), [64, 125); split: [16, 64); a bulb's row: [64, 111) */
-        c0 = k == 1 ? (uint16_t)(lead + (split ? 2u * MT_CELL_W : 0u)) : (uint16_t)(lead + HALF_W);
+        w  = (uint16_t)(2u * cw);
+    } else {                               /* [4, 64), [64, 125); split: [16, 64), Large's [20, 64); a bulb's row: [64, 111) */
+        c0 = k == 1 ? (uint16_t)(lead + (split ? 2u * cw : 0u)) : (uint16_t)(lead + HALF_W);
         w  = k == 1 ? (uint16_t)(split ? SPLIT_W : HALF_W) : bulb ? (uint16_t)(BULB_X - (TEXT_X - lead + c0)) : (uint16_t)(HALF_W + 1u);
     }
     const uint8_t  rpp  = split && c == 2 ? rows_per_split() : rows_per_piece();   /* as l_pieces() */
     const bool     all  = lc || ic;        /* one piece, every pixel row */
     const uint8_t  r0   = all ? 0 : (uint8_t)(p * rpp);
-    const uint8_t  rows = all ? MT_CELL_H : (uint8_t)(r0 + rpp > MT_CELL_H ? MT_CELL_H - r0 : rpp);
+    const uint8_t  rows = all ? ch : (uint8_t)(r0 + rpp > ch ? ch - r0 : rpp);
     const uint8_t  st   = (uint8_t)((w + 7u) / 8u);
     uint8_t        bits[BITS_MAX];
-    mt_bits(&l, c0, w, r0, rows, bits, st);
+    mt_bits(&l, c0, w, (uint8_t)(g0 + r0), rows, bits, st);
     return mb_mono(bits, st, (uint16_t)(TEXT_X - lead + c0), (uint16_t)(y + r0), w, rows,
                    lc ? cursor_fg : ic ? icon_fg : fg, 0)
                ? MS_PAINT_DONE : MS_PAINT_FAILED;
 }
 
 static ms_paint_t l_paint(uint8_t s, uint8_t c, uint8_t p) {
-    char cells[21];
-    if (s == S_SEP) return mb_fill(4, 14, 123, 14, pal[MP_GREY]) ? MS_PAINT_DONE : MS_PAINT_FAILED;
+    char cells[COLS_S + 1];
+    if (s == S_SEP) return mb_fill(4, geo()->sep_y, 123, geo()->sep_y, pal[MP_GREY]) ? MS_PAINT_DONE : MS_PAINT_FAILED;
     if (s == S_BAR) {
         uint8_t count, top;
         bar_state(&count, &top);
-        if (count <= MENU_ROWS) return mb_fill(BAR_X, BAR_Y0, BAR_X, BAR_Y0 + BAR_H - 1, 0) ? MS_PAINT_DONE : MS_PAINT_FAILED;
+        if (count <= ROWS) return mb_fill(BAR_X, BAR_Y0, BAR_X, BAR_Y0 + BAR_H - 1, 0) ? MS_PAINT_DONE : MS_PAINT_FAILED;
         /* The mockup's: a track, and a thumb at least 6 px, placed by the top. */
-        uint16_t th = (uint16_t)((BAR_H * MENU_ROWS + count / 2u) / count);
+        uint16_t th = (uint16_t)((BAR_H * ROWS + count / 2u) / count);
         if (th < 6) th = 6;
-        uint16_t ty = (uint16_t)(BAR_Y0 + ((uint32_t)(BAR_H - th) * top + (count - MENU_ROWS) / 2u) / (count - MENU_ROWS));
+        uint16_t ty = (uint16_t)(BAR_Y0 + ((uint32_t)(BAR_H - th) * top + (count - ROWS) / 2u) / (count - ROWS));
         if (!mb_fill(BAR_X, BAR_Y0, BAR_X, BAR_Y0 + BAR_H - 1, pal[MP_TRACK])) return MS_PAINT_FAILED;
         return mb_fill(BAR_X, ty, BAR_X, (uint16_t)(ty + th - 1u), pal[MP_WHITE]) ? MS_PAINT_DONE : MS_PAINT_FAILED;
     }
     if (s == S_TITLE) {
-        memset(cells, ' ', 20);
-        cells[20]      = '\0';
+        const uint8_t N = COLS;
+        memset(cells, ' ', N);
+        cells[N]       = '\0';
         char        nm[PROF_NAME + 1];
         const char *ic = title_icon(title_id), *tt = title_text(title_id);
         if (title_id >= T_PSLOT0 && title_id < T_PSLOT0 + PROF_SLOTS) {   /* P5b: a slot's page, its name */
@@ -1463,15 +1619,16 @@ static ms_paint_t l_paint(uint8_t s, uint8_t c, uint8_t p) {
             tt = nm;
         }
         size_t      ni = strlen(ic), n = strlen(tt);
+        if (large() && ni + n > N && ni && ic[ni - 1u] == ' ') ni--;   /* Large: the icon's space goes first (the mock-up's) */
         memcpy(cells, ic, ni);
-        memcpy(cells + ni, tt, n > 20 - ni ? 20 - ni : n);
-        return text_piece(cells, 0, false, 0, 0, c, p, pal[MP_WHITE], 0, false);
+        memcpy(cells + ni, tt, n > N - ni ? N - ni : n);
+        return text_piece(cells, 0, false, 0, 0, c, p, pal[MP_WHITE], 0, false, geo()->title_r0);
     }
     row_t x = row_at((uint8_t)(s - S_ROW0));
     if (row_bulb(&x)) {   /* 10-27: chunk 0 the bulb, the row's own after it */
-        if (c == 0) {
-            uint8_t mode = (uint8_t)(x.node - N_POW0);
-            return mb_rows(BULB_X, (uint16_t)(ROW_Y0 + (s - S_ROW0) * ROW_H), BULB_CHUNK_W, ROW_H, bulb_row, &mode)
+        if (c == 0) {   /* Large's top level: the model's mode (row_at()'s val) */
+            bulb_ctx_t b = {x.node == N_POWER ? (uint8_t)(x.val & 3u) : (uint8_t)(x.node - N_POW0), geo()->bulb_dy};
+            return mb_rows(BULB_X, (uint16_t)(ROW_Y0 + (s - S_ROW0) * ROW_H), BULB_CHUNK_W, ROW_H, bulb_row, &b)
                        ? MS_PAINT_DONE : MS_PAINT_FAILED;
         }
         c--;
@@ -1488,62 +1645,78 @@ static ms_paint_t l_paint(uint8_t s, uint8_t c, uint8_t p) {
                                      : pal[MP_DIM];
     /* The cursor (JD, 10-24): in the lit row's lead, in its own colour. */
     return text_piece(cells, (uint16_t)(ROW_Y0 + (s - S_ROW0) * ROW_H), true, x.lit ? (uint8_t)MT_CURSOR[0] : 0u,
-                      pal[MP_CURSOR], c, p, fg, row_icon_colour(&x), row_bulb(&x));
+                      pal[MP_CURSOR], c, p, fg, row_icon_colour(&x), row_bulb(&x), 0);
 }
 
 /* A Clock example's tick (10-25): the right half only, its cells 10-19 and
  * the trail, when nothing but the tick changed (clock_sig()); not Date,
- * whose text crosses the halves. A split row's right half is chunk 3. */
+ * whose text crosses the halves. A split row's right half is chunk 3.
+ * Large's examples are left-aligned labels whose digits sit in both halves,
+ * so they repaint whole. */
 static uint8_t l_first(uint8_t s, uint16_t was, uint16_t now) {
     if (bulb_at(s)) {   /* 10-27: the same option before and after (RK_ITEM's kind and node, bits 8-15): its bulb stands */
         row_t    x    = row_at((uint8_t)(s - S_ROW0));
-        uint16_t mine = (uint16_t)((1u << 14) | ((uint16_t)x.node << 8));
-        return (was & 0xFF00u) == mine && (now & 0xFF00u) == mine ? 1u : 0u;
+        /* Large's top-level Power row: the mode too (val, bits 4-7), or Fn+B would leave the old bulb */
+        uint16_t mask = x.node == N_POWER ? 0xFFF0u : 0xFF00u;
+        uint16_t mine = (uint16_t)(((1u << 14) | ((uint16_t)x.node << 8) | ((uint16_t)(x.val & 15u) << 4)) & mask);
+        return (was & mask) == mine && (now & mask) == mine ? 1u : 0u;
     }
-    if (!is_row(s) || (was & 0xE000u) != 0x2000u || (now & 0xE000u) != 0x2000u) return 0;
+    if (large() || !is_row(s) || (was & 0xE000u) != 0x2000u || (now & 0xE000u) != 0x2000u) return 0;
     if (((was ^ now) & (uint16_t)~0x01FCu) != 0u || ((now >> 10) & 7u) == 4u) return 0;
     return row_split(s) ? 3u : 2u;
 }
-static const ms_layout_t L_LIST = {11, l_sig, l_chunks, l_pieces, l_paint, S_ROW0, MENU_ROWS, l_first};
+static const ms_layout_t L_LISTS[2] = {
+    [MT_SMALL] = {S_ROW0 + ROWS_S, l_sig, l_chunks, l_pieces, l_paint, S_ROW0, ROWS_S, l_first},
+    [MT_LARGE] = {S_ROW0 + ROWS_L, l_sig, l_chunks, l_pieces, l_paint, S_ROW0, ROWS_L, l_first},
+};
+static const ms_layout_t *l_list(void) { return &L_LISTS[face()]; }
 
 /* --- The confirm geometry: Reset counters' two pages (the mockup: text at y
- * 22, 36, 72 and 86 under the title and the separator). */
-static const uint8_t c_y[4] = {22, 36, 72, 86};
-static const char *const c_lines[2][4] = {
-    {"Clear the health", "counters?", "Click: reset", "Hold: cancel"},
-    {"Counters reset.", "", "Click: back", ""},
+ * 22, 36, 72 and 86 under the title and the separator; Large's 24, 40, 80
+ * and 96, geo()'s c_y). Each page's words in Small, then in Large (the
+ * mock-up's confirmLines()). */
+static const char *const c_lines[2][2][4] = {
+    {{"Clear the health", "counters?", "Click: reset", "Hold: cancel"}, {"Counters reset.", "", "Click: back", ""}},
+    {{"Clear health", "counters?", "Click: reset", "Hold: cancel"}, {"Counters reset.", "", "Click: back", ""}},
 };
 /* The bootloader item's (JD, 10-24; the words wait for his text pass): the
  * question, and the refusal on the battery's reserve. */
-static const char *const boot_lines[2][4] = {
-    {"For a firmware", "update over USB.", "Click: enter", "Hold: cancel"},
-    {"Plug in first:", "the battery is low.", "Click: back", ""},
+static const char *const boot_lines[2][2][4] = {
+    {{"For a firmware", "update over USB.", "Click: enter", "Hold: cancel"}, {"Plug in first:", "the battery is low.", "Click: back", ""}},
+    {{"For a firmware", "update via USB.", "Click: enter", "Hold: cancel"}, {"Plug in first:", "battery is low.", "Click: back", ""}},
 };
 /* Reset settings' (10-27; the words wait for JD's text pass): the question,
  * then done. The defaults are env_defaults()'s, what a flash leaves. */
-static const char *const defaults_lines[2][4] = {
-    {"Back to defaults?", "Profiles are kept.", "Click: reset", "Hold: cancel"},
-    {"Settings reset.", "", "Click: back", ""},
+static const char *const defaults_lines[2][2][4] = {
+    {{"Back to defaults?", "Profiles are kept.", "Click: reset", "Hold: cancel"}, {"Settings reset.", "", "Click: back", ""}},
+    {{"Use defaults?", "Profiles stay.", "Click: reset", "Hold: cancel"}, {"Settings reset.", "", "Click: back", ""}},
 };
 /* P3, Connection off BT (JD, 10-25: "a screen saying 'Switch to BT mode to
  * change Bluetooth settings' or such"): fixed, its lines at y 22, 36, 50 and
  * 86 so the sentence isn't split by the confirm pages' gap. */
-static const uint8_t     info_y[4]     = {22, 36, 50, 86};
-static const char *const info_lines[4] = {"Switch to BT mode to", "change Bluetooth", "settings.", "Click: back"};
+static const char *const info_lines[2][4] = {{"Switch to BT mode to", "change Bluetooth", "settings.", "Click: back"},
+                                             {"Slide to BT to", "change these", "settings.", "Click: back"}};
 /* The Pairing page's lines by phase (PP_*); a NULL is the slot's line,
  * written below. The words wait for JD's text pass (MENU-TEXT.md). */
-static const char *const pair_lines[6][3] = {
+static const char *const pair_lines[2][6][3] = {{
     {NULL, "Getting ready...", "Click or hold: stop"},
     {"On the device, add", NULL, "Click or hold: stop"},   /* JD, 10-25: a phone or an iPad too; the band's exact advertised name */
     {NULL, "connected.", "Click: back"},
     {"Pairing ended.", "", "Click: back"},
     {"Pairing didn't", "start. Try again.", "Click: back"},
     {"The radio didn't", "confirm pairing.", "Click or hold: stop"},
-};
+}, {   /* Large's (the mock-up's; the last two, which it never modelled, worded to fit) */
+    {NULL, "Getting ready", "Click: stop"},
+    {"On the device,", NULL, "Click: stop"},
+    {NULL, "connected.", "Click: back"},
+    {"Pairing ended.", "", "Click: back"},
+    {"Pairing didn't", "start. Retry.", "Click: back"},
+    {"Radio didn't", "confirm pairing", "Click: stop"},
+}};
 static void pair_line(uint8_t slot, uint8_t phase, uint8_t i, char *out, size_t sz) {
-    const char *s = i < 3 ? pair_lines[phase][i] : "";
+    const char *s = i < 3 ? pair_lines[large()][phase][i] : "";
     if (s) snprintf(out, sz, "%s", s);
-    else if (phase == PP_OPEN) snprintf(out, sz, "AK820 5.1-%u", (unsigned)(slot + 1u));
+    else if (phase == PP_OPEN) snprintf(out, sz, large() ? "add AK820 5.1-%u" : "AK820 5.1-%u", (unsigned)(slot + 1u));
     else snprintf(out, sz, "Bluetooth %u%s", (unsigned)(slot + 1u), phase == PP_DONE ? " is" : "");
 }
 /* P5b's confirms, the slot's name in the question (the words wait for JD's
@@ -1551,16 +1724,17 @@ static void pair_line(uint8_t slot, uint8_t phase, uint8_t i, char *out, size_t 
 static void pconfirm_line(uint8_t node, uint8_t slot, uint8_t i, char *out, size_t sz) {
     static const char *const tail[2][3] = {{"with these settings?", "Click: replace", "Hold: cancel"},
                                            {"", "Click: delete", "Hold: cancel"}};
-    const bool del = node == N_PDELETE;
-    if (i) {
-        snprintf(out, sz, "%s", tail[del][(i - 1u) % 3u]);
+    static const char *const tail_l[2][3] = {{"Save over", "", "Click: save"}, {"Delete", "", "Click: delete"}};
+    const bool del = node == N_PDELETE, w = large();   /* Large: the verb, then the name and its "?" (the mock-up's) */
+    if (w ? i != 1u : i != 0u) {
+        snprintf(out, sz, "%s", w ? (i == 3u ? "Hold: cancel" : tail_l[del][i % 3u]) : tail[del][(i - 1u) % 3u]);
         return;
     }
     char    nm[PROF_NAME + 1];
     uint8_t rec[PROF_REC];
     if (!prof_slot(slot, rec)) rec[PR_FIELDS] = 0;
     prof_name(slot, rec, nm);
-    snprintf(out, sz, del ? "Delete %s?" : "Replace %s", nm);
+    snprintf(out, sz, w ? "%s?" : del ? "Delete %s?" : "Replace %s", nm);
 }
 static uint16_t c_sig(uint8_t s) {
     if (s == 0) return title_id;
@@ -1581,19 +1755,20 @@ static uint8_t c_chunks(uint8_t s) { return s == 1 ? 1 : 2; }
 static uint8_t c_pieces(uint8_t s, uint8_t c) { return l_pieces(s == 1 ? S_SEP : S_TITLE, c); }
 static ms_paint_t c_paint(uint8_t s, uint8_t c, uint8_t p) {
     if (s <= 1) return l_paint(s, c, p);
-    char    cells[21], buf[24];
-    uint8_t node = cur()->node, i = (uint8_t)(s - 2u);
-    memset(cells, ' ', 20);
-    cells[20] = '\0';
-    if (node == N_CONNINFO) snprintf(buf, sizeof buf, "%s", info_lines[i]);
+    char          cells[COLS_S + 1], buf[24];
+    uint8_t       node = cur()->node, i = (uint8_t)(s - 2u);
+    const uint8_t N = COLS, w = large() ? 1u : 0u;
+    memset(cells, ' ', N);
+    cells[N] = '\0';
+    if (node == N_CONNINFO) snprintf(buf, sizeof buf, "%s", info_lines[w][i]);
     else if (node == N_PAIRING) pair_line(cur()->cursor, pair_phase(cur()->cursor), i, buf, sizeof buf);
     else if (node == N_PSAVE || node == N_PDELETE) pconfirm_line(node, cur()->cursor, i, buf, sizeof buf);
     else if (node == N_PRENAME) rename_line(i, buf, sizeof buf);   /* P5c */
     else snprintf(buf, sizeof buf, "%s",
-                  (node == N_BOOT ? boot_lines : node == N_DEFAULTS ? defaults_lines : c_lines)[confirm_page & 1u][i]);
+                  (node == N_BOOT ? boot_lines : node == N_DEFAULTS ? defaults_lines : c_lines)[w][confirm_page & 1u][i]);
     size_t n = strlen(buf);
-    memcpy(cells, buf, n > 20 ? 20 : n);
-    return text_piece(cells, (node == N_CONNINFO ? info_y : c_y)[i], false, 0, 0, c, p, pal[MP_WHITE], 0, false);
+    memcpy(cells, buf, n > N ? N : n);
+    return text_piece(cells, (node == N_CONNINFO ? geo()->info_y : geo()->c_y)[i], false, 0, 0, c, p, pal[MP_WHITE], 0, false, 0);
 }
 static const ms_layout_t L_CONFIRM = {6, c_sig, c_chunks, c_pieces, c_paint, 0, 0, 0};
 
@@ -1604,23 +1779,23 @@ static const ms_layout_t L_CONFIRM = {6, c_sig, c_chunks, c_pieces, c_paint, 0, 
  * moves at once and the number follows (as the scrollbar leads the rows).
  * Each band is one piece (<= 336 B) of generated pixels; its signature names
  * every pixel it paints. */
-#define BAR_X0  13          /* the outline: x 13-114, y 51-60 */
+#define BAR_X0  13          /* the outline: x 13-114, y 51-60 (Large's 56-65) */
 #define BAR_X1  114
-#define BAR_YT  51
-#define BAR_YB  60
+#define BAR_YT  (geo()->bar_yt)
+#define BAR_YB  (BAR_YT + BAR_HT - 1u)
 #define BAR_BW  16          /* bands of 16 columns, the last 6 */
 #define BAR_N   7
-#define ENV_Y0  20          /* the envelope: x 0-127, y 20-40 */
-#define ENV_Y1  40
+#define ENV_Y0  (geo()->env_y0)   /* the envelope: x 0-127, y 20-40 (Large's 22-42) */
+#define ENV_Y1  (ENV_Y0 + ENV_H - 1u)
 #define ENV_BW  8
 #define ENV_N   16
-#define STRIP_X0 4          /* the strip: x 4-123, y 22-35 */
+#define STRIP_X0 4          /* the strip: x 4-123, y 22-35 (Large's 24-37) */
 #define STRIP_X1 123
-#define STRIP_YT 22
-#define STRIP_YB 35
+#define STRIP_YT (geo()->strip_yt)
+#define STRIP_YB (STRIP_YT + 13)
 #define VAL_X   14          /* the value: 10 big cells, centred */
 #define VAL_CELLS 10
-#define HINT_Y0 72
+#define HINT_Y0 (geo()->hint_y0)
 static const char *const hint_lines[3] = {"Turn: change", "Click: save", "Hold: cancel"};
 
 static uint8_t e_bands(void) { return is_hue_editor(cur()->node) ? ENV_N : BAR_N; }
@@ -1683,12 +1858,12 @@ static void env_row(const void *v, uint16_t row, uint16_t *px, uint16_t w) {
     const int16_t    y = (int16_t)(ENV_Y0 + row), rel = (int16_t)(c->mx - c->x0);
     if (y >= STRIP_YT && y <= STRIP_YB) memcpy(px, c->col, (size_t)w * 2u);   /* the strip; 0 outside it */
     else memset(px, 0, (size_t)w * 2u);
-    if (y >= 38) {   /* the triangle: 5, 3, 1 */
-        int16_t half = (int16_t)(2 - (y - 38));
+    if (y >= (int16_t)(ENV_Y1 - 2)) {   /* the triangle: 5, 3, 1 */
+        int16_t half = (int16_t)(2 - (y - (int16_t)(ENV_Y1 - 2)));
         for (int16_t d = (int16_t)-half; d <= half; d++)
             if (rel + d >= 0 && rel + d < (int16_t)w) px[rel + d] = c->tri;
     } else if (rel >= 0 && rel < (int16_t)w)
-        px[rel] = c->white;   /* the line, y 20-37 */
+        px[rel] = c->white;   /* the line, y 20-37 (Large's 22-39) */
 }
 
 /* A band's signature: the bar's, where the edge falls in it (the outline and
@@ -1755,21 +1930,20 @@ static ms_paint_t e_paint(uint8_t s, uint8_t c, uint8_t p) {
     if (s == vs) {
         char cells[VAL_CELLS + 1];
         value_cells(cells);
-        uint16_t y = is_hue_editor(cur()->node) ? 44u : 22u;
+        uint16_t y = geo()->val_y[is_hue_editor(cur()->node) ? 1 : 0];
         return mb_glyph_big(cells[c], (uint16_t)(VAL_X + c * MB_BIG_W), y) ? MS_PAINT_DONE : MS_PAINT_BUSY;
     }
-    char        cells[21];
+    char        cells[COLS_S + 1];
     const char *ln = hint_lines[s - vs - 1u];
-    memset(cells, ' ', 20);
-    cells[20] = '\0';
+    memset(cells, ' ', COLS);
+    cells[COLS] = '\0';
     memcpy(cells, ln, strlen(ln));
-    return text_piece(cells, (uint16_t)(HINT_Y0 + (s - vs - 1u) * ROW_H), false, 0, 0, c, p, pal[MP_WHITE], 0, false);
+    return text_piece(cells, (uint16_t)(HINT_Y0 + (s - vs - 1u) * ROW_H), false, 0, 0, c, p, pal[MP_WHITE], 0, false, 0);
 }
 static const ms_layout_t L_RANGE = {2 + BAR_N + 1 + 3, e_sig, e_chunks, e_pieces, e_paint, 0, 0, 0};
 static const ms_layout_t L_HUE   = {2 + ENV_N + 1 + 3, e_sig, e_chunks, e_pieces, e_paint, 0, 0, 0};
 _Static_assert(2 + ENV_N + 1 + 3 <= MS_MAX_SLOTS, "the hue editor's slots");
-_Static_assert(ENV_BW * (ENV_Y1 - ENV_Y0 + 1) * 2 <= MB_PASS_BYTES && BAR_BW * (BAR_YB - BAR_YT + 1) * 2 <= MB_PASS_BYTES,
-               "a band is one piece");
+_Static_assert(ENV_BW * ENV_H * 2 <= MB_PASS_BYTES && BAR_BW * BAR_HT * 2 <= MB_PASS_BYTES, "a band is one piece, in both faces");
 
 /* --- Navigation -------------------------------------------------------------- */
 
@@ -1779,7 +1953,7 @@ static uint32_t last_idle;   /* menu_tick's latest idle time, for retitle() betw
 
 static void push(uint8_t node, uint8_t cursor) {
     if (depth >= sizeof stack / sizeof stack[0]) return;   /* four deep at most: P5b's confirms */
-    stack[depth++] = (frame_t){node, cursor, (uint8_t)(cursor / MENU_ROWS * MENU_ROWS)};
+    stack[depth++] = (frame_t){node, cursor, (uint8_t)(cursor / ROWS * ROWS)};
 }
 static void flash(uint8_t id, uint32_t now) {
     flash_id = id;
@@ -1800,7 +1974,7 @@ void menu_open(uint32_t now) {
     push(N_TOP, 0);
     title_id = T_TOP;
     retitle(now);
-    ms_set_layout(&L_LIST, true);
+    ms_set_layout(l_list(), true);
 }
 
 void menu_return_from_diag(uint8_t page, uint32_t now) {
@@ -1818,17 +1992,32 @@ void menu_return_from_diag(uint8_t page, uint32_t now) {
     push(N_DIAG, page ? 2 : 1);
     title_id = T_DIAG;
     retitle(now);
-    ms_set_layout(&L_LIST, true);
+    ms_set_layout(l_list(), true);
 }
 
 void menu_invalidate(void) { ms_invalidate_all(); }
+
+/* 10-28: the face changed under an open menu (menu_font_set() in menu_ops.c
+ * calls it only while the configuration menu holds the panel): each frame
+ * pages afresh by the new row count, a page of text from its first line
+ * (Help and About wrap differently in each face), and the current page's
+ * layout in the new face, cleared in bands, every slot repainted. */
+void menu_refont(void) {
+    if (!depth) return;
+    for (uint8_t i = 0; i < depth; i++) {
+        frame_t *f = &stack[i];
+        f->top     = is_topic(f->node) || f->node == N_ABOUT ? 0u : (uint8_t)(f->cursor / ROWS * ROWS);
+    }
+    uint8_t n = cur()->node;
+    ms_set_layout(is_confirm(n) ? &L_CONFIRM : is_editor(n) ? (is_hue_editor(n) ? &L_HUE : &L_RANGE) : l_list(), true);
+}
 
 /* A screen change within the list geometry: a retarget. Into or out of
  * Reset counters: a layout change (its clear). */
 static void show(bool to_confirm, bool from_confirm, uint32_t now) {
     retitle(now);
     if (to_confirm) ms_set_layout(&L_CONFIRM, false);
-    else if (from_confirm) ms_set_layout(&L_LIST, false);
+    else if (from_confirm) ms_set_layout(l_list(), false);
     else ms_retarget();
 }
 
@@ -1838,7 +2027,7 @@ static void open_about(uint32_t now) {
     retitle(now);
     /* A new snapshot: About's rows repaint whatever their signature (a
      * committed row from an earlier visit could equal it). No clear. */
-    ms_invalidate_rows(S_ROW0, MENU_ROWS);
+    ms_invalidate_rows(S_ROW0, ROWS);
     ms_retarget();
 }
 
@@ -1857,7 +2046,7 @@ static menu_result_t pop(uint32_t now) {
     prof_list_fit(cur());
     if (is_editor(from)) {   /* back to its list: a layout change, both ways (ms_set_layout's clear) */
         retitle(now);
-        ms_set_layout(&L_LIST, false);
+        ms_set_layout(l_list(), false);
     } else
         show(false, is_confirm(from), now);
     return MENU_NONE;
@@ -2025,6 +2214,7 @@ static menu_result_t activate(uint32_t now) {
         uint8_t i = (uint8_t)(f->cursor - 1u);
         if (f->node == N_POWER) { env_power_set(i); model_power = i; }
         else if (f->node == N_BATT) env_batt_view_set((uint8_t)(i + 1u));   /* P4: row i is view i + 1 */
+        else if (f->node == N_FONT) menu_font_set(i == MT_SMALL ? ENV_FONT_SMALL : ENV_FONT_LARGE);   /* re-lays out the menu */
         else { env_clock_set(clock_enum[i]); model_clock = clock_enum[i]; }
         flash(T_SAVED, now);
         return pop(now);
@@ -2033,6 +2223,7 @@ static menu_result_t activate(uint32_t now) {
         case N_POWER:
         case N_CLOCK:
         case N_BATT:
+        case N_FONT:   /* 10-28: Back, Small, Large */
             if (node == N_CLOCK) {
                 /* About's bytes: read afresh. Its examples repaint whole:
                  * rows a quick re-entry left committed could alias (codex). */
@@ -2046,7 +2237,7 @@ static menu_result_t activate(uint32_t now) {
                 env_batt_t b;
                 env_batt_facts(&b);
                 pg.batt_ready = batt_hours_ready(&b) ? 1u : 0u;
-                ms_invalidate_rows(S_ROW0 + 1u, MENU_ROWS - 1u);
+                ms_invalidate_rows(S_ROW0 + 1u, ROWS - 1u);
             }
             push(node, saved_row(node));
             show(false, false, now);
@@ -2133,7 +2324,7 @@ static menu_result_t activate(uint32_t now) {
             }
             uint8_t a = pfs_active();   /* P5d: on the active slot's row, else the first (Save new, none saved) */
             push(N_PROFILES, (uint8_t)(1u + (a < PROF_SLOTS ? pfs_rank(a) : 0u)));
-            enter_named(S_ROW0 + 1u, MENU_ROWS - 1u, now);
+            enter_named(S_ROW0 + 1u, ROWS - 1u, now);
             return MENU_NONE;
         }
         case N_PSLOT: {   /* a saved slot: its page, on Load */
@@ -2165,7 +2356,7 @@ static menu_result_t activate(uint32_t now) {
                 if (st == PROF_OK) {   /* saved from the live settings: active, no `*`; its row the cursor's */
                     pfs       = (uint16_t)(v | (1u << s) | ((uint16_t)s << 8));
                     f->cursor = (uint8_t)(1u + pfs_rank(s));
-                    f->top    = (uint8_t)(f->cursor / MENU_ROWS * MENU_ROWS);
+                    f->top    = (uint8_t)(f->cursor / ROWS * ROWS);
                 } else {
                     pfs_flags |= PFS_STALE;
                 }
@@ -2248,7 +2439,7 @@ static menu_result_t pconfirm_click(uint32_t now) {
     depth = (uint8_t)(depth - 2u);   /* the confirm and the slot's page */
     prof_list_fit(cur());            /* P5d: the deleted row's index, now the next row's */
     retitle(now);
-    ms_set_layout(&L_LIST, false);
+    ms_set_layout(l_list(), false);
     return MENU_NONE;
 }
 
@@ -2274,9 +2465,10 @@ static uint16_t rename_sig(uint8_t i) {
     return (uint16_t)(0x5000u | ((uint16_t)strnlen(pg.name, PROF_NAME) << 8) | (h & 0xFFu));
 }
 static void rename_line(uint8_t i, char *out, size_t sz) {
-    static const char *const keys[3] = {"Type a name", "Enter, click: save", "Esc, hold: cancel"};
+    static const char *const keys[2][3] = {{"Type a name", "Enter, click: save", "Esc, hold: cancel"},
+                                           {"Type a name", "Enter: save", "Esc: cancel"}};
     if (i) {
-        snprintf(out, sz, "%s", keys[(i - 1u) % 3u]);
+        snprintf(out, sz, "%s", keys[large()][(i - 1u) % 3u]);
         return;
     }
     size_t n = strnlen(pg.name, PROF_NAME);
@@ -2340,15 +2532,16 @@ menu_result_t menu_input(int8_t turns, mi_latch_t latch, uint32_t now) {
             int16_t c = (int16_t)((f->cursor + turns) % (int16_t)n);
             if (c < 0) c += n;
             f->cursor = (uint8_t)c;
-            f->top    = (uint8_t)(f->cursor / MENU_ROWS * MENU_ROWS);   /* lists page by 8 */
+            f->top    = (uint8_t)(f->cursor / ROWS * ROWS);   /* lists page by a screen */
             if (is_preview(f->node)) {   /* P1b: the option under the cursor shows at once; on Back, the old value */
                 uint8_t val, node = row_node(f->node, f->cursor, &val);
                 me_preview(node == N_BACK ? me_saved() : option_value(node, val));
             }
             ms_retarget();
-        } else if (is_topic(f->node)) {
-            int16_t lines = topic_lines(f->node), maxtop = lines > MENU_ROWS ? (int16_t)(lines - MENU_ROWS) : 0;
-            int16_t t     = (int16_t)(f->top + (turns > 0 ? MENU_ROWS : -MENU_ROWS));
+        } else if (is_topic(f->node) || f->node == N_ABOUT) {   /* About scrolls in Large (10-28); Small's fits */
+            int16_t lines  = f->node == N_ABOUT ? ABOUT_LINES : topic_lines(f->node);
+            int16_t maxtop = lines > ROWS ? (int16_t)(lines - ROWS) : 0;
+            int16_t t      = (int16_t)(f->top + (turns > 0 ? ROWS : -ROWS));
             if (t < 0) t = 0;
             if (t > maxtop) t = maxtop;
             if (t != f->top) {
@@ -2390,6 +2583,7 @@ menu_result_t menu_input(int8_t turns, mi_latch_t latch, uint32_t now) {
                     flash(T_PBUSY, now);
                     return MENU_NONE;
                 }
+                menu_font_set(ENV_FONT_LARGE);   /* 10-28: the default face too; the confirm re-lays out in it */
                 pfs_flags |= PFS_STALE;
                 confirm_page = 1;
                 flash(T_DEFAULTS_DONE, now);
@@ -2497,9 +2691,9 @@ void menu_tick(uint32_t now, uint32_t idle_ms) {
         pv_show(PV_LIVE);   /* P5e: a restore's pop, out of Profiles */
         depth           = 1;
         stack[0].cursor = row_index(N_TOP, row);
-        stack[0].top    = (uint8_t)(stack[0].cursor / MENU_ROWS * MENU_ROWS);
+        stack[0].top    = (uint8_t)(stack[0].cursor / ROWS * ROWS);
         retitle(now);
-        if (is_confirm(n)) ms_set_layout(&L_LIST, false);
+        if (is_confirm(n)) ms_set_layout(l_list(), false);
         else ms_retarget();
         moved = false;
     }
@@ -2531,7 +2725,7 @@ void menu_tick(uint32_t now, uint32_t idle_ms) {
         uint8_t ready = batt_hours_ready(&b) ? 1u : 0u;
         if (ready != pg.batt_ready) {
             pg.batt_ready = ready;
-            ms_invalidate_rows(S_ROW0 + 1u, MENU_ROWS - 1u);
+            ms_invalidate_rows(S_ROW0 + 1u, ROWS - 1u);
         }
     }
 #ifdef MENU_WTEST

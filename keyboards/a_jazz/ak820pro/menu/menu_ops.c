@@ -85,6 +85,18 @@ void menu_screen_invalidate(void) {
     else fx_invalidate();
 }
 
+/* 10-28 (plans/MENU-8X16-PLAN.md, B5): the Font page, Reset settings and a
+ * host's restore of the live record all come here. The menu re-lays out only
+ * while the configuration menu itself holds the panel (not the fixture's
+ * session, not one under the debug page, which rebuilds the menu when it comes
+ * back); the song text repaints in the new face, whoever holds the panel. */
+void menu_font_set(uint8_t font) {
+    if (font == env_font()) return;
+    env_font_set(font);
+    if (menu_kind == MK_MENU && OWNER_MENU_OPEN()) menu_refont();
+    env_text_refont();
+}
+
 void menu_note_loss(void) {
     if (losses_seen < 0xFFu) losses_seen++;
 }
