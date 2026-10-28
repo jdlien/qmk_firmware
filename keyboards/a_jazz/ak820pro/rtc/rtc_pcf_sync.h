@@ -111,8 +111,15 @@ static inline bool pcf_sync_retry_due(const pcf_sync_t *s, uint32_t now_s) {
  * early one; the PCF stays stale until it lands, which only a power loss
  * meanwhile would see, and the host's next sync corrects that. JD: "Update
  * the clock, only write the RTC when we sleep or after a pretty long
- * no-typing delay." */
+ * no-typing delay."
+ *
+ * Only while a host keeps the clock: a stale or pending PCF stops the
+ * board's own discipline against it (rtc.c's RTC_AUTO_CALIBRATION), so
+ * with no host set for PCF_SYNC_HOST_QUIET_S (three of the daemon's
+ * 5-minute periods; unplugged, no radio clock) the write goes, lit or not,
+ * before the board's free-running drift reaches the PCF (codex). */
 #define PCF_SYNC_UNSEEN_IDLE_MS 600000u
-static inline bool pcf_sync_may_start(bool dark, uint32_t idle_ms) {
-    return dark || idle_ms >= PCF_SYNC_UNSEEN_IDLE_MS;
+#define PCF_SYNC_HOST_QUIET_S   900u
+static inline bool pcf_sync_may_start(bool dark, uint32_t idle_ms, uint32_t host_quiet_s) {
+    return dark || idle_ms >= PCF_SYNC_UNSEEN_IDLE_MS || host_quiet_s >= PCF_SYNC_HOST_QUIET_S;
 }

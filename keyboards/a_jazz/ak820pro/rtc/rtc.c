@@ -1509,17 +1509,33 @@ static void ps_fail(void)
     else { ps_state = PS_IDLE; pcf_sync_gave_up(&pcfs, rtc_seconds_count); pcf_backoff = true; pcf_backoff_until = rtc_seconds_count + 60; }
 }
 
+#ifdef AK820_DEV_HOOKS
+static bool burst_active(void);
+#endif
+/* May a pending write start (rtc_pcf_sync.h)? Nobody watching the LEDs, or
+ * no host keeping the clock (no set since boot or a wake counts as none);
+ * on dev builds also an armed bench burst, which reads only once the
+ * write is done (codex). */
+static bool pcf_start_ok(void)
+{
+#ifdef AK820_DEV_HOOKS
+    if (burst_active()) return true;
+#endif
+    uint32_t quiet = host_synced ? rtc_seconds_count - last_sync_secs : UINT32_MAX;
+    return pcf_sync_may_start(sn32f2xx_led_committed_dark(), last_input_activity_elapsed(), quiet);
+}
+
 /* One state step; returns after at most one I2C transaction. */
 static void pcf_machine_step(void)
 {
     switch (ps_state) {
     case PS_IDLE:
         if (!pcf_pending) return;
-        /* Only the start waits for nobody watching (rtc_pcf_sync.h): a run
+        /* Only the start waits for nobody watching (pcf_start_ok()): a run
          * under way finishes, so STOP is never held while the lights are on.
          * The sleep waits on the pending write and on the dark both, so the
          * write comes first. */
-        if (!pcf_sync_may_start(sn32f2xx_led_committed_dark(), last_input_activity_elapsed())) return;
+        if (!pcf_start_ok()) return;
         if (pcf_backoff) {
             if ((int32_t)(rtc_seconds_count - pcf_backoff_until) < 0) return;
             pcf_backoff = false;
