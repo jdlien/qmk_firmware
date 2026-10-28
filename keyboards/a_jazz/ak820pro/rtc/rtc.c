@@ -1524,7 +1524,13 @@ static bool pcf_start_ok(void)
 #endif
     static uint8_t idle_at;     /* the second it was read, its low byte (RAM: the heap gap's floor) */
     static bool    idle_long;   /* PCF_SYNC_UNSEEN_IDLE_MS without input, then */
-    bool usb_rate = ref_state == REF_SOF, dark = sn32f2xx_led_committed_dark();
+    /* The bus read here too, not only through ref_state: rtc_task() (which
+     * moves ref_state, from usb_active_mirror) is skipped while an animation
+     * plays, and a cable pulled then must still let the write go (codex). */
+    chSysLock();
+    bool usb_live = usbGetDriverStateI(&USBD1) == USB_ACTIVE;
+    chSysUnlock();
+    bool usb_rate = ref_state == REF_SOF && usb_live, dark = sn32f2xx_led_committed_dark();
     if (usb_rate && !dark && (uint8_t)rtc_seconds_count != idle_at) {
         idle_at   = (uint8_t)rtc_seconds_count;
         idle_long = last_input_activity_elapsed() >= PCF_SYNC_UNSEEN_IDLE_MS;
