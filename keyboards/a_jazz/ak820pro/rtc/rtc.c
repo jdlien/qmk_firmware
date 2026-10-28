@@ -1522,13 +1522,18 @@ static bool pcf_start_ok(void)
 #ifdef AK820_DEV_HOOKS
     if (burst_active()) return true;
 #endif
-    static uint32_t idle_at = 0, idle_ms = 0;
+    static uint8_t idle_at;     /* the second it was read, its low byte (RAM: the heap gap's floor) */
+    static bool    idle_long;   /* PCF_SYNC_UNSEEN_IDLE_MS without input, then */
     bool usb_rate = ref_state == REF_SOF, dark = sn32f2xx_led_committed_dark();
-    if (usb_rate && !dark && rtc_seconds_count != idle_at) {
-        idle_at = rtc_seconds_count;
-        idle_ms = last_input_activity_elapsed();
+    if (usb_rate && !dark && (uint8_t)rtc_seconds_count != idle_at) {
+        idle_at   = (uint8_t)rtc_seconds_count;
+        idle_long = last_input_activity_elapsed() >= PCF_SYNC_UNSEEN_IDLE_MS;
     }
-    return pcf_sync_may_start(usb_rate, dark, idle_ms);
+    bool ok = pcf_sync_may_start(usb_rate, dark, idle_long ? PCF_SYNC_UNSEEN_IDLE_MS : 0u);
+    /* Read afresh for the next write: an old reading never starts one (a
+     * low byte that matches by chance waits a second instead). */
+    if (ok) idle_long = false;
+    return ok;
 }
 
 /* One state step; returns after at most one I2C transaction. */
