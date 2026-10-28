@@ -113,13 +113,15 @@ static inline bool pcf_sync_retry_due(const pcf_sync_t *s, uint32_t now_s) {
  * the clock, only write the RTC when we sleep or after a pretty long
  * no-typing delay."
  *
- * Only while a host keeps the clock: a stale or pending PCF stops the
- * board's own discipline against it (rtc.c's RTC_AUTO_CALIBRATION), so
- * with no host set for PCF_SYNC_HOST_QUIET_S (three of the daemon's
- * 5-minute periods; unplugged, no radio clock) the write goes, lit or not,
- * before the board's free-running drift reaches the PCF (codex). */
+ * Only while USB's SOF owns the rate (rtc.c's REF_SOF): there the PCF is
+ * write-only (the board's own discipline against it stands down, and a
+ * deep sleep is refused on USB), so a late write costs nothing until the
+ * cable goes. Then the reference leaves REF_SOF within 100 ms and the write
+ * goes at once, before that discipline, which waits on a pending or stale
+ * PCF, resumes against it (codex, two rounds: a host-quiet timer left it
+ * off for minutes, and a sleep's correction aged the timer). Off USB the
+ * writes come as before, after each radio clock sync too. */
 #define PCF_SYNC_UNSEEN_IDLE_MS 600000u
-#define PCF_SYNC_HOST_QUIET_S   900u
-static inline bool pcf_sync_may_start(bool dark, uint32_t idle_ms, uint32_t host_quiet_s) {
-    return dark || idle_ms >= PCF_SYNC_UNSEEN_IDLE_MS || host_quiet_s >= PCF_SYNC_HOST_QUIET_S;
+static inline bool pcf_sync_may_start(bool usb_rate, bool dark, uint32_t idle_ms) {
+    return !usb_rate || dark || idle_ms >= PCF_SYNC_UNSEEN_IDLE_MS;
 }

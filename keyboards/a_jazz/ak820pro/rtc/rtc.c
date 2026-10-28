@@ -1512,17 +1512,23 @@ static void ps_fail(void)
 #ifdef AK820_DEV_HOOKS
 static bool burst_active(void);
 #endif
-/* May a pending write start (rtc_pcf_sync.h)? Nobody watching the LEDs, or
- * no host keeping the clock (no set since boot or a wake counts as none);
- * on dev builds also an armed bench burst, which reads only once the
- * write is done (codex). */
+/* May a pending write start (rtc_pcf_sync.h)? Off USB's rate at once;
+ * on it, nobody watching the LEDs. On dev builds also an armed bench
+ * burst, which reads only once the write is done (codex). The idle time
+ * is read once a second: timer_elapsed32() is a 64-bit divide here
+ * (~250 us), and a write can wait for hours. */
 static bool pcf_start_ok(void)
 {
 #ifdef AK820_DEV_HOOKS
     if (burst_active()) return true;
 #endif
-    uint32_t quiet = host_synced ? rtc_seconds_count - last_sync_secs : UINT32_MAX;
-    return pcf_sync_may_start(sn32f2xx_led_committed_dark(), last_input_activity_elapsed(), quiet);
+    static uint32_t idle_at = 0, idle_ms = 0;
+    bool usb_rate = ref_state == REF_SOF, dark = sn32f2xx_led_committed_dark();
+    if (usb_rate && !dark && rtc_seconds_count != idle_at) {
+        idle_at = rtc_seconds_count;
+        idle_ms = last_input_activity_elapsed();
+    }
+    return pcf_sync_may_start(usb_rate, dark, idle_ms);
 }
 
 /* One state step; returns after at most one I2C transaction. */
