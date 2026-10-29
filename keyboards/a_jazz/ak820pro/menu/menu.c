@@ -1495,9 +1495,10 @@ _Static_assert(BULB_CHUNK_W * ROWH_L * 2u <= MB_PASS_BYTES, "the bulb: one piece
 static bool row_bulb(const row_t *x) {
     return x->kind == RK_ITEM && ((x->node >= N_POW0 && x->node <= N_POW3) || (x->node == N_POWER && large()));
 }
+static uint8_t title_chunks(void);   /* 10-28: Large's icons, below */
 static uint8_t l_chunks(uint8_t s) {
     if (s == S_SEP || s == S_BAR) return 1;
-    if (!is_row(s)) return 2;
+    if (!is_row(s)) return title_chunks();
     row_t   x = row_at((uint8_t)(s - S_ROW0));
     uint8_t n = row_ruled(&x) || row_icon_colour(&x) != 0 ? 4 : 3;   /* the rule, or a split row's icon chunk */
     return row_bulb(&x) ? (uint8_t)(n + 1u) : n;                    /* the bulb first */
@@ -1529,6 +1530,7 @@ static uint8_t l_pieces(uint8_t s, uint8_t c) {
         c--;
     }
     if (s == S_SEP || s == S_BAR || (is_row(s) && c == 0)) return 1;   /* a row's lead: every pixel row at once */
+    if (s == S_TITLE && c == 2) return 1;                              /* 10-28: Large's title's icon, one piece */
     if (is_row(s) && c == RULE_CHUNK) {                               /* the summary's rule: one fill */
         row_t x = row_at((uint8_t)(s - S_ROW0));
         if (row_ruled(&x)) return 1;
@@ -1552,12 +1554,73 @@ _Static_assert(2u * MT_CELL_W * MT_CELL_H * 2u <= MB_PASS_BYTES && ((2u * MT_CEL
 _Static_assert((MT_CELL_H_L - 1u + RPP_ - 1u) / RPP_ == (MT_CELL_H_L + RPP_ - 1u) / RPP_,
                "Large's title (15 rows) takes the pieces of a full line: c_pieces() and e_pieces() count by the title");
 
+/* --- Large's icons: 12 px in four greys (10-28) -----------------------------
+ * The set JD drew with ak820-pro-90: its packed table, made by `icons12.py
+ * pack` in ~/Documents/ak820pro-icons/tools and copied here verbatim
+ * (graphics/res/icons12_2bpp.h; plans/MENU-8X16-PLAN.md, "After this
+ * build"). Terminus Bold's face draws them in place of its 1-bit icon codes
+ * in the two places an icon has cells of its own: a row's cells 0-1 (the
+ * split row's chunk) and a title's (a chunk of its own after the text's).
+ * Each is a 16 x 16 cell at 2 bpp, the icon on its pixels 1-12; level n is
+ * the icon's colour at n/3 a channel over the black background, so the
+ * colours stay the 1-bit set's (white, the lit row's, the saved green, a
+ * slot's link). Back's and a page's triangles, one cell in the text, stay
+ * the face's 1-bit glyphs, as does Cozette's whole set. */
+#include "../graphics/res/icons12_2bpp.h"
+#define ICON12_NONE 0xFFu
+/* Each icon's code in the face (its first, for a two-cell one); NULL: not
+ * drawn from the set (the triangles, above). */
+static const char *const icon12_code[ICONS12_N] = {
+    [ICON12_LIGHTING] = MT_I_LIGHT,   [ICON12_SCREEN] = MT_I_SCREEN,       [ICON12_CONNECTION] = MT_I_CONN,
+    [ICON12_POWER] = MT_I_POWER,      [ICON12_INDICATORS] = MT_I_IND,      [ICON12_CLOCK] = MT_I_CLOCK,
+    [ICON12_BATTERY] = MT_I_BATT,     [ICON12_PROFILES] = MT_I_PROF,       [ICON12_BOOTLOADER] = MT_I_BOOT,
+    [ICON12_RESET_SETTINGS] = MT_I_RESET, [ICON12_DIAGNOSTICS] = MT_I_DIAG, [ICON12_HELP] = MT_I_HELP,
+    [ICON12_ABOUT] = MT_I_ABOUT,      [ICON12_EXIT] = MT_I_EXIT,           [ICON12_LOAD] = MT_I_LOAD,
+    [ICON12_SAVE] = MT_I_SAVE,        [ICON12_RENAME] = MT_I_RENAME,       [ICON12_DELETE] = MT_I_DELETE,
+    [ICON12_SAVED] = MT_CHECK_BOX,    [ICON12_TRYING] = MT_I_WAIT,         [ICON12_FAILED] = MT_I_FAIL,
+    [ICON12_MENU_TITLE] = MT_WRENCH,  [ICON12_FONT] = MT_I_FONT,
+};
+static uint8_t icon12_of(uint8_t code) {
+    for (uint8_t i = 0; i < ICONS12_N; i++)
+        if (icon12_code[i] && (uint8_t)icon12_code[i][0] == code) return i;
+    return ICON12_NONE;
+}
+/* The current title's icon in the set, Large only. */
+static uint8_t title_icon12(void) {
+    if (!large()) return ICON12_NONE;
+    const char *ic = title_icon(title_id);
+    return ic[0] ? icon12_of((uint8_t)ic[0]) : ICON12_NONE;
+}
+/* A title's chunks: its halves, and its icon after them in Large. */
+static uint8_t title_chunks(void) { return title_icon12() != ICON12_NONE ? 3u : 2u; }
+#define TICON_W (1u + 2u * MT_CELL_W_L)   /* 17: the title's 1 px lead and the icon's two cells */
+_Static_assert(TICON_W * (MT_CELL_H_L - 1u) * 2u <= MB_PASS_BYTES, "a title's icon: one piece (510 B)");
+_Static_assert(ICONS12_N == 25 && ICON12_FONT == 24, "the set: 25 icons, Font last");
+static uint16_t lv_scale(uint16_t c, uint8_t n) {   /* n/3 of each channel, to the nearest */
+    uint16_t r = (uint16_t)(((c >> 11) * n + 1u) / 3u), g = (uint16_t)((((c >> 5) & 63u) * n + 1u) / 3u),
+             b = (uint16_t)(((c & 31u) * n + 1u) / 3u);
+    return (uint16_t)((r << 11) | (g << 5) | b);
+}
+typedef struct { uint8_t icon, dx, dy; uint16_t lv[4]; } icon12_ctx_t;   /* dx, dy: the cell's place in the piece */
+static void icon12_row(const void *v, uint16_t row, uint16_t *px, uint16_t w) {
+    const icon12_ctx_t *k   = v;
+    const uint8_t      *src = icons12[k->icon] + (uint16_t)(row + k->dy) * 4u;
+    for (uint16_t i = 0; i < w; i++) {
+        uint16_t x = (uint16_t)(i - k->dx);   /* wraps below dx: blank */
+        px[i]      = x < 16u ? k->lv[(src[x >> 2] >> (6u - 2u * (x & 3u))) & 3u] : 0u;
+    }
+}
+static bool icon12_paint(uint8_t icon, uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint8_t dx, uint8_t dy, uint16_t fg) {
+    icon12_ctx_t k = {icon, dx, dy, {0u, MB_PANEL(lv_scale(fg, 1)), MB_PANEL(lv_scale(fg, 2)), MB_PANEL(fg)}};
+    return mb_rows(x, y, w, h, icon12_row, &k);
+}
+
 /* One piece of a COLS-cell text slot at y: chunk c, piece p's pixel rows. A
  * row (`row`) has the 4 px lead, with `cursor` (a code, or 0) in it in
  * `cursor_fg`; the title and the confirm's lines a 1 px one. g0: the first
  * glyph row drawn, at y (Large's title, 1: its rows 1-15 at y 0-14). */
 static ms_paint_t text_piece(const char *cells, uint16_t y, bool row, uint8_t cursor, uint16_t cursor_fg, uint8_t c,
-                             uint8_t p, uint16_t fg, uint16_t icon_fg, bool bulb, uint8_t g0) {
+                             uint8_t p, uint16_t fg, uint16_t icon_fg, bool bulb, uint8_t g0, bool ticon) {
     const uint8_t  lead  = row ? ROW_LEAD : 1u;
     const uint8_t  fc    = face(), cw = mt_cell_w(fc), ch = (uint8_t)(mt_cell_h(fc) - g0);
     mt_line_t      l     = {cells, COLS, lead, 1, false, false, cursor, fc};
@@ -1566,9 +1629,9 @@ static ms_paint_t text_piece(const char *cells, uint16_t y, bool row, uint8_t cu
     const bool     ic    = split && c == 1;            /* that chunk */
     const uint8_t  k     = split && c > 1 ? (uint8_t)(c - 1u) : c;   /* the halves' chunk, as unsplit */
     uint16_t       c0, w;                              /* the chunk's line columns, [c0, c0 + w) */
-    if (!row) {                            /* [0, 61), [61, 122) */
-        c0 = c ? (uint16_t)(lead + HALF_W) : 0u;
-        w  = c ? (uint16_t)(HALF_W + 1u) : (uint16_t)(lead + HALF_W);
+    if (!row) {                            /* [0, 61), [61, 122); a title with its icon in greys: [17, 61) */
+        c0 = c ? (uint16_t)(lead + HALF_W) : ticon ? (uint16_t)(lead + 2u * cw) : 0u;
+        w  = c ? (uint16_t)(HALF_W + 1u) : (uint16_t)(lead + HALF_W - c0);
     } else if (lc) {                       /* [0, 4) */
         c0 = 0;
         w  = lead;
@@ -1578,6 +1641,11 @@ static ms_paint_t text_piece(const char *cells, uint16_t y, bool row, uint8_t cu
     } else {                               /* [4, 64), [64, 125); split: [16, 64), Large's [20, 64); a bulb's row: [64, 111) */
         c0 = k == 1 ? (uint16_t)(lead + (split ? 2u * cw : 0u)) : (uint16_t)(lead + HALF_W);
         w  = k == 1 ? (uint16_t)(split ? SPLIT_W : HALF_W) : bulb ? (uint16_t)(BULB_X - (TEXT_X - lead + c0)) : (uint16_t)(HALF_W + 1u);
+    }
+    if (ic && large()) {                   /* 10-28: the set's icon, in greys */
+        uint8_t k = icon12_of((uint8_t)cells[0]);
+        if (k != ICON12_NONE)
+            return icon12_paint(k, (uint16_t)(TEXT_X - lead + c0), y, w, ch, 0, g0, icon_fg) ? MS_PAINT_DONE : MS_PAINT_FAILED;
     }
     const uint8_t  rpp  = split && c == 2 ? rows_per_split() : rows_per_piece();   /* as l_pieces() */
     const bool     all  = lc || ic;        /* one piece, every pixel row */
@@ -1611,6 +1679,11 @@ static ms_paint_t l_paint(uint8_t s, uint8_t c, uint8_t p) {
         cells[N]       = '\0';
         char        nm[PROF_NAME + 1];
         const char *ic = title_icon(title_id), *tt = title_text(title_id);
+        const uint8_t k = title_icon12();
+        if (k != ICON12_NONE && c == 2)   /* 10-28: the icon in greys, its rows 1-15 as the text's */
+            return icon12_paint(k, TEXT_X - 1u, 0, TICON_W, (uint16_t)(MT_CELL_H_L - geo()->title_r0), 1, geo()->title_r0,
+                                pal[MP_WHITE])
+                       ? MS_PAINT_DONE : MS_PAINT_FAILED;
         if (title_id >= T_PSLOT0 && title_id < T_PSLOT0 + PROF_SLOTS) {   /* P5b: a slot's page, its name */
             uint8_t rec[PROF_REC], s = (uint8_t)(title_id - T_PSLOT0);
             if (!prof_slot(s, rec)) rec[PR_FIELDS] = 0;
@@ -1619,10 +1692,11 @@ static ms_paint_t l_paint(uint8_t s, uint8_t c, uint8_t p) {
             tt = nm;
         }
         size_t      ni = strlen(ic), n = strlen(tt);
-        if (large() && ni + n > N && ni && ic[ni - 1u] == ' ') ni--;   /* Large: the icon's space goes first (the mock-up's) */
+        if (k != ICON12_NONE) ni = 2;   /* Large: the icon's two cells, painted by chunk 2; the text from cell 2 */
+        else if (large() && ni + n > N && ni && ic[ni - 1u] == ' ') ni--;   /* Large: the icon's space goes first (the mock-up's) */
         memcpy(cells, ic, ni);
         memcpy(cells + ni, tt, n > N - ni ? N - ni : n);
-        return text_piece(cells, 0, false, 0, 0, c, p, pal[MP_WHITE], 0, false, geo()->title_r0);
+        return text_piece(cells, 0, false, 0, 0, c, p, pal[MP_WHITE], 0, false, geo()->title_r0, k != ICON12_NONE);
     }
     row_t x = row_at((uint8_t)(s - S_ROW0));
     if (row_bulb(&x)) {   /* 10-27: chunk 0 the bulb, the row's own after it */
@@ -1645,7 +1719,7 @@ static ms_paint_t l_paint(uint8_t s, uint8_t c, uint8_t p) {
                                      : pal[MP_DIM];
     /* The cursor (JD, 10-24): in the lit row's lead, in its own colour. */
     return text_piece(cells, (uint16_t)(ROW_Y0 + (s - S_ROW0) * ROW_H), true, x.lit ? (uint8_t)MT_CURSOR[0] : 0u,
-                      pal[MP_CURSOR], c, p, fg, row_icon_colour(&x), row_bulb(&x), 0);
+                      pal[MP_CURSOR], c, p, fg, row_icon_colour(&x), row_bulb(&x), 0, false);
 }
 
 /* A Clock example's tick (10-25): the right half only, its cells 10-19 and
@@ -1751,7 +1825,7 @@ static uint16_t c_sig(uint8_t s) {
     return (uint16_t)((n == N_BOOT ? 0x200u : n == N_DEFAULTS ? 0x700u : 0x100u) | ((uint16_t)confirm_page << 4) |
                       (uint16_t)(s - 2u));
 }
-static uint8_t c_chunks(uint8_t s) { return s == 1 ? 1 : 2; }
+static uint8_t c_chunks(uint8_t s) { return s == 1 ? 1 : s == 0 ? title_chunks() : 2; }
 static uint8_t c_pieces(uint8_t s, uint8_t c) { return l_pieces(s == 1 ? S_SEP : S_TITLE, c); }
 static ms_paint_t c_paint(uint8_t s, uint8_t c, uint8_t p) {
     if (s <= 1) return l_paint(s, c, p);
@@ -1768,7 +1842,8 @@ static ms_paint_t c_paint(uint8_t s, uint8_t c, uint8_t p) {
                   (node == N_BOOT ? boot_lines : node == N_DEFAULTS ? defaults_lines : c_lines)[w][confirm_page & 1u][i]);
     size_t n = strlen(buf);
     memcpy(cells, buf, n > N ? N : n);
-    return text_piece(cells, (node == N_CONNINFO ? geo()->info_y : geo()->c_y)[i], false, 0, 0, c, p, pal[MP_WHITE], 0, false, 0);
+    return text_piece(cells, (node == N_CONNINFO ? geo()->info_y : geo()->c_y)[i], false, 0, 0, c, p, pal[MP_WHITE], 0, false, 0,
+                      false);
 }
 static const ms_layout_t L_CONFIRM = {6, c_sig, c_chunks, c_pieces, c_paint, 0, 0, 0};
 
@@ -1916,7 +1991,7 @@ static uint8_t e_chunks(uint8_t s) {
     if (s == S_SEP) return 1;
     uint8_t vs = e_value_slot();
     if (s >= 2 && s < vs) return 1;
-    return s == vs ? VAL_CELLS : 2;   /* the value: a glyph a chunk; the title and the hints: half rows */
+    return s == vs ? VAL_CELLS : s == S_TITLE ? title_chunks() : 2;   /* the value: a glyph a chunk; the title and the hints: half rows */
 }
 static uint8_t e_pieces(uint8_t s, uint8_t c) {
     uint8_t vs = e_value_slot();
@@ -1938,7 +2013,8 @@ static ms_paint_t e_paint(uint8_t s, uint8_t c, uint8_t p) {
     memset(cells, ' ', COLS);
     cells[COLS] = '\0';
     memcpy(cells, ln, strlen(ln));
-    return text_piece(cells, (uint16_t)(HINT_Y0 + (s - vs - 1u) * ROW_H), false, 0, 0, c, p, pal[MP_WHITE], 0, false, 0);
+    return text_piece(cells, (uint16_t)(HINT_Y0 + (s - vs - 1u) * ROW_H), false, 0, 0, c, p, pal[MP_WHITE], 0, false, 0,
+                      false);
 }
 static const ms_layout_t L_RANGE = {2 + BAR_N + 1 + 3, e_sig, e_chunks, e_pieces, e_paint, 0, 0, 0};
 static const ms_layout_t L_HUE   = {2 + ENV_N + 1 + 3, e_sig, e_chunks, e_pieces, e_paint, 0, 0, 0};
