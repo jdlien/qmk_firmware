@@ -325,10 +325,12 @@ static void recovery_begin(uint8_t reason);
  * needs is not measured either: do not shorten the wait without measuring
  * it. noinline and long_call: the call from the flash is a blx to SRAM.
  *
- * `phase` and `waking` (10-28): the watchdog record's path and the word that
- * says "woke, no flash fetched yet" (WDT_SITE_DS_WAKING), both in registers,
- * so the store needs nothing from the flash. A reset that reads it is one
- * where the core woke and never ran flash code again: this wait's class. */
+ * `phase` and `waking` (10-28): the watchdog record's path and its word for
+ * WDT_SITE_DS_WAKING, both in registers, so the store needs nothing from the
+ * flash. A reset that reads it: this marker was stored after the WFI and the
+ * next one (27, in the loop, after the return to the flash) was not. That
+ * spans the wait, the flash read and the return; it points at this wait's
+ * class without proving it (codex, ds-phase review). */
 static const uint32_t ds_flash_word = 0x5A5AA5A5u;
 
 __attribute__((section(".ramtext"), noinline, long_call)) static void ds_deep_wfi(volatile uint32_t *pmu_ctrl, const volatile uint32_t *flash,
@@ -362,25 +364,13 @@ typedef struct __attribute__((packed)) {
 } wake_entry_t;
 _Static_assert(sizeof(wake_entry_t) == 26, "an entry and the count fill 28 bytes");
 /* Kept through a reset (10-28): .ram0's no-init part, which crt0 does not
- * clear (ChibiOS rules_memory.ld), checked at boot by ds_keep_boot() below.
- * After a reset the entries before it stay readable, and the ring goes on
- * from the same count; `ms` restarts with the boot. */
+ * clear (ChibiOS rules_memory.ld), checked at every boot by ds_keep_boot()
+ * below. After a reset the entries before it stay readable, and the ring goes
+ * on from the same count; `ms` restarts with the boot. wake_seq is the next
+ * sleep's sequence number, reserved at its teardown (ds_last_begin()). */
 #define DS_KEPT __attribute__((section(".ram0")))
 static wake_entry_t wake_ring[8] DS_KEPT;
 static uint16_t     wake_seq DS_KEPT;
-
-static void wake_ring_put(uint32_t counted) {
-    wake_entry_t *e = &wake_ring[wake_seq % 8u];
-    e->seq     = wake_seq++;
-    e->reason  = ds_reason;
-    e->flags   = ds_flags;
-    e->counted = counted;
-    e->p0      = ds_p0_ris;
-    e->p1      = ds_p1_ris;
-    e->p2      = ds_p2_ris;
-    e->ms      = timer_read32();
-    e->strays  = ds_strays;
-}
 
 /* The last sleep with a stray (plans/BACKLOG.md, "A stray-wake storm"): what
  * was pending when a WFI first returned with no wake pin and no second, how
@@ -390,7 +380,7 @@ static void wake_ring_put(uint32_t counted) {
  * ISER, ISPR and ICSR clear nothing when read. An empty snapshot means an
  * unexplained return, not proven noise (codex, the stray-diagnostic review). */
 typedef struct __attribute__((packed)) {
-    uint16_t seq;        /* the ring entry this sleep will write */
+    uint16_t seq;        /* the sleep's sequence number (ds_last.seq) */
     uint16_t same_s;     /* strays within the first one's counted second */
     uint32_t first_s;    /* the counted second of the first */
     uint32_t ispr;       /* NVIC->ISPR[0] at the first (enabled: P0-P2 and the RTC) */
@@ -413,7 +403,7 @@ static volatile stray_diag_t stray_diag DS_KEPT;   /* volatile: written in the l
  * the reset, what had woken it, the strays. */
 typedef struct __attribute__((packed)) {
     uint32_t magic;        /* DS_LAST_MAGIC from the teardown on */
-    uint16_t seq;          /* the ring entry this sleep writes at its end */
+    uint16_t seq;          /* reserved at the teardown: its ring entry's and slot 8's */
     uint8_t  reason;       /* SLEEP_WAKE_*: NONE until the loop is left */
     uint8_t  flags;        /* DS_LAST_* */
     uint32_t secs;         /* counted seconds, from the preset, each as it comes */
@@ -421,18 +411,28 @@ typedef struct __attribute__((packed)) {
     uint16_t strays;       /* as they come */
 } ds_last_t;
 _Static_assert(sizeof(ds_last_t) == 26, "op 24's slot 9: the record, then two bytes");
-#define DS_LAST_MAGIC    0x44534C31u   /* "DSL1" */
+#define DS_LAST_MAGIC    0x44534C32u   /* "DSL2", the sequence reserved since codex's review: a new value with any change to these layouts or the ring's */
 #define DS_LAST_CLK_CEIL 0x01u         /* a CLKCFG wait hit its ceiling (a reset follows) */
 #define DS_LAST_PLL_CEIL SLEEP_V_PLL_CEIL
 #define DS_LAST_SLEPT    SLEEP_V_SLEPT
 #define DS_LAST_DONE     0x80u         /* deep_sleep() returned */
 static volatile ds_last_t ds_last DS_KEPT;   /* volatile: in memory at any moment, for a reset */
 static bool      ds_kept_checked, ds_kept;   /* .bss: false at every boot */
+/* The record this boot inherited, frozen at boot until the next reset (op 24
+ * slot 10): on battery the next sleep comes within minutes and replaces slot
+ * 9's, long before anyone reads it (the watchdog record's boot copy is frozen
+ * the same way). .bss: one reset deep, as that is. */
+static ds_last_t ds_inherited;
+static bool      ds_inherited_ok;
 
-/* Once a boot, before the first read or sleep: what the RAM kept is trusted
- * only after a reset that kept the RAM powered (no POR, no LVD) and with the
- * magic in place; otherwise all of it zeroed, as .bss would be. ds_kept says
- * the record is the boot before's, until the next teardown replaces it. */
+/* At every boot, right after the reset's cause is captured
+ * (sleep_boot_check(), ak820pro.c), and again before any read or sleep as a
+ * fallback: what the RAM kept is trusted only after a reset that kept the RAM
+ * powered (no POR, no LVD) and with the magic in place; otherwise all of it
+ * zeroed, as .bss would be. At every boot, not at first use: a POR's garbage
+ * left in place would pass at a later warm reset (codex, ds-phase review).
+ * ds_kept: the record was inherited through a reset and not yet replaced
+ * this boot (it can be several boots old). */
 static void ds_keep_boot(void) {
     if (ds_kept_checked) return;
     ds_kept_checked = true;
@@ -442,13 +442,16 @@ static void ds_keep_boot(void) {
         memset(wake_ring, 0, sizeof(wake_ring));
         memset((void *)&stray_diag, 0, sizeof(stray_diag));
         wake_seq = 0;
+    } else {
+        memcpy(&ds_inherited, (const void *)&ds_last, sizeof(ds_inherited));
+        ds_inherited_ok = true;
     }
 }
 
 static void ds_last_begin(uint32_t preset_s) {
     ds_kept       = false;
     ds_last.magic = DS_LAST_MAGIC;
-    ds_last.seq   = wake_seq;
+    ds_last.seq   = wake_seq++;   /* reserved: a sleep a reset cuts short leaves its number unused (codex) */
     ds_last.reason = SLEEP_WAKE_NONE;
     ds_last.flags = 0;
     ds_last.secs  = preset_s;
@@ -464,6 +467,20 @@ static void ds_last_flag(uint8_t f) {
     ds_last.flags |= f;
 }
 
+static void wake_ring_put(uint32_t counted) {
+    uint16_t      seq = ds_last.seq;   /* reserved at the teardown */
+    wake_entry_t *e   = &wake_ring[seq % 8u];
+    e->seq     = seq;
+    e->reason  = ds_reason;
+    e->flags   = ds_flags;
+    e->counted = counted;
+    e->p0      = ds_p0_ris;
+    e->p1      = ds_p1_ris;
+    e->p2      = ds_p2_ris;
+    e->ms      = timer_read32();
+    e->strays  = ds_strays;
+}
+
 static void stray_note(uint32_t strays, uint32_t secs, uint32_t p0w, uint32_t p1w, uint32_t p2w, uint32_t irqs) {
     uint32_t ispr = NVIC->ISPR[0], icsr = SCB->ICSR;
     if (strays == 0) {
@@ -476,7 +493,7 @@ static void stray_note(uint32_t strays, uint32_t secs, uint32_t p0w, uint32_t p1
         if (SN_GPIO1->RIS & ie1) f |= STRAY_F_MIS(1);
         if (SN_GPIO2->RIS & ie2) f |= STRAY_F_MIS(2);
         if (NVIC->ISER[0] != irqs) f |= STRAY_F_ISER;
-        stray_diag.seq     = wake_seq;
+        stray_diag.seq     = ds_last.seq;
         stray_diag.same_s  = 0;
         stray_diag.first_s = secs;
         stray_diag.ispr    = ispr;
@@ -491,6 +508,12 @@ static void stray_note(uint32_t strays, uint32_t secs, uint32_t p0w, uint32_t p1
 
 bool sleep_wake_ring_fill(uint8_t slot, uint8_t *out) {
     ds_keep_boot();
+    if (slot == 10u) {
+        memcpy(out, &ds_inherited, sizeof(ds_inherited));
+        out[26] = ds_inherited_ok;
+        out[27] = watchdog_boot_rstst();
+        return true;
+    }
     if (slot == 9u) {
         memcpy(out, (const void *)&ds_last, sizeof(ds_last));
         out[26] = ds_kept;
@@ -506,8 +529,12 @@ bool sleep_wake_ring_fill(uint8_t slot, uint8_t *out) {
     memcpy(&out[26], &wake_seq, 2);
     return true;
 }
+void sleep_boot_check(void) {
+    ds_keep_boot();
+}
 #define DS_LAST(...) do { __VA_ARGS__; } while (0)
 #else
+void sleep_boot_check(void) {}
 #define DS_LAST(...) do { } while (0)
 #endif
 

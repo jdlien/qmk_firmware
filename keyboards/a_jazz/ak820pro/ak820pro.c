@@ -93,6 +93,7 @@ void early_hardware_init_post(void) {
     // Reset-cause bookkeeping (consecutive-WDT-reset counter, degraded-mode
     // decision) -- before the watchdog arms, after the console is plumbed.
     watchdog_boot_check();
+    sleep_boot_check();   // dev: what the sleep diagnostics kept through the reset, checked against its cause
 
     // A watchdog recovery is otherwise SILENT in the daily build (no
     // console): say so on the panel, loudly enough to notice, briefly

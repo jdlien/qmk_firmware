@@ -18,6 +18,11 @@
  * recovery's steps, the sleep itself, and the pass budget's mark. */
 void sleep_task(void);
 
+/* At boot, right after watchdog_boot_check(): on dev builds, what op 24's
+ * slots kept through the reset is checked once (sleep.c, ds_keep_boot());
+ * nothing on other builds. */
+void sleep_boot_check(void);
+
 /* The pass budget (plan section 4, "The budget"): system ticks since the
  * pass began. Marked at the end of each pass, so the next pass's count
  * includes its keyboard and raw-HID work, which run before housekeeping.
@@ -105,19 +110,24 @@ void sleep_deep_record(uint8_t *out);
  * the last sleep's. Slot 0..7, 28 bytes, little endian: u16 the entry's
  * sequence number (entry n is in slot n % 8), u8 reason (SLEEP_WAKE_*), u8
  * flags (SLEEP_V_*), u32 counted seconds, u32 the P0, P1 and P2 bits that
- * woke it, u32 the uptime ms after the wake, u16 strays; [26..27] entries
- * written. Slot 8 is the last stray's diagnostic instead (sleep.c,
+ * woke it, u32 the uptime ms after the wake, u16 strays; [26..27] the next
+ * sleep's sequence number (reserved at each teardown since 10-28, so a sleep
+ * a reset cut short leaves a gap). Slot 8 is the last stray's diagnostic instead (sleep.c,
  * stray_diag_t): u16 the entry's sequence number, u16 strays within the first
  * one's counted second, u32 that second, u32 NVIC->ISPR[0] and u32 SCB->ICSR
  * at the first, u16 flags (b0-2 IE outside a port's wake mask, b3-5 RIS & IE
  * outside it, b6 NVIC enabled != the wake set), u16 the strays counted at the
  * latest snapshot, u32 NVIC->ISPR[0] and u32 SCB->ICSR there. Slot 9 is the
  * sleep under way or the last one, written as it goes (10-28): u32 magic
- * 0x44534C31, u16 the ring entry it writes at its end, u8 reason (NONE until
+ * 0x44534C32, u16 its sequence number (its ring entry's), u8 reason (NONE until
  * the loop is left), u8 flags (0x01 a CLKCFG ceiling, 0x20 the PLL's, 0x40
  * slept, 0x80 returned), u32 counted seconds, u32 the P0, P1 and P2 bits that
- * woke it, u16 strays; [26] 1 if it is the boot before's, kept through a
- * reset, [27] this boot's RSTST. The ring, slot 8 and slot 9 survive a reset
- * that kept the RAM powered (no POR or LVD); otherwise they read zero. False
- * for a slot past 9. */
+ * woke it, u16 strays; [26] 1 if it was inherited through a reset and not
+ * yet replaced this boot (it can be several boots old), [27] this boot's
+ * RSTST. The ring, slot 8 and slot 9 survive a reset
+ * that kept the RAM powered (no POR or LVD); otherwise they read zero. Slot
+ * 10 is slot 9 as this boot inherited it, frozen at boot until the next reset
+ * (the next sleep replaces slot 9's within minutes on battery): the same 26
+ * bytes, [26] 1 if there was one, [27] this boot's RSTST. False for a slot
+ * past 10. */
 bool sleep_wake_ring_fill(uint8_t slot, uint8_t *out28);

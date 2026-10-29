@@ -24,10 +24,11 @@ enum watchdog_site {
     /* deep_sleep()'s phases, parent DEEP_SLEEP (10-28: a reset on gremlin's
      * board ~8 min into an untouched sleep named only site 27). Stored
      * straight into the path (watchdog_record_path()), not scoped. */
-    WDT_SITE_DS_ASLEEP = 28,    /* stored before each WFI: the core in it */
-    WDT_SITE_DS_WAKING = 29,    /* stored from SRAM after the WFI: woke, no flash fetched yet */
-    WDT_SITE_DS_RESTORE = 30,   /* the loop left: the clocks and the registers, under the lock */
-    WDT_SITE_DS_UNLOCKED = 31,  /* interrupts back on, to the return (recovery_begin too) */
+    /* Each marks a boundary, not a proven state (codex, ds-phase review): */
+    WDT_SITE_DS_ASLEEP = 28,    /* stored before each WFI; the waking marker not stored since */
+    WDT_SITE_DS_WAKING = 29,    /* stored from SRAM after the WFI; 27, back in the flash, not since */
+    WDT_SITE_DS_RESTORE = 30,   /* stored as the loop is left: the clocks and registers, under the lock */
+    WDT_SITE_DS_UNLOCKED = 31,  /* stored before the unlock, to the return (recovery_begin too) */
     /* 32 + enum loop_site in ak820pro.h; keep that enum append-only too. */
     WDT_SITE_LOOP_BASE = 32
 };
