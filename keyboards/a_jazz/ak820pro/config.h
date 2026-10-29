@@ -470,8 +470,9 @@
  * (Since phase 4.2 the keys' and the menu's level is persisted, deferred and
  * coalesced; this is the level after a flash.)
  *
- * 10-27 (JD's defaults, which the menu's Reset settings applies too): 60, from 42. */
-#define DISPLAY_BRIGHTNESS_DEFAULT 60
+ * 10-27 (JD's defaults, which the menu's Reset settings applies too): 60, from 42.
+ * 10-28 (JD: "the default screen brightness should be about 80"): 80. */
+#define DISPLAY_BRIGHTNESS_DEFAULT 80
 
 // The lock lights' (Caps Lock, Win Lock) default level, 0-100 (indicators.c,
 // indicator_levels.h; the menu's Indicators sets and saves it). They are dimmed
