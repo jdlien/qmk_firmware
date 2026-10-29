@@ -1222,7 +1222,7 @@ static void row_text(const row_t *x, char *out) {
     const bool  w     = large();
     const char *label = x->node == N_EFFOPT   ? env_effect_name(x->val)
                       : x->node == N_LTSOPT   ? (x->val ? "On" : "Off")
-                      : x->node == N_FOPT     ? (x->val == MT_SMALL ? "Small" : "Large")   /* 10-28 */
+                      : x->node == N_FOPT     ? (x->val == MT_SMALL ? "8px" : "10px")   /* the capitals' height; 10-28 */
                       : x->node == N_PAIRNOW  ? (w ? pair_labels_l : pair_labels)[x->val % 3u]
                       : x->node == N_PSLOT    ? pslot_label(x->val, nm)   /* P5b */
 #ifdef MENU_WTEST
@@ -1235,7 +1235,7 @@ static void row_text(const row_t *x, char *out) {
     else if (clk_row(x->node) >= 0 && w) label = clk_row(x->node) < 5 ? clock_example((uint8_t)clk_row(x->node), buf) : "Off";
     else if (clk_row(x->node) >= 0 && clk_row(x->node) < 5) value = clock_example((uint8_t)clk_row(x->node), buf);
     else if (x->node == N_BATT) value = w && x->val % 3u == 0u ? "%" : batt_short[x->val % 3u];
-    else if (x->node == N_FONT) value = x->val == MT_SMALL ? "Small" : "Large";   /* 10-28 */
+    else if (x->node == N_FONT) value = x->val == MT_SMALL ? "8px" : "10px";   /* 10-28 */
     else if (x->node == N_CONN) value = link_names[x->val % 5u];          /* P3 */
     else if (x->node >= N_BT0 && x->node <= N_BT2) value = link_words[x->val % 5u];
     else if (bv_row(x->node) >= 0) value = batt_preview((uint8_t)(bv_row(x->node) + 1), buf);   /* P4 */

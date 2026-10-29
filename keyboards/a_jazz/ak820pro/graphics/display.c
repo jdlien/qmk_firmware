@@ -126,9 +126,11 @@ _Static_assert(PANEL_WIDTH <= 255, "draw_battery() keeps x and widths in a byte"
  * centre in a cell of the same height, so the same holds for it: its lines sit
  * where Cozette's do, and the icon does not move with the face. */
 /* Line pitch for the two-line case: the 13px cell is 14 rows and a glyph blit
- * paints its whole cell, so lines sit exactly one cell apart with no overlap.
- * The cell's 14th row is blank, which is the inter-line gap. */
-#define TEXT_LINE_H     14
+ * paints its whole cell, so line 1 starts a row below line 0's cell: rows 27-40
+ * and 42-55, row 41 left to the band's clears. Was 14, one cell apart; Large's
+ * capitals are two rows taller in the same cell, and at 14 a descender on the
+ * artist's line came within one row of the title's capitals (10-28). */
+#define TEXT_LINE_H     15
 /* The transport icon sits beside LINE 0 only (it is 12px tall in a 14px row),
  * so line 1 starts at the panel edge and gains the gutter back -- 21 glyphs
  * (2 + 21*6 = 128) against line 0's 19. See DISPLAY_TEXT_MAX_L1.
@@ -142,8 +144,9 @@ _Static_assert(PANEL_WIDTH <= 255, "draw_battery() keeps x and widths in a byte"
 
 /* Single-line offsets: where the text CELL starts. The icon is then centred on
  * whichever face is in use -- see the cap-band figures above. */
-#define TEXT_FONT_DY    8    /* 13px face, and Large: the same cell height and cap centre (above) */
-#define TEXT_BIG_DY     2    /* 20px face */
+#define TEXT_FONT_DY    9    /* 13px face, and Large: the same cell height and cap centre (above) */
+#define TEXT_BIG_DY     3    /* 20px face */
+/* Both were a row higher until the band grew two rows at its foot (CLOCK_Y). */
 /* (128 - TEXT_X - 2) / 10px advance = 11 glyphs in the big face. */
 #define TEXT_BIG_MAX    11
 
@@ -369,11 +372,11 @@ static bool display_backlight_init(void) {
  *
  *   0..24    connection strip   25
  *   25..26   gap                 2
- *   27..54   text (2 lines)     28   two 7x14 cells, at 27 and 41
- *   55       gap                 1
- *   56..77   clock              22   Regular-30, CROPPED to its ink
- *   78..81   gap                 4
- *   82..104  lock band          23   20px face
+ *   27..55   text (2 lines)     29   two 14-row cells, at 27 and 42
+ *   56..57   gap                 2
+ *   58..79   clock              22   Regular-30, CROPPED to its ink
+ *   80..82   gap                 3
+ *   83..105  lock band          23   20px face; its last row is the battery's first
  *   105..127 battery            23   20px face
  *
  * SPACING IS SET BY INK, NOT BY BANDS. The 20px cell carries 4 blank rows above
@@ -381,9 +384,13 @@ static bool display_backlight_init(void) {
  * the eye puts the edge. Measured ink-to-ink the rhythm is:
  *
  *   icons -> text   2
- *   text  -> clock  2
- *   clock -> lock   8
- *   lock  -> batt   8
+ *   text  -> clock  2   Large: 3 in Cozette; between the lines 2, Cozette 4
+ *   clock -> lock   7
+ *   lock  -> batt   7
+ *
+ * (10-28: the clock down 2, the lock row down 1 and the line pitch 15, for
+ * Terminus Bold's song lines, whose capitals are 10 rows to Cozette's 8. They
+ * were 1, 1, 8 and 8: the text cramped against itself and the clock.)
  *
  * Those last two read as one visual gap each side of the lock row, and they
  * were 6 and 8 before -- visibly lopsided. Balancing them took THREE coupled
@@ -407,7 +414,7 @@ static bool display_backlight_init(void) {
  * and neither draws a descender (the camera page: digits . : % V < > -). If you
  * ever draw general text at this size, regenerate the atlas at its full 15x34
  * cell and hand these 12 rows back -- do not try to fix it by nudging offsets. */
-#define CLOCK_Y 56
+#define CLOCK_Y 58
 /* 23, not the clock cell's 22: the playback readout uses the 20px face, whose
  * cell is 23 rows, borrowing one row from the 4-row gap below. The clear rect
  * must cover everything either owner can draw, or switching between them
@@ -1533,8 +1540,8 @@ static void debug_restore_step(void) {
              * clock paints its own band in stage 2 (draw_clock, which still
              * clears it when forced) and keeps its shadow current. Nothing
              * else the stages paint lands in the text rows: the logo and the
-             * connection row are y 0-24, the text band 27-55, the clock
-             * 56-78, the locks 82-104 and the battery 105 down. */
+             * connection row are y 0-24, the text band 27-57, the clock
+             * 58-80, the locks 83-105 and the battery 105 down. */
             if (step == DBG_CLEAR_BANDS) shadow_mark_all_blank();
             po_restore_advance();
         }
@@ -2143,10 +2150,10 @@ static void draw_battery(bool force) {
 // disable most hotkeys and nobody would enable it on purpose -- so the label is
 // for the only context where the feature is meaningful. The padlock conveys
 // "disabled"; the label says which key.
-#define LOCK_Y      82
+#define LOCK_Y      83
 #define LOCK_PAD_X  4
 /* 16px padlock inside the 23px band -> LOCK_Y+3 .. LOCK_Y+18, which the clear
- * rect (STATUS_Y - LOCK_Y = 23) fully covers. It did NOT while the band was
+ * rect (STATUS_Y - LOCK_Y = 22 since 10-28) fully covers. It did NOT while the band was
  * 17px: the padlock ran to LOCK_Y+18 against a clear of LOCK_Y+16, leaving its
  * bottom two rows on screen forever once the locks cleared. */
 #define LOCK_PAD_Y  (LOCK_Y + 3)
@@ -2192,9 +2199,19 @@ static void draw_padlock(uint16_t x, uint16_t y, uint16_t col) {
 #define LOCK_WIN_W  30                    /* "WIN"  3 glyphs                  */
 #define LOCK_SL3_W  30                    /* "SCR" 3; covers "FN" shrinking   */
 /* draw_battery() no longer clears its whole strip, so nothing erases lock-band
- * pixels that stray below LOCK_Y + LOCK_TXT_H. Today the bands meet exactly at
- * STATUS_Y (82 + 23 = 105); keep it that way or restore the clear. */
-_Static_assert(LOCK_Y + LOCK_TXT_H <= STATUS_Y, "lock band text cells must not reach into the battery strip");
+ * pixels that stray below LOCK_Y + LOCK_TXT_H. Since 10-28 the lock cells
+ * reach ONE row into the battery strip (83 + 23 = 106 against STATUS_Y 105),
+ * which is safe only because that row is blank on both sides, measured from
+ * Iosevka-Medium-20.png: no glyph of the face has ink in its cell's row 0 (the
+ * battery's row 105), and the labels CAPS, WIN, FN and SCR end at row 18, as
+ * the padlock ends at LOCK_Y+18. Either repaint paints black over black there,
+ * and the labels' clears of 23 rows clear a row the battery never inks. A label
+ * with a descender (row 22 inked) would break it: keep them capitals, or move
+ * LOCK_Y back to 82 and the clock with it. */
+#define FONT_STATUS_ROW0_BLANK 1          /* rows at the 20px cell's top no glyph inks */
+#define LOCK_LABEL_INK_END     18         /* the labels' and padlock's last inked row */
+_Static_assert(LOCK_Y + LOCK_TXT_H <= STATUS_Y + FONT_STATUS_ROW0_BLANK, "lock band text cells may reach only the battery strip's blank row");
+_Static_assert(LOCK_Y + LOCK_LABEL_INK_END < STATUS_Y && LOCK_PAD_Y + LOCK_PAD_H - 1 <= LOCK_Y + LOCK_LABEL_INK_END, "no lock ink in the battery strip");
 
 static bool        shown_pad = false, shown_caps = false, shown_gui = false;
 static const char *shown_sl3 = NULL;
@@ -2338,7 +2355,7 @@ static bool draw_locks_staged(bool first) {
 // fills the 128px band, against ~27 usable bytes per packet. So there is no
 // framing, no offsets and no partial-render window to design around.
 #define TEXT_Y        27
-#define TEXT_H        (CLOCK_Y - TEXT_Y)     // 24px, clock starts at 49
+#define TEXT_H        (CLOCK_Y - TEXT_Y)     // 31 rows, 27-57
 #define TEXT_ICON_W   12
 #define TEXT_ICON_GAP 2   /* tightened with the denser face: one more glyph */
 #define TEXT_X        (TEXT_ICON_W + TEXT_ICON_GAP)
@@ -2359,7 +2376,7 @@ _Static_assert(TEXT_FIT_LARGE_L1 == (PANEL_WIDTH - TEXT_X2) / FONT_SONG_LARGE_AD
  * band besides, above the clock, as Cozette's do (the cell is 14 rows too). */
 _Static_assert(TEXT_X + TEXT_FIT_LARGE_L0 * FONT_SONG_LARGE_ADV <= PANEL_WIDTH, "Large's line 0 on the panel");
 _Static_assert(TEXT_X2 + TEXT_FIT_LARGE_L1 * FONT_SONG_LARGE_ADV <= PANEL_WIDTH, "Large's line 1 on the panel");
-_Static_assert(LCD_FONT_SONG_LARGE_H == TEXT_LINE_H, "Large's cell is the lines' pitch, as Cozette's");
+_Static_assert(LCD_FONT_SONG_LARGE_H + 1 == TEXT_LINE_H, "Large's cell is Cozette's 14 rows, the lines a row apart");
 _Static_assert(TEXT_Y + TEXT_LINE_H + LCD_FONT_SONG_LARGE_H <= PANEL_HEIGHT && TEXT_Y + TEXT_FONT_DY + LCD_FONT_SONG_LARGE_H <= PANEL_HEIGHT,
                "Large's lines on the panel");
 _Static_assert(TEXT_Y + TEXT_LINE_H + LCD_FONT_SONG_LARGE_H < CLOCK_Y && TEXT_Y + TEXT_FONT_DY + LCD_FONT_SONG_LARGE_H < CLOCK_Y,
@@ -3437,8 +3454,8 @@ static void retire_line(uint8_t slot) {
  *
  * ⚠️ THE LINES' ORDER IS ABOUT PIXELS, NOT CALLS. Staged, a line's glyphs
  * can finish painting before the next step runs, so no later step may clear
- * over a line already painted. The big face's line 0 (y 29-51) overlaps line
- * 1's row (y 41-54): a sequence that retires line 1 (one line, the overlay,
+ * over a line already painted. The big face's line 0 (y 30-52) overlaps line
+ * 1's row (y 42-55): a sequence that retires line 1 (one line, the overlay,
  * none) retires it FIRST, then paints line 0. Two lines keep 0 then 1: line
  * 1's clears stay in its own row, below line 0's small one (y 27-40). Painting
  * line 0 first and retiring line 1 after cut the new title's bottom off for
