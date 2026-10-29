@@ -111,6 +111,13 @@ void sleep_deep_record(uint8_t *out);
  * one's counted second, u32 that second, u32 NVIC->ISPR[0] and u32 SCB->ICSR
  * at the first, u16 flags (b0-2 IE outside a port's wake mask, b3-5 RIS & IE
  * outside it, b6 NVIC enabled != the wake set), u16 the strays counted at the
- * latest snapshot, u32 NVIC->ISPR[0] and u32 SCB->ICSR there. False for a
- * slot past 8. */
+ * latest snapshot, u32 NVIC->ISPR[0] and u32 SCB->ICSR there. Slot 9 is the
+ * sleep under way or the last one, written as it goes (10-28): u32 magic
+ * 0x44534C31, u16 the ring entry it writes at its end, u8 reason (NONE until
+ * the loop is left), u8 flags (0x01 a CLKCFG ceiling, 0x20 the PLL's, 0x40
+ * slept, 0x80 returned), u32 counted seconds, u32 the P0, P1 and P2 bits that
+ * woke it, u16 strays; [26] 1 if it is the boot before's, kept through a
+ * reset, [27] this boot's RSTST. The ring, slot 8 and slot 9 survive a reset
+ * that kept the RAM powered (no POR or LVD); otherwise they read zero. False
+ * for a slot past 9. */
 bool sleep_wake_ring_fill(uint8_t slot, uint8_t *out28);

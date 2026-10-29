@@ -361,8 +361,13 @@ typedef struct __attribute__((packed)) {
     uint16_t strays;
 } wake_entry_t;
 _Static_assert(sizeof(wake_entry_t) == 26, "an entry and the count fill 28 bytes");
-static wake_entry_t wake_ring[8];
-static uint16_t     wake_seq;
+/* Kept through a reset (10-28): .ram0's no-init part, which crt0 does not
+ * clear (ChibiOS rules_memory.ld), checked at boot by ds_keep_boot() below.
+ * After a reset the entries before it stay readable, and the ring goes on
+ * from the same count; `ms` restarts with the boot. */
+#define DS_KEPT __attribute__((section(".ram0")))
+static wake_entry_t wake_ring[8] DS_KEPT;
+static uint16_t     wake_seq DS_KEPT;
 
 static void wake_ring_put(uint32_t counted) {
     wake_entry_t *e = &wake_ring[wake_seq % 8u];
@@ -399,7 +404,65 @@ _Static_assert(sizeof(stray_diag_t) == 28, "op 24's slot 8 is 28 bytes");
 #define STRAY_F_IE(port)   (1u << (port))         /* IE set outside the port's wake mask */
 #define STRAY_F_MIS(port)  (1u << (3 + (port)))   /* RIS & IE outside it: could assert the port IRQ */
 #define STRAY_F_ISER       (1u << 6)              /* NVIC enabled != the wake set */
-static stray_diag_t stray_diag;
+static volatile stray_diag_t stray_diag DS_KEPT;   /* volatile: written in the loop, read after a reset */
+
+/* The sleep under way, as it goes, kept through a reset (op 24's slot 9;
+ * 10-28: gremlin's board reset ~8 min into an untouched sleep, and every
+ * fact of that sleep was in .bss). With the watchdog record's phase (sites
+ * 27-31) it says what and when, not only where: the seconds counted before
+ * the reset, what had woken it, the strays. */
+typedef struct __attribute__((packed)) {
+    uint32_t magic;        /* DS_LAST_MAGIC from the teardown on */
+    uint16_t seq;          /* the ring entry this sleep writes at its end */
+    uint8_t  reason;       /* SLEEP_WAKE_*: NONE until the loop is left */
+    uint8_t  flags;        /* DS_LAST_* */
+    uint32_t secs;         /* counted seconds, from the preset, each as it comes */
+    uint32_t p0, p1, p2;   /* the wake pins' RIS that ended it */
+    uint16_t strays;       /* as they come */
+} ds_last_t;
+_Static_assert(sizeof(ds_last_t) == 26, "op 24's slot 9: the record, then two bytes");
+#define DS_LAST_MAGIC    0x44534C31u   /* "DSL1" */
+#define DS_LAST_CLK_CEIL 0x01u         /* a CLKCFG wait hit its ceiling (a reset follows) */
+#define DS_LAST_PLL_CEIL SLEEP_V_PLL_CEIL
+#define DS_LAST_SLEPT    SLEEP_V_SLEPT
+#define DS_LAST_DONE     0x80u         /* deep_sleep() returned */
+static volatile ds_last_t ds_last DS_KEPT;   /* volatile: in memory at any moment, for a reset */
+static bool      ds_kept_checked, ds_kept;   /* .bss: false at every boot */
+
+/* Once a boot, before the first read or sleep: what the RAM kept is trusted
+ * only after a reset that kept the RAM powered (no POR, no LVD) and with the
+ * magic in place; otherwise all of it zeroed, as .bss would be. ds_kept says
+ * the record is the boot before's, until the next teardown replaces it. */
+static void ds_keep_boot(void) {
+    if (ds_kept_checked) return;
+    ds_kept_checked = true;
+    ds_kept = ds_last.magic == DS_LAST_MAGIC && !(watchdog_boot_rstst() & ((1u << 2) | (1u << 4)));
+    if (!ds_kept) {
+        memset((void *)&ds_last, 0, sizeof(ds_last));
+        memset(wake_ring, 0, sizeof(wake_ring));
+        memset((void *)&stray_diag, 0, sizeof(stray_diag));
+        wake_seq = 0;
+    }
+}
+
+static void ds_last_begin(uint32_t preset_s) {
+    ds_kept       = false;
+    ds_last.magic = DS_LAST_MAGIC;
+    ds_last.seq   = wake_seq;
+    ds_last.reason = SLEEP_WAKE_NONE;
+    ds_last.flags = 0;
+    ds_last.secs  = preset_s;
+    ds_last.p0     = 0;
+    ds_last.p1     = 0;
+    ds_last.p2     = 0;
+    ds_last.strays = 0;
+}
+
+/* A flag just before a reset: twice, as a lone last write can be lost. */
+static void ds_last_flag(uint8_t f) {
+    ds_last.flags |= f;
+    ds_last.flags |= f;
+}
 
 static void stray_note(uint32_t strays, uint32_t secs, uint32_t p0w, uint32_t p1w, uint32_t p2w, uint32_t irqs) {
     uint32_t ispr = NVIC->ISPR[0], icsr = SCB->ICSR;
@@ -427,8 +490,15 @@ static void stray_note(uint32_t strays, uint32_t secs, uint32_t p0w, uint32_t p1
 }
 
 bool sleep_wake_ring_fill(uint8_t slot, uint8_t *out) {
+    ds_keep_boot();
+    if (slot == 9u) {
+        memcpy(out, (const void *)&ds_last, sizeof(ds_last));
+        out[26] = ds_kept;
+        out[27] = watchdog_boot_rstst();
+        return true;
+    }
     if (slot == 8u) {
-        memcpy(out, &stray_diag, sizeof(stray_diag));
+        memcpy(out, (const void *)&stray_diag, sizeof(stray_diag));
         return true;
     }
     if (slot >= 8u) return false;
@@ -436,6 +506,9 @@ bool sleep_wake_ring_fill(uint8_t slot, uint8_t *out) {
     memcpy(&out[26], &wake_seq, 2);
     return true;
 }
+#define DS_LAST(...) do { __VA_ARGS__; } while (0)
+#else
+#define DS_LAST(...) do { } while (0)
 #endif
 
 /* The sleep: false if it unwound before the teardown (a host's frame, the
@@ -467,6 +540,7 @@ static bool deep_sleep(uint32_t cap_s, bool no_feed, uint32_t preset_s) {
     uint32_t p0w = w.col0 | w.knob0, p1w = w.knob1 | w.chrg1, p2w = w.col2;
     ds_kp_before = health_key_presses();
     OD_ACTIVITY_SET(OD_ACT_SLEEP);   /* dev: an overrun seen across it is the sleep's */
+    DS_LAST(ds_keep_boot());         /* dev: the boot before's sleep, checked before this one replaces it */
 
     /* Everything from here to the unlock is lock-free (I-class calls and
      * register writes): a lock call would unlock on its way out, and a wake
@@ -479,6 +553,7 @@ static bool deep_sleep(uint32_t cap_s, bool no_feed, uint32_t preset_s) {
         OD_ACTIVITY_CLEAR(OD_ACT_SLEEP);
         return false;
     }
+    DS_LAST(ds_last_begin(preset_s));
     /* Outputs off: the LED matrix, the 20 kHz tick with the pins it drives. */
     sn32f2xx_sleep_enterI();
     pwm_tick_stopI();
@@ -552,10 +627,14 @@ static bool deep_sleep(uint32_t cap_s, bool no_feed, uint32_t preset_s) {
          * PLL, p. 64), then the flash to its slow mode for <= 24 MHz. */
         SN_SYS0->CLKCFG = 0x0;
         for (uint32_t k = 0; (SN_SYS0->CLKCFG & 0x70u) != 0x0u; k++)
-            if (k >= CLK_WAIT_LOOPS) NVIC_SystemReset();
+            if (k >= CLK_WAIT_LOOPS) {
+                DS_LAST(ds_last_flag(DS_LAST_CLK_CEIL));
+                NVIC_SystemReset();
+            }
         SN_SYS0->PLLCTRL = pllctrl & ~(1u << 15);   /* PLLEN */
         SN_FLASH->LPCTRL = 0x5AFA0000u;
         slept = true;
+        DS_LAST(ds_last.flags |= DS_LAST_SLEPT);
         /* Asleep. PRIMASK is set: a pending wake source ends the WFI, but no
          * handler runs; these vectors have none. */
         for (;;) {
@@ -567,6 +646,7 @@ static bool deep_sleep(uint32_t cap_s, bool no_feed, uint32_t preset_s) {
             if (second) {
                 if (!no_feed) SN_WDT->FEED = (mskWDT_WDKEY | mskWDT_FV);   /* no lock calls in here */
                 secs++;
+                DS_LAST(ds_last.secs = secs);
                 if (!(r0 || r1 || r2) && secs >= cap_s) {
                     ds_reason = SLEEP_WAKE_BACKSTOP;
                     break;
@@ -585,12 +665,15 @@ static bool deep_sleep(uint32_t cap_s, bool no_feed, uint32_t preset_s) {
 #ifdef AK820_DEV_HOOKS
             stray_note(strays, secs, p0w, p1w, p2w, wake_irqs);
 #endif
-            if (++strays >= DS_STRAYS_MAX) {
+            ++strays;
+            DS_LAST(ds_last.strays = (uint16_t)(strays > 0xFFFFu ? 0xFFFFu : strays));
+            if (strays >= DS_STRAYS_MAX) {
                 ds_reason = SLEEP_WAKE_STRAYS;
                 break;
             }
         }
     }
+    DS_LAST(ds_last.reason = ds_reason; ds_last.p0 = ds_p0_ris; ds_last.p1 = ds_p1_ris; ds_last.p2 = ds_p2_ris);
 
     ds_phase(ph, ph_restore);
     bool pll_ceiling = false;
@@ -604,10 +687,16 @@ static bool deep_sleep(uint32_t cap_s, bool no_feed, uint32_t preset_s) {
         }
         ds_pll_loops = loops > 0xFFFFu ? 0xFFFFu : (uint16_t)loops;
         pll_ceiling  = loops >= DS_PLL_LOOPS;
-        if (pll_ceiling) NVIC_SystemReset();   /* the UART, USB and timers all assume 48 MHz */
+        if (pll_ceiling) {   /* the UART, USB and timers all assume 48 MHz */
+            DS_LAST(ds_last_flag(DS_LAST_PLL_CEIL));
+            NVIC_SystemReset();
+        }
         SN_SYS0->CLKCFG = clkcfg;
         for (uint32_t k = 0; (SN_SYS0->CLKCFG & 0x70u) != (clkcfg << 4); k++)
-            if (k >= CLK_WAIT_LOOPS) NVIC_SystemReset();
+            if (k >= CLK_WAIT_LOOPS) {
+                DS_LAST(ds_last_flag(DS_LAST_CLK_CEIL));
+                NVIC_SystemReset();
+            }
     }
     /* The wake pins quiet again; the temporary vectors off BEFORE the old
      * enables go back (writing ISER cannot disable one; codex). P1 too. */
@@ -616,6 +705,7 @@ static bool deep_sleep(uint32_t cap_s, bool no_feed, uint32_t preset_s) {
     NVIC->ICER[0] = wake_irqs;
     NVIC->ICPR[0] = (1u << P0_IRQn) | (1u << P1_IRQn) | (1u << P2_IRQn);
     if (take_second()) secs++;   /* one coincident with the wake: counted here, once */
+    DS_LAST(ds_last.secs = secs);
     NVIC->ISER[0] = iser;
     /* Rows to the unselected level the matrix scan expects (driven high). */
     for (uint8_t i = 0; i < ARRAY_SIZE(ds_rows); i++) gpio_write_pin_high(ds_rows[i]);
@@ -655,6 +745,7 @@ static bool deep_sleep(uint32_t cap_s, bool no_feed, uint32_t preset_s) {
 #endif
     (void)phy_off;
     if (slept) recovery_begin(ds_reason);
+    DS_LAST(ds_last.flags |= DS_LAST_DONE);
     return true;
 }
 
