@@ -25,7 +25,8 @@
 enum {
     N_NONE = 0,
     N_TOP, N_POWER, N_CLOCK, N_DIAG, N_HELP, N_ABOUT, N_EXIT,   /* 1-7 */
-    N_HEALTH, N_CAMERA, N_RESET,                                /* 8-10; N_CAMERA retired 10-28, its number kept */
+    N_HEALTH, N_MORE, N_RESET,                                  /* 8-10; N_MORE, Help's More info (P1d), the
+                                                                 * Camera page's number (retired 10-28) */
     N_TOPIC0, N_TOPIC1, N_TOPIC2, N_TOPIC3,                     /* 11-14 */
     N_BACK,                                                     /* 15: "‹ Back" */
     N_POW0, N_POW1, N_POW2, N_POW3,                             /* 16-19 */
@@ -83,7 +84,7 @@ static const uint8_t diag_rows[]  = {N_BACK, N_ABOUT, N_HEALTH, N_RESET, N_WTEST
 static const uint8_t diag_rows[]  = {N_BACK, N_ABOUT, N_HEALTH, N_RESET};   /* 10-28: About, as System info; no Camera page */
 #endif
 #define DIAG_ROW_HEALTH 2u   /* menu_return_from_diag()'s row: the debug page's */
-static const uint8_t help_rows[]  = {N_BACK, N_TOPIC0, N_TOPIC1, N_TOPIC2, N_TOPIC3};
+static const uint8_t help_rows[]  = {N_BACK, N_TOPIC0, N_TOPIC1, N_TOPIC2, N_TOPIC3, N_MORE};   /* P1d: More info last */
 static const uint8_t power_rows[] = {N_BACK, N_POW0, N_POW1, N_POW2, N_POW3};
 static const uint8_t clock_rows[] = {N_BACK, N_CLK0, N_CLK1, N_CLK2, N_CLK3, N_CLK4, N_CLK5};
 static const uint8_t batt_rows[]  = {N_BACK, N_BV0, N_BV1, N_BV2};   /* P4; Both, 10-26 */
@@ -302,6 +303,7 @@ static const char *label_of(uint8_t node) {
         case N_PRENAME: return "Rename";   /* P5c */
         case N_PNEW:   return "+ Save new";   /* P5d: the `+` in the check box's cells, the names' column */
         case N_FONT:   return "Font";         /* 10-28 */
+        case N_MORE:   return "More info";    /* P1d */
         default: break;
     }
     if (node >= N_BT0 && node <= N_BT2) return slot_names[node - N_BT0];
@@ -567,6 +569,13 @@ static uint8_t topic_lines(uint8_t node) {
     return (uint8_t)(st[t + 1] - st[t]);
 }
 #define ABOUT_LINES 8u   /* Small's eight rows; Large's seven scroll */
+#define MORE_LINES  (2u * ROWS)   /* P1d: More info's two screens, the credits' and the QR code's */
+/* The pages that scroll by a screen: Help's topics, About and More info; and
+ * their lines. */
+static bool is_page(uint8_t node) { return is_topic(node) || node == N_ABOUT || node == N_MORE; }
+static uint8_t page_lines(uint8_t node) {
+    return node == N_ABOUT ? ABOUT_LINES : node == N_MORE ? MORE_LINES : topic_lines(node);
+}
 /* A choice's saved option, by its row (1-4; a previewing choice's from the
  * edit's snapshot, not the live preview; 0, Back, for an effect the table
  * doesn't list). */
@@ -598,7 +607,8 @@ enum { T_TOP = 1, T_POWER, T_CLOCK, T_DIAG, T_HELP, T_ABOUT, T_TOPIC0, T_RESET =
        T_PRENAME, T_RENAMED,                                                                /* 62-63: P5c */
        T_DEFAULTS, T_DEFAULTS_DONE,                                                         /* 64-65: Reset settings (10-27) */
        T_WTEST, T_WT_DONE, T_WT_NONE, T_WT_CLEAN, T_WT_FAIL,                                /* 66-70: dev's write test */
-       T_FONT };                                                                            /* 71: 10-28 */
+       T_FONT,                                                                              /* 71: 10-28 */
+       T_MORE };                                                                            /* 72: P1d, More info */
 _Static_assert(T_RESET == 11, "the title ids: the design's table");
 
 static uint8_t screen_title(void) {
@@ -636,6 +646,7 @@ static uint8_t screen_title(void) {
         case N_PDELETE: return T_PDELETE;
         case N_PRENAME: return T_PRENAME;
         case N_FONT:   return T_FONT;
+        case N_MORE:   return T_MORE;
         default:      return is_topic(n)   ? (uint8_t)(T_TOPIC0 + (n - N_TOPIC0))
                              : is_pslot(n) ? (uint8_t)(T_PSLOT0 + pslot)
                                            : T_TOP;
@@ -707,6 +718,7 @@ static const char *title_text(uint8_t id) {
         case T_DEFAULTS:   return "Reset settings";       /* 10-27 */
         case T_DEFAULTS_DONE: return "Settings reset";
         case T_FONT:       return "Font";                 /* 10-28 */
+        case T_MORE:       return "More info";            /* P1d */
 #ifdef MENU_WTEST
         case T_WTEST:      return "Write test";           /* 10-27, dev */
         case T_WT_DONE:    return "Written";
@@ -724,7 +736,7 @@ static const char *title_text(uint8_t id) {
  * The flashes and the hints are messages, not headings: none. */
 static const char *title_icon(uint8_t id) {
     if (id == T_TOP) return MT_WRENCH " ";   /* it inks all 12 columns: a space */
-    if (id >= T_TOPIC0 && id < T_TOPIC0 + 4) return icon_of(N_HELP);
+    if ((id >= T_TOPIC0 && id < T_TOPIC0 + 4) || id == T_MORE) return icon_of(N_HELP);
     switch (id) {
         case T_POWER: return icon_of(N_POWER);
         case T_CLOCK: return icon_of(N_CLOCK);
@@ -976,7 +988,8 @@ static void pv_show(uint8_t slot) {
 /* A row's content: what the slot shows, for its signature and its painter. */
 typedef struct { uint8_t kind; uint8_t node; uint8_t val; bool bullet, lit; uint8_t line; } row_t;
 enum { RK_BLANK = 0, RK_ITEM, RK_TEXT, RK_ABOUT, RK_VALUE, RK_NOTE,   /* RK_NOTE: P4's note under Battery */
-       RK_PNOTE };                                                    /* P5b: a slot's summary, node the slot's */
+       RK_PNOTE,                                                      /* P5b: a slot's summary, node the slot's */
+       RK_MORE };                                                     /* P1d: More info's, its line in line */
 
 /* P1b's value rows (Lighting's, and the top level's Screen): which one, for
  * the signature, and the live value, read as it composes (not latched: a
@@ -1046,6 +1059,11 @@ static row_t row_at(uint8_t r) {
     if (is_topic(f->node)) {
         uint8_t i = (uint8_t)(f->top + r);
         if (i < topic_lines(f->node)) { x.kind = RK_TEXT; x.line = i; x.node = f->node; }
+        return x;
+    }
+    if (f->node == N_MORE) {   /* P1d: its two screens, a line a row */
+        uint8_t i = (uint8_t)(f->top + r);
+        if (i < MORE_LINES) { x.kind = RK_MORE; x.line = i; }
         return x;
     }
     if (f->node == N_ABOUT) {   /* Large's seven rows scroll its eight lines (10-28) */
@@ -1201,6 +1219,135 @@ static void prof_summary(uint8_t slot, uint8_t line, char *out) {
     }
 }
 
+/* --- More info (P1d, 10-28) ---------------------------------------------------
+ * Help's last topic, with the credits that were to be About's second page
+ * (the words are plans/MENU-TEXT.md's), two screens a turn apart: the credits
+ * beside the bunny, then the QR code to the repository. Each screen is a page
+ * of the list's rows (RK_MORE, its line top + r), and each row paints its
+ * whole band, x 0-124, so a page step leaves nothing of the other.
+ * - The art is graphics/res/menu_art.h (scripts/gen_menu_art.py). The bunny,
+ *   the splash's, 27 x 42, its ink a level of white (mb_rows), at x 4: under
+ *   the separator by a pixel in Small (rows 0-2, and row 3's first pixel
+ *   row), centred in rows 0-2 in Large. A row it reaches has its column, [0,
+ *   MORE_TX), as its first chunk, and its text from cell MORE_TCELL.
+ * - The QR code: 3 px a module, the light modules and a 2-module quiet zone
+ *   white, 99 x 99, centred: x 14, Small's y 21, Large's 22. 1-bit, so its
+ *   rows' halves blit as a text row's do, with no lead.
+ * - The link in Connection's advertising blue: in Large it takes three lines,
+ *   with no room for a blank line between the groups. */
+#include "../graphics/res/menu_art.h"
+#define MORE_TCELL (large() ? 4u : 5u)                                    /* the text beside the bunny */
+#define MORE_TX    ((uint16_t)(TEXT_X + MORE_TCELL * mt_cell_w(face())))  /* 34; Large's 36 */
+#define MORE_MID   ((uint16_t)(TEXT_X + HALF_W))                          /* 64: the halves' split */
+#define MORE_END   ((uint16_t)(TEXT_X + COLS_S * MT_CELL_W + 1u))         /* 125: the trail ends the band */
+#define MORE_LINK  (link_colour[2])                                       /* #3C9CFF, a slot advertising's */
+#define BUNNY_X    TEXT_X
+#define BUNNY_Y    ((uint16_t)(ROW_Y0 + (large() ? 3u : 1u)))
+#define QR_PX      3u
+#define QR_QZ      2u                                                     /* the quiet zone, in modules */
+#define QR_SIDE    ((MENU_QR_N + 2u * QR_QZ) * QR_PX)                     /* 99 */
+#define QR_X       ((MB_W - QR_SIDE) / 2u)                                /* 14 */
+#define QR_Y       ((uint16_t)(ROW_Y0 + (BAR_H - QR_SIDE) / 2u))          /* 21; Large's 22 */
+_Static_assert(BUNNY_X + MENU_BUNNY_W + 2u <= TEXT_X + 5u * MT_CELL_W && BUNNY_X + MENU_BUNNY_W + 2u <= TEXT_X + 4u * MT_CELL_W_L,
+               "the bunny clear of the text beside it, in both faces");
+_Static_assert(1u + MENU_BUNNY_H <= 3u * ROWH_S + 1u && 3u + MENU_BUNNY_H <= 3u * ROWH_L,
+               "the bunny in rows 0-2: Small's last pixel row in row 3's first, which has no text; Large's inside");
+_Static_assert(QR_SIDE <= ROWS_S * ROWH_S - 12u && QR_SIDE <= ROWS_L * ROWH_L - 12u && QR_X + QR_SIDE <= BAR_X - 12u,
+               "the QR code, centred under the title with black around it, clear of the scrollbar");
+/* The credits, by face, a line a row: the bunny's three first. */
+static const char *const more_text[2][ROWS_S] = {
+    {"AJAZZ", "Jackrabbit", "by JD Lien", "", "github.com/jdlien", "  /ak820-pro", "", "QMK Port by fpb"},
+    {"AJAZZ", "Jackrabbit", "by JD Lien", "github.com", "  /jdlien", "  /ak820-pro", "QMK Port by fpb", ""},
+};
+static bool more_link(uint8_t line) { return large() ? line >= 3u && line <= 5u : line == 4u || line == 5u; }
+static bool more_qr(uint8_t line) { return line >= ROWS; }
+/* A credits line's row, at the page's top, meets the bunny. */
+static bool more_bunny(uint8_t line) {
+    uint16_t y = (uint16_t)(ROW_Y0 + line * ROW_H);
+    return !more_qr(line) && y < BUNNY_Y + MENU_BUNNY_H && y + ROW_H > BUNNY_Y;
+}
+static void more_cells(uint8_t line, char *out) {   /* out: COLS cells, spaces already */
+    if (more_qr(line)) return;
+    const char *t  = more_text[large()][line];
+    size_t      at = more_bunny(line) ? MORE_TCELL : 0u, n = strlen(t);
+    memcpy(out + at, t, n > COLS - at ? COLS - at : n);
+}
+/* A row's chunks: the QR's halves, [0, 64) and [64, 125); a credits row's
+ * [0, tx), [tx, 64) and [64, 125), tx the bunny's column's end where it
+ * reaches, else the list's lead's. Chunk c's columns, from *x0. */
+static uint8_t more_chunks(uint8_t line) { return more_qr(line) ? 2u : 3u; }
+static uint16_t more_span(uint8_t line, uint8_t c, uint16_t *x0) {
+    const uint16_t tx = more_qr(line) ? 0u : more_bunny(line) ? MORE_TX : (uint16_t)ROW_LEAD;
+    if (more_qr(line)) c++;
+    *x0 = c == 0 ? 0u : c == 1 ? tx : MORE_MID;
+    return (uint16_t)((c == 0 ? tx : c == 1 ? MORE_MID : MORE_END) - *x0);
+}
+static bool more_img(uint8_t line, uint8_t c) { return c == 0 && more_bunny(line); }   /* the bunny's column, in levels */
+/* Pixel rows a piece: its bytes; and a 1-bit one's bits in the buffer. */
+static uint8_t more_rpp(uint8_t line, uint8_t c) {
+    uint16_t x0, w = more_span(line, c, &x0);
+    uint16_t r     = (uint16_t)(MB_PASS_BYTES / (2u * w));
+    if (!more_img(line, c) && r > BITS_MAX / ((w + 7u) / 8u)) r = (uint16_t)(BITS_MAX / ((w + 7u) / 8u));
+    return (uint8_t)(r > ROW_H ? ROW_H : r);
+}
+static uint8_t more_pieces(uint8_t line, uint8_t c) {
+    uint8_t r = more_rpp(line, c);
+    return (uint8_t)((ROW_H + r - 1u) / r);
+}
+_Static_assert(MB_PASS_BYTES / (2u * 64u) >= 1u && MB_PASS_BYTES / (2u * 64u) * 8u <= BITS_MAX,
+               "More info's widest chunk, the QR's 64 px: whole pixel rows a piece, their bits in the buffer");
+typedef struct { uint16_t y; } bunny_ctx_t;   /* the piece's first panel row */
+static void bunny_row(const void *v, uint16_t row, uint16_t *px, uint16_t w) {
+    const bunny_ctx_t *k  = v;
+    const uint16_t     by = (uint16_t)(k->y + row - BUNNY_Y);   /* wraps above it: blank */
+    for (uint16_t i = 0; i < w; i++) {
+        uint16_t bx = (uint16_t)(i - BUNNY_X);                  /* the chunk from x 0; wraps left of it */
+        uint16_t g  = by < MENU_BUNNY_H && bx < MENU_BUNNY_W ? menu_bunny[by][bx] : 0u;
+        uint16_t r  = (uint16_t)((g * 31u + 127u) / 255u), gr = (uint16_t)((g * 63u + 127u) / 255u);
+        px[i]       = MB_PANEL((uint16_t)((r << 11) | (gr << 5) | r));
+    }
+}
+/* The QR's pixels, 1 white: the quiet zone and the light modules. */
+static void qr_bits(uint16_t x0, uint16_t y0, uint16_t w, uint8_t rows, uint8_t *bits, uint8_t st) {
+    memset(bits, 0, (size_t)rows * st);
+    for (uint8_t r = 0; r < rows; r++) {
+        uint16_t y = (uint16_t)(y0 + r - QR_Y);
+        if (y >= QR_SIDE) continue;
+        uint16_t my = (uint16_t)(y / QR_PX - QR_QZ);   /* wraps in the quiet zone above: light */
+        for (uint16_t i = 0; i < w; i++) {
+            uint16_t x = (uint16_t)(x0 + i - QR_X);
+            if (x >= QR_SIDE) continue;
+            uint16_t mx   = (uint16_t)(x / QR_PX - QR_QZ);
+            bool     dark = my < MENU_QR_N && mx < MENU_QR_N && ((menu_qr[my][mx >> 3] >> (7u - (mx & 7u))) & 1u);
+            if (!dark) bits[r * st + (i >> 3)] |= (uint8_t)(0x80u >> (i & 7u));
+        }
+    }
+}
+static ms_paint_t more_paint(uint8_t line, uint16_t y, uint8_t c, uint8_t p) {
+    uint16_t      x0;
+    const uint16_t w    = more_span(line, c, &x0);
+    const uint8_t rpp  = more_rpp(line, c), r0 = (uint8_t)(p * rpp);
+    const uint8_t rows = (uint8_t)(r0 + rpp > ROW_H ? ROW_H - r0 : rpp);
+    if (more_img(line, c)) {
+        bunny_ctx_t k = {(uint16_t)(y + r0)};
+        return mb_rows(x0, (uint16_t)(y + r0), w, rows, bunny_row, &k) ? MS_PAINT_DONE : MS_PAINT_FAILED;
+    }
+    const uint8_t st = (uint8_t)((w + 7u) / 8u);
+    uint8_t       bits[BITS_MAX];
+    uint16_t      fg = 0xFFFFu;   /* the QR's light, full white */
+    if (more_qr(line)) qr_bits(x0, (uint16_t)(y + r0), w, rows, bits, st);
+    else {
+        char cells[COLS_S + 1];
+        memset(cells, ' ', COLS);
+        cells[COLS] = '\0';
+        more_cells(line, cells);
+        mt_line_t l = {cells, COLS, ROW_LEAD, 1, false, false, 0, gface()};   /* a row's: its columns the panel's */
+        mt_bits(&l, x0, w, r0, rows, bits, st);
+        fg = more_link(line) ? MORE_LINK : pal[MP_WHITE];
+    }
+    return mb_mono(bits, st, x0, (uint16_t)(y + r0), w, rows, fg, 0) ? MS_PAINT_DONE : MS_PAINT_FAILED;
+}
+
 /* The row's COLS cells (out: COLS_S + 1 at least). */
 static void row_text(const row_t *x, char *out) {
     const uint8_t N = COLS;
@@ -1211,6 +1358,10 @@ static void row_text(const row_t *x, char *out) {
         const char *s = help_line((uint8_t)(x->node - N_TOPIC0), x->line);
         size_t      n = strlen(s);
         memcpy(out, s, n > N ? N : n);
+        return;
+    }
+    if (x->kind == RK_MORE) {
+        more_cells(x->line, out);
         return;
     }
     if (x->kind == RK_ABOUT) {
@@ -1289,7 +1440,7 @@ static void row_text(const row_t *x, char *out) {
 #endif
     else if (x->node == N_DIAG || x->node == N_HELP || x->node == N_ABOUT || x->node == N_HEALTH ||
              x->node == N_RESET || is_topic(x->node) || x->node == N_LIGHT || x->node == N_BOOT ||
-             x->node == N_IND || x->node == N_DEFAULTS || x->node == N_WTEST)
+             x->node == N_IND || x->node == N_DEFAULTS || x->node == N_WTEST || x->node == N_MORE)
         value = MT_TRI_R;                            /* JD, 10-24: ▶ for > */
     size_t      at   = 0;
     const char *icon = icon_of(x->node);
@@ -1444,6 +1595,8 @@ static uint16_t row_sig(const row_t *x) {
             return (uint16_t)((2u << 14) | ((uint16_t)(x->node - N_TOPIC0) << 11) | ((uint16_t)x->line << 5));
         case RK_ABOUT:
             return (uint16_t)((3u << 14) | ((uint16_t)x->line << 8));
+        case RK_MORE:   /* P1d: as a fifth topic's lines; the face's change re-lays out the page */
+            return (uint16_t)((2u << 14) | (4u << 11) | ((uint16_t)x->line << 5));
         case RK_VALUE: {   /* P1b: 0xE000 | which << 10 | variant << 9 | value << 1 | lit (bit 0 is lit) */
             /* The variant: Speed's Second color, or P2a's Charging light (which 7, with Lock lights). */
             uint16_t variant = ((x->node == N_SPEED && two_tone()) || x->node == N_CHGL) ? 1u : 0u;
@@ -1459,9 +1612,7 @@ static uint16_t row_sig(const row_t *x) {
 static void bar_state(uint8_t *count, uint8_t *top) {
     frame_t *f = cur();
     *top       = f->top;
-    if (is_topic(f->node)) *count = topic_lines(f->node);
-    else if (f->node == N_ABOUT) *count = ABOUT_LINES;
-    else *count = row_count(f->node);
+    *count     = is_page(f->node) ? page_lines(f->node) : row_count(f->node);
     /* A list pages by a screen, so its last page's top can pass count - ROWS
      * (nine rows: 8); the thumb sits at the end then (codex: it was drawn off
      * the panel). */
@@ -1532,6 +1683,7 @@ static uint8_t l_chunks(uint8_t s) {
     if (s == S_SEP || s == S_BAR) return 1;
     if (!is_row(s)) return title_chunks();
     row_t   x = row_at((uint8_t)(s - S_ROW0));
+    if (x.kind == RK_MORE) return more_chunks(x.line);   /* P1d */
     uint8_t n = row_ruled(&x) || row_icon_colour(&x) != 0 ? 4 : 3;   /* the rule, or a split row's icon chunk */
     return row_bulb(&x) ? (uint8_t)(n + 1u) : n;                    /* the bulb first */
 }
@@ -1557,6 +1709,10 @@ static uint8_t rows_per_piece(void) { return (uint8_t)(MB_PASS_BYTES / (CHUNK_MA
 #define SPLIT_W   (large() ? SPLIT_W_L : SPLIT_W_S)
 static uint8_t rows_per_split(void) { return (uint8_t)(MB_PASS_BYTES / (SPLIT_W * 2u)); }   /* 5, both faces */
 static uint8_t l_pieces(uint8_t s, uint8_t c) {
+    if (is_row(s) && cur()->node == N_MORE) {   /* P1d: its own chunks */
+        row_t x = row_at((uint8_t)(s - S_ROW0));
+        if (x.kind == RK_MORE) return more_pieces(x.line, c);
+    }
     if (bulb_at(s)) {                                                  /* 10-27: the bulb, every pixel row at once */
         if (c == 0) return 1;
         c--;
@@ -1732,6 +1888,7 @@ static ms_paint_t l_paint(uint8_t s, uint8_t c, uint8_t p) {
         return text_piece(cells, 0, false, 0, 0, c, p, pal[MP_WHITE], 0, false, geo()->title_r0, k != ICON12_NONE, true);
     }
     row_t x = row_at((uint8_t)(s - S_ROW0));
+    if (x.kind == RK_MORE) return more_paint(x.line, (uint16_t)(ROW_Y0 + (s - S_ROW0) * ROW_H), c, p);   /* P1d */
     if (row_bulb(&x)) {   /* 10-27: chunk 0 the bulb, the row's own after it */
         if (c == 0) {   /* Large's top level: the model's mode (row_at()'s val) */
             bulb_ctx_t b = {x.node == N_POWER ? (uint8_t)(x.val & 3u) : (uint8_t)(x.node - N_POW0), geo()->bulb_dy};
@@ -2115,7 +2272,7 @@ void menu_refont(void) {
     if (!depth) return;
     for (uint8_t i = 0; i < depth; i++) {
         frame_t *f = &stack[i];
-        f->top     = is_topic(f->node) || f->node == N_ABOUT ? 0u : (uint8_t)(f->cursor / ROWS * ROWS);
+        f->top     = is_page(f->node) ? 0u : (uint8_t)(f->cursor / ROWS * ROWS);
     }
     uint8_t n = cur()->node;
     ms_set_layout(is_confirm(n) ? &L_CONFIRM : is_editor(n) ? (is_hue_editor(n) ? &L_HUE : &L_RANGE) : l_list(), true);
@@ -2509,7 +2666,7 @@ static menu_result_t activate(uint32_t now) {
             show(true, false, now);
             return MENU_NONE;
         default:
-            if (is_topic(node)) {
+            if (is_topic(node) || node == N_MORE) {
                 push(node, 0);
                 cur()->top = 0;
                 show(false, false, now);
@@ -2645,8 +2802,8 @@ menu_result_t menu_input(int8_t turns, mi_latch_t latch, uint32_t now) {
                 me_preview(node == N_BACK ? me_saved() : option_value(node, val));
             }
             ms_retarget();
-        } else if (is_topic(f->node) || f->node == N_ABOUT) {   /* About scrolls in Large (10-28); Small's fits */
-            int16_t lines  = f->node == N_ABOUT ? ABOUT_LINES : topic_lines(f->node);
+        } else if (is_page(f->node)) {   /* About scrolls in Large (10-28); Small's fits. More info: its two screens */
+            int16_t lines  = page_lines(f->node);
             int16_t maxtop = lines > ROWS ? (int16_t)(lines - ROWS) : 0;
             int16_t t      = (int16_t)(f->top + (turns > 0 ? ROWS : -ROWS));
             if (t < 0) t = 0;
@@ -2865,7 +3022,7 @@ uint8_t menu_screen_id(void) { return depth ? (uint8_t)(16u + cur()->node) : 0; 
 uint8_t menu_cursor(void) {
     if (!depth) return 0xFF;
     frame_t *f = cur();
-    if (is_topic(f->node)) return f->top;
+    if (is_topic(f->node) || f->node == N_MORE) return f->top;
     if (f->node == N_PAIRING) return (uint8_t)(f->cursor << 4 | pair_phase(f->cursor));   /* P3: the slot and the phase */
     if (f->node == N_CONNINFO) return 0;   /* one page: not Reset's or Bootloader's confirm_page (codex) */
     if (f->node == N_PSAVE || f->node == N_PDELETE) return f->cursor;   /* P5b: the slot */
