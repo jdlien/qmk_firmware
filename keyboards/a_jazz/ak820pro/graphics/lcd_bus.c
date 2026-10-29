@@ -789,7 +789,7 @@ bool flash_assets_init(void) {
 uint8_t flash_assets_count(void) { return fa_count; }
 
 const flash_asset_t *flash_asset(uint16_t id) {
-    if (id == LCD_FONT_SONG_LARGE) return NULL;   /* the pseudo font: not the index's, whatever it holds */
+    if (LCD_FONT_IS_SONG(id)) return NULL;   /* the pseudo fonts: not the index's, whatever it holds */
     for (uint8_t i = 0; i < fa_count; i++)
         if (fa_tab[i].id == id) return &fa_tab[i];
     return NULL;
@@ -839,12 +839,15 @@ void lcd_draw_flash_glyph(uint16_t font_id, char c, uint16_t x, uint16_t y) {
  * latched here; either way the display's recovery repaints. display.c's
  * asserts keep every text slot position on the panel, so that is a fault's
  * path, not layout's. */
-_Static_assert(LCD_FONT_SONG_LARGE > 0xFFu && LCD_FONT_SONG_LARGE != 0xFFFFu, "no index mkraw.py writes, nor an erased entry, holds the pseudo font's id");
+_Static_assert(LCD_FONT_SONG_LARGE > 0xFFu && LCD_FONT_SONG_LARGE != 0xFFFFu && LCD_FONT_SONG_REGULAR > 0xFFu &&
+                   LCD_FONT_SONG_REGULAR != 0xFFFFu,
+               "no index mkraw.py writes, nor an erased entry, holds a pseudo font's id");
 _Static_assert(LCD_FONT_SONG_LARGE_W == MT_CELL_W_L && LCD_FONT_SONG_LARGE_H + 2 == MT_CELL_H_L, "the crop: the face's rows 1-14");
-static bool song_large_glyph(char c, uint16_t x, uint16_t y) {
+static bool song_large_glyph(bool regular, char c, uint16_t x, uint16_t y) {
     uint8_t ch = (uint8_t)c;
     if (ch < 0x20u || ch > 0x7Eu) ch = ' ';   /* as the atlas: ASCII, else a space (the slot sends nothing else) */
-    if (!lcd_blit_mono(mt_glyph_large(ch) + 1, 1, x, y, LCD_FONT_SONG_LARGE_W, LCD_FONT_SONG_LARGE_H, 0xFFFFu, 0x0000u))
+    const uint8_t *g = regular ? mt_glyph_regular(ch) : mt_glyph_large(ch);
+    if (!lcd_blit_mono(g + 1, 1, x, y, LCD_FONT_SONG_LARGE_W, LCD_FONT_SONG_LARGE_H, 0xFFFFu, 0x0000u))
         blit_lost = true;
     return true;
 }
@@ -867,7 +870,7 @@ static bool song_large_glyph(char c, uint16_t x, uint16_t y) {
  * font's glyph is drawn by song_large_glyph(), above. */
 bool lcd_draw_flash_glyph_try(uint16_t font_id, char c, uint16_t x, uint16_t y) {
     if (lcd_blit_busy()) return false;
-    if (font_id == LCD_FONT_SONG_LARGE) return song_large_glyph(c, x, y);
+    if (LCD_FONT_IS_SONG(font_id)) return song_large_glyph(font_id == LCD_FONT_SONG_REGULAR, c, x, y);
     const flash_asset_t *a = flash_asset(font_id);
     if (!a || a->fmt != 1) return true;            /* nothing to draw: consume it */
     uint8_t ch = (uint8_t)c;
@@ -880,13 +883,13 @@ bool lcd_draw_flash_glyph_try(uint16_t font_id, char c, uint16_t x, uint16_t y) 
 }
 
 uint16_t lcd_font_advance(uint16_t font_id) {
-    if (font_id == LCD_FONT_SONG_LARGE) return LCD_FONT_SONG_LARGE_W;
+    if (LCD_FONT_IS_SONG(font_id)) return LCD_FONT_SONG_LARGE_W;
     const flash_asset_t *a = flash_asset(font_id);
     return (a && a->fmt == 1) ? a->cell_w : 0;
 }
 
 uint16_t lcd_font_height(uint16_t font_id) {
-    if (font_id == LCD_FONT_SONG_LARGE) return LCD_FONT_SONG_LARGE_H;
+    if (LCD_FONT_IS_SONG(font_id)) return LCD_FONT_SONG_LARGE_H;
     const flash_asset_t *a = flash_asset(font_id);
     return (a && a->fmt == 1) ? a->cell_h : 0;
 }

@@ -64,7 +64,7 @@ bool menu_physical(mi_control_t c, bool pressed, bool fn, uint32_t now) {
 
 static void screen_open(bool from_debug, uint32_t now) {
     if (menu_kind == MK_MENU) {
-        if (from_debug) menu_return_from_diag(po_debug_page() == DEBUG_PAGE_CAMERA ? 1 : 0, now);
+        if (from_debug) menu_return_from_diag(now);
         else            menu_open(now);
     } else {
         if (from_debug) fx_return_from_diag();
@@ -92,9 +92,18 @@ void menu_screen_invalidate(void) {
  * back); the song text repaints in the new face, whoever holds the panel. */
 void menu_font_set(uint8_t font) {
     if (font == env_font()) return;
+    uint8_t shown = me_font();   /* 10-28: Save from the Font page's preview: already on the panel */
     env_font_set(font);
-    if (menu_kind == MK_MENU && OWNER_MENU_OPEN()) menu_refont();
+    if (shown != me_font()) menu_font_shown();
     env_text_refont();
+}
+
+/* 10-28: the face the menu draws changed (a save, a host's restore, the Font
+ * page's preview or its end): the gate above. Not at the panel's handoffs:
+ * their rollback (panel_owner.c) leaves the menu, which is rebuilt in the
+ * saved face when it comes back. */
+void menu_font_shown(void) {
+    if (menu_kind == MK_MENU && OWNER_MENU_OPEN()) menu_refont();
 }
 
 void menu_note_loss(void) {
@@ -151,7 +160,7 @@ void menu_ops_task(uint32_t now) {
         if (menu_kind == MK_MENU) {
             switch (menu_input(turns, latch, now)) {
                 case MENU_DIAG_HEALTH: (void)env_po_event(PO_EV_DIAG_HEALTH); return;
-                case MENU_DIAG_CAMERA: (void)env_po_event(PO_EV_DIAG_CAMERA); return;
+                case MENU_DIAG_CAMERA: return;   /* retired 10-28: never returned */
                 case MENU_CLOSE:       (void)env_po_event(PO_EV_CLOSE); return;
                 case MENU_BOOTLOADER:   /* resets, and doesn't return, unless a release couldn't be sent */
                     if (!env_bootloader()) menu_bootloader_refused(now);
@@ -178,7 +187,7 @@ void menu_ops_task(uint32_t now) {
     /* P3: the Pairing page starting or advertising gets the backstop too.
      * P5e: a profile's preview is no edit: the 60 s (codex: it held the
      * menu, and a deep sleep, for three minutes). */
-    bool     editing = me_active() && me_field() != ME_PROFILE;
+    bool     editing = me_active() && me_field() != ME_PROFILE && me_field() != ME_FONT;   /* 10-28: the Font page's, the 60 s too */
     uint32_t limit   = (editing || (menu_kind == MK_MENU && menu_long_wait())) ? MI_BACKSTOP_MS : MI_IDLE_MS;
     if ((int32_t)(now - mi_last_input()) >= (int32_t)limit) (void)env_po_event(PO_EV_CLOSE);
 }

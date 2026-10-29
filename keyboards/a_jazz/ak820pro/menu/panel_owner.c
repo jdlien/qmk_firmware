@@ -143,27 +143,21 @@ uint16_t po_event(po_event_t ev, bool wake_held, uint32_t now) {
             if (session == SESSION_OPEN && close_on_release) return do_close();
             return 0;
 
-        case PO_EV_DBG_PAGE:
+        case PO_EV_DBG_PAGE:   /* 10-28: the debug page and back; the camera page is gone */
             if (session == SESSION_PENDING || owner == PANEL_ANIM) return PO_ACT_REFUSED;
             if (session == SESSION_OPEN) {
                 if (owner == PANEL_MENU) return enter_debug(DEBUG_PAGE_HEALTH, true);
-                if (dpage == DEBUG_PAGE_HEALTH) {
-                    dpage = DEBUG_PAGE_CAMERA;
-                    return PO_ACT_DEBUG_CAMERA;
-                }
                 return back_to_menu();
             }
             if (owner == PANEL_DASH) return enter_debug(DEBUG_PAGE_HEALTH, false);
-            if (dpage == DEBUG_PAGE_HEALTH) {   /* DEBUG, standalone */
-                dpage = DEBUG_PAGE_CAMERA;
-                return PO_ACT_DEBUG_CAMERA;
-            }
-            return (uint16_t)(set_owner(PANEL_DASH) | restore_start());
+            return (uint16_t)(set_owner(PANEL_DASH) | restore_start());   /* DEBUG, standalone */
 
         case PO_EV_DIAG_HEALTH:
-        case PO_EV_DIAG_CAMERA:
             if (session != SESSION_OPEN || owner != PANEL_MENU) return PO_ACT_REFUSED;
-            return enter_debug(ev == PO_EV_DIAG_CAMERA ? DEBUG_PAGE_CAMERA : DEBUG_PAGE_HEALTH, true);
+            return enter_debug(DEBUG_PAGE_HEALTH, true);
+
+        case PO_EV_DIAG_CAMERA:   /* 10-28: retired with the camera page; its number kept */
+            return PO_ACT_REFUSED;
 
         case PO_EV_DEBUG_CLICK:
             if (session != SESSION_OPEN || owner != PANEL_DEBUG) return PO_ACT_REFUSED;

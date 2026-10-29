@@ -15,15 +15,18 @@
 
 /* The two faces (plans/MENU-8X16-PLAN.md, 10-28): Small, Cozette 6x14,
  * today's; Large, Terminus Bold 8x16 (FONT_LARGE_*). The same codes in
- * both. A line says which it draws in. */
+ * both. A line says which it draws in. MT_LARGE_R is Large's geometry in
+ * Terminus regular (10-28, the third face): only a line's glyphs know it;
+ * the menu's layouts are Small's or Large's. */
 #define MT_SMALL    0u
 #define MT_LARGE    1u
+#define MT_LARGE_R  2u
 #define MT_CELL_W_L 8    /* FONT_LARGE_W */
 #define MT_CELL_H_L 16   /* FONT_LARGE_H */
 #define MT_CELL_W_MAX MT_CELL_W_L
 #define MT_CELL_H_MAX MT_CELL_H_L
-static inline uint8_t mt_cell_w(uint8_t face) { return face == MT_LARGE ? MT_CELL_W_L : MT_CELL_W; }
-static inline uint8_t mt_cell_h(uint8_t face) { return face == MT_LARGE ? MT_CELL_H_L : MT_CELL_H; }
+static inline uint8_t mt_cell_w(uint8_t face) { return face != MT_SMALL ? MT_CELL_W_L : MT_CELL_W; }
+static inline uint8_t mt_cell_h(uint8_t face) { return face != MT_SMALL ? MT_CELL_H_L : MT_CELL_H; }
 
 /* The face's extras, as string pieces (the generator's order: its
  * FONT_MONO_* names; menu_text.c checks the count, the host tests each
@@ -88,3 +91,5 @@ void mt_bits(const mt_line_t *l, uint16_t c0, uint16_t w, uint8_t r0, uint8_t ro
  * the dashboard's song text draws its rows 1-14 (plans/MENU-8X16-PLAN.md,
  * B6). */
 const uint8_t *mt_glyph_large(uint8_t code);
+/* The same in Terminus regular (10-28): its own ASCII, Bold's extras. */
+const uint8_t *mt_glyph_regular(uint8_t code);

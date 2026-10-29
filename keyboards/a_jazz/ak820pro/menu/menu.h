@@ -16,13 +16,13 @@
 typedef enum {
     MENU_NONE = 0,
     MENU_DIAG_HEALTH,   /* hand off to the Health page (C1) */
-    MENU_DIAG_CAMERA,   /* hand off to the Camera page */
+    MENU_DIAG_CAMERA,   /* retired 10-28 (the camera page): never returned; the number kept */
     MENU_CLOSE,         /* Exit, or Back at the top */
     MENU_BOOTLOADER,    /* the bootloader item: enter it, as Fn+Esc does */
 } menu_result_t;
 
 void          menu_open(uint32_t now);                    /* the top level, row 0, a fresh layout */
-void          menu_return_from_diag(uint8_t page, uint32_t now);   /* 0 Health, 1 Camera: Diagnostics, the page's row */
+void          menu_return_from_diag(uint32_t now);   /* Diagnostics, the Health page's row */
 void          menu_invalidate(void);                      /* a loss under the menu */
 menu_result_t menu_input(int8_t turns, mi_latch_t latch, uint32_t now);
 void          menu_tick(uint32_t now, uint32_t idle_ms);  /* each pass: the latched model and the title */
@@ -37,6 +37,7 @@ bool          menu_long_wait(void);                       /* P3: the Pairing pag
  * it, re-lays out an open menu, repaints the song text. */
 void          menu_font_set(uint8_t font);
 void          menu_refont(void);   /* menu_font_set()'s: the open menu's frames and layout in the new face */
+void          menu_font_shown(void);   /* 10-28: the Font page's preview moved: menu_refont(), if the menu holds the panel */
 
 /* P5c, Rename (plans/SETTINGS-PROFILES-PLAN.md, "Rename"): the one page that
  * takes typing. menu_key() sees every key event but the knob's, before QMK

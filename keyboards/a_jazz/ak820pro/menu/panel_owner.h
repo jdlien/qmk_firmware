@@ -21,7 +21,7 @@ typedef enum {
     RESTORE_RESIDUAL,     /* the queues, the battery, the logos: po_residual_next() */
     RESTORE_DONE,
 } restore_phase_t;
-typedef enum { DEBUG_PAGE_HEALTH = 0, DEBUG_PAGE_CAMERA } debug_page_t;
+typedef enum { DEBUG_PAGE_HEALTH = 0 } debug_page_t;   /* 10-28: the camera page (1) gone */
 
 /* The restore's cursor: steps 1..PO_CLEAR_BANDS are the clear's bands, the
  * PO_STAGES after them the components (display.c's debug_restore_step). */
@@ -42,7 +42,7 @@ enum {
     PO_ACT_RESTORE_START    = 1u << 8,   /* the display discards its queues: stage 1 */
     PO_ACT_OVERLAYS_REPRIME = 1u << 9,
     PO_ACT_DEBUG_ENTER      = 1u << 10,  /* po_debug_page() says which */
-    PO_ACT_DEBUG_CAMERA     = 1u << 11,  /* Health to Camera, in place */
+    /* 1u << 11 was PO_ACT_DEBUG_CAMERA, Health to Camera in place: retired 10-28 */
     PO_ACT_ANIM_START       = 1u << 12,
     PO_ACT_ANIM_STOP        = 1u << 13,
 };
@@ -52,7 +52,7 @@ typedef enum {
     PO_EV_WAKE_RELEASED,   /* display_wake_release()'s notice */
     PO_EV_DBG_PAGE,        /* the DBG_PAGE key or op 1 */
     PO_EV_DIAG_HEALTH,     /* Diagnostics > Health (the fixture's row 7 in S0) */
-    PO_EV_DIAG_CAMERA,     /* Diagnostics > Camera */
+    PO_EV_DIAG_CAMERA,     /* retired 10-28 with the camera page: refused; the number kept for the events after it */
     PO_EV_DEBUG_CLICK,     /* a knob click while DEBUG holds an open session */
     PO_EV_CLOSE,           /* Exit, Fn plus a click, the timeout, the backstop, a disarm */
     PO_EV_ANIM_START,      /* the header already validated */

@@ -201,16 +201,19 @@ void kb_eeconfig_set_ind_level(uint8_t which, uint8_t level) {
     kb_mark_dirty();
 }
 
-/* Byte 9: the readout in bits 0-1 (0 unset), the menu's face in bit 2 (10-28,
- * set Small). A byte with any of bits 3-7 set (0xFF, an erased block) is
- * garbage as a whole: every reader and writer takes it as 0, both defaults,
- * before it reads, compares or keeps a field (codex, 10-28: keeping the raw
- * bit 2 of 0xFF would turn Large into Small). */
+/* Byte 9: the readout in bits 0-1 (0 unset), the menu's face in bits 2-3
+ * (10-28: bit 2 set Small, bit 3 set Regular, neither Large). A byte with any
+ * of bits 4-7 set (0xFF, an erased block), or both face bits, is garbage as a
+ * whole: every reader and writer takes it as 0, both defaults, before it
+ * reads, compares or keeps a field (codex, 10-28: keeping the raw bit 2 of
+ * 0xFF would turn Large into Small). */
 #define BV_VIEW  0x03u
 #define BV_SMALL 0x04u
+#define BV_REG   0x08u
+#define BV_FACE  (BV_SMALL | BV_REG)
 static uint8_t bv_norm(void) {
     uint8_t b = kb_config.batt_view;
-    return (b & (uint8_t)~(BV_VIEW | BV_SMALL)) ? 0u : b;
+    return (b & (uint8_t)~(BV_VIEW | BV_FACE)) || (b & BV_FACE) == BV_FACE ? 0u : b;
 }
 /* The canonical byte, written when it isn't what is stored. A valid byte
  * differs only in the field being set; a garbage one always differs, so a
@@ -228,16 +231,17 @@ uint8_t kb_eeconfig_get_batt_view(void) {
 
 void kb_eeconfig_set_batt_view(uint8_t v) {
     if (v < KB_BATT_VIEW_PERCENT || v > KB_BATT_VIEW_BOTH) return;
-    bv_put((uint8_t)((bv_norm() & BV_SMALL) | v));   /* the face kept */
+    bv_put((uint8_t)((bv_norm() & BV_FACE) | v));   /* the face kept */
 }
 
 uint8_t kb_eeconfig_get_font(void) {
-    return (bv_norm() & BV_SMALL) ? KB_FONT_SMALL : KB_FONT_LARGE;   /* unset or garbage: Large */
+    uint8_t b = bv_norm();
+    return (b & BV_SMALL) ? KB_FONT_SMALL : (b & BV_REG) ? KB_FONT_REGULAR : KB_FONT_LARGE;   /* unset or garbage: Large */
 }
 
 void kb_eeconfig_set_font(uint8_t font) {
-    if (font != KB_FONT_LARGE && font != KB_FONT_SMALL) return;
-    bv_put((uint8_t)((bv_norm() & BV_VIEW) | (font == KB_FONT_SMALL ? BV_SMALL : 0u)));   /* the readout kept */
+    if (font != KB_FONT_LARGE && font != KB_FONT_SMALL && font != KB_FONT_REGULAR) return;
+    bv_put((uint8_t)((bv_norm() & BV_VIEW) | (font == KB_FONT_SMALL ? BV_SMALL : font == KB_FONT_REGULAR ? BV_REG : 0u)));   /* the readout kept */
 }
 
 #ifdef WDT_TEST_HOOKS

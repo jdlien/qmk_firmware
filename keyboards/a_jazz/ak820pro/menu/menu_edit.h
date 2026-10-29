@@ -4,7 +4,8 @@
 // P1b's edit transaction (C6; plans/CONFIG-MENU-P1-DESIGN.md, "P1b"): one
 // previewing edit at most, of an RGB field, the LCD level or an indicator
 // level (P2a, which lights its LEDs while it's open), or (P5e) a settings
-// profile's lighting and LCD level together. Pure logic over
+// profile's lighting and LCD level together, or (10-28) the Font page's face,
+// shown in the menu alone and never written until the click. Pure logic over
 // menu_env.h's primitives, so the host tests run this sequencing, not a copy.
 #pragma once
 
@@ -27,11 +28,13 @@ enum {
     ME_CHG,      /* the charging light's */
     ME_PROFILE,  /* P5e: a profile's preview, the RGB config and the LCD level both (profiles.c's
                   * prof_preview() sets them; an RGB or an LCD writer rolls it back) */
+    ME_FONT,     /* 10-28: the menu's face, ENV_FONT_*, shown by the menu (me_font()) and nothing else:
+                  * the setting and the song text keep the saved face until Save */
 };
 
 /* The conflict domains of an external writer. ME_DOM_IND has none today:
  * only the menu sets an indicator level. */
-enum { ME_DOM_RGB = 1, ME_DOM_LCD = 2, ME_DOM_IND = 3 };
+enum { ME_DOM_RGB = 1, ME_DOM_LCD = 2, ME_DOM_IND = 3, ME_DOM_FONT = 4 };
 
 /* The pending bits menu_tick() consumes (me_take_pending()). */
 enum {
@@ -48,6 +51,9 @@ void    me_preview(uint8_t value);
 void    me_save(void);                /* the live value, by the saving setter; closes (not ME_PROFILE's) */
 void    me_cancel(void);              /* the snapshot back; closes */
 void    me_base(env_rgb_t *rgb, uint8_t *level);   /* P5e: an ME_PROFILE edit's snapshot, the live settings it opened on */
+/* 10-28: the face the menu draws, an open ME_FONT edit's preview, else the
+ * saved face (read afresh: a host's restore can change it under the page). */
+uint8_t me_font(void);
 
 /* C6's rollback: the snapshot back and the transaction closed, nothing else.
  * Idempotent. panel_owner.c calls it before the panel leaves the menu. */

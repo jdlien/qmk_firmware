@@ -80,6 +80,10 @@ uint16_t lcd_font_height(uint16_t font_id);
 #define LCD_FONT_SONG_LARGE   0x0816u
 #define LCD_FONT_SONG_LARGE_W 8
 #define LCD_FONT_SONG_LARGE_H 14
+/* 10-28: the same in Terminus regular (the Font setting's third face), the
+ * same cell; every call that knows the one knows the other. */
+#define LCD_FONT_SONG_REGULAR 0x0817u
+#define LCD_FONT_IS_SONG(id)  ((id) == LCD_FONT_SONG_LARGE || (id) == LCD_FONT_SONG_REGULAR)
 
 // --- external flash WRITE path (Stage D provisioning) -----------------------
 // Device-asynchronous: the command returns as soon as it is on the wire, then

@@ -25,7 +25,7 @@
 enum {
     N_NONE = 0,
     N_TOP, N_POWER, N_CLOCK, N_DIAG, N_HELP, N_ABOUT, N_EXIT,   /* 1-7 */
-    N_HEALTH, N_CAMERA, N_RESET,                                /* 8-10 */
+    N_HEALTH, N_CAMERA, N_RESET,                                /* 8-10; N_CAMERA retired 10-28, its number kept */
     N_TOPIC0, N_TOPIC1, N_TOPIC2, N_TOPIC3,                     /* 11-14 */
     N_BACK,                                                     /* 15: "‹ Back" */
     N_POW0, N_POW1, N_POW2, N_POW3,                             /* 16-19 */
@@ -64,10 +64,12 @@ static bool is_pslot(uint8_t node) { return node == N_PSLOT; }
  * page one's last row, and Bootloader moves to the top of page two, with the
  * system items. 10-27: Reset settings under Bootloader (JD: "we still
  * haven't filled out a second page yet, so this could go on there").
- * 10-28: Font under Bootloader; in Large, seven a page, Exit is page
- * three's alone. */
+ * 10-28: Font under Bootloader; and About into Diagnostics as System info
+ * (JD: "possibly the lowest value item ... more like a 'System Status'
+ * page"), so fourteen rows: Large's two pages of seven, Small's eight and
+ * six. */
 static const uint8_t top_rows[]   = {N_LIGHT, N_SCREEN, N_CONN,     N_POWER, N_IND,  N_CLOCK, N_BATT,
-                                     N_PROFILES, N_BOOT, N_FONT, N_DEFAULTS, N_DIAG, N_HELP, N_ABOUT, N_EXIT};
+                                     N_PROFILES, N_BOOT, N_FONT, N_DEFAULTS, N_DIAG, N_HELP, N_EXIT};
 static const uint8_t light_rows[] = {N_BACK, N_EFFECT, N_BRIGHT, N_HUE, N_SAT, N_SPEED, N_LIGHTS};
 static const uint8_t ind_rows[]   = {N_BACK, N_LOCKS, N_CHGL};
 static const uint8_t conn_rows[]  = {N_BACK, N_BT0, N_BT1, N_BT2, N_PAIRNOW};   /* P3: on BT */
@@ -76,10 +78,11 @@ static const uint8_t conn_rows[]  = {N_BACK, N_BT0, N_BT1, N_BT2, N_PAIRNOW};   
  * LED blink at an internal-flash write compared by eye (plans/BACKLOG.md). */
 #if defined(AK820_DEV_HOOKS) || defined(MENU_HOST_TEST)
 #    define MENU_WTEST 1
-static const uint8_t diag_rows[]  = {N_BACK, N_HEALTH, N_CAMERA, N_RESET, N_WTEST};
+static const uint8_t diag_rows[]  = {N_BACK, N_ABOUT, N_HEALTH, N_RESET, N_WTEST};
 #else
-static const uint8_t diag_rows[]  = {N_BACK, N_HEALTH, N_CAMERA, N_RESET};
+static const uint8_t diag_rows[]  = {N_BACK, N_ABOUT, N_HEALTH, N_RESET};   /* 10-28: About, as System info; no Camera page */
 #endif
+#define DIAG_ROW_HEALTH 2u   /* menu_return_from_diag()'s row: the debug page's */
 static const uint8_t help_rows[]  = {N_BACK, N_TOPIC0, N_TOPIC1, N_TOPIC2, N_TOPIC3};
 static const uint8_t power_rows[] = {N_BACK, N_POW0, N_POW1, N_POW2, N_POW3};
 static const uint8_t clock_rows[] = {N_BACK, N_CLK0, N_CLK1, N_CLK2, N_CLK3, N_CLK4, N_CLK5};
@@ -95,8 +98,22 @@ static const uint8_t pslot_rows[] = {N_BACK, N_PLOAD, N_PSAVE, N_PRENAME, N_PDEL
  * geometry()), with the shorter words and the behaviours it brought. Read
  * where it's used, not latched: menu_refont() re-lays out an open menu when
  * it changes. Both faces' text spans x 4-123 (20 x 6 = 15 x 8). */
-static uint8_t face(void) { return env_font() == ENV_FONT_SMALL ? MT_SMALL : MT_LARGE; }
+/* The face the menu draws: the Font page's preview while it's open, else the
+ * saved one (me_font()). Regular (10-28) is Large's layout in its own glyphs:
+ * face() is the layout, gface() the glyphs. */
+static uint8_t face(void) { return me_font() == ENV_FONT_SMALL ? MT_SMALL : MT_LARGE; }
+static uint8_t gface(void) { return me_font() == ENV_FONT_REGULAR ? MT_LARGE_R : face(); }
 static bool    large(void) { return face() == MT_LARGE; }
+/* The Font page's options, in its order, and their names (the capitals'
+ * height, and the weight where two share it): ENV_FONT_* by option. Large's
+ * top level shows Bold's short, its row's room 8. */
+static const uint8_t     font_opt[3]   = {ENV_FONT_SMALL, ENV_FONT_REGULAR, ENV_FONT_LARGE};
+static const char *const font_name[3]  = {[ENV_FONT_LARGE] = "10px bold", [ENV_FONT_SMALL] = "8px", [ENV_FONT_REGULAR] = "10px"};
+static const char *const font_short[3] = {[ENV_FONT_LARGE] = "Bold", [ENV_FONT_SMALL] = "8px", [ENV_FONT_REGULAR] = "10px"};
+/* The Font page's note, under its options (JD: "a description on the Font
+ * selection page explaining what it does"): Small's two lines, Large's.
+ * "Now playing", the dashboard's song text, whatever the media. */
+static const char *const font_note[2][2] = {{"For the menus and", "now playing"}, {"For the menus", "and now playing"}};
 #define COLS_S 20
 #define ROWS_S 8
 #define ROWH_S 14
@@ -255,10 +272,9 @@ static const char *label_of(uint8_t node) {
         case N_BATT:   return "Battery";   /* P4 */
         case N_DIAG:   return "Diagnostics";
         case N_HELP:   return "Help";
-        case N_ABOUT:  return "About";
+        case N_ABOUT:  return "System info";   /* 10-28: in Diagnostics (11 of Large's 15) */
         case N_EXIT:   return "Exit";
         case N_HEALTH: return "Health page";
-        case N_CAMERA: return "Camera page";
         case N_RESET:  return "Reset counters";
         case N_BACK:   return MT_TRI_L " Back";   /* JD, 10-24: ◀ for ‹ */
         case N_LIGHT:  return "Lighting";
@@ -304,7 +320,7 @@ static const char *icon_of(uint8_t node) {
         case N_CLOCK: return MT_I_CLOCK;
         case N_DIAG:  return MT_I_DIAG " ";
         case N_HELP:  return MT_I_HELP;
-        case N_ABOUT: return MT_I_ABOUT;
+
         case N_EXIT:  return MT_I_EXIT " ";
         case N_LIGHT: return MT_I_LIGHT " ";   /* P1b */
         case N_SCREEN: return MT_I_SCREEN;
@@ -453,7 +469,7 @@ static uint8_t row_count(uint8_t node) {
     if (node == N_EFFECT) return (uint8_t)(1u + effects());
     if (node == N_LIGHTS) return 3;
     if (node == N_PROFILES) return (uint8_t)(2u + pfs_saved());   /* P5d: Back, the saved slots, Save new */
-    if (node == N_FONT) return 3;   /* Back, Small, Large */
+    if (node == N_FONT) return 4;   /* Back, 8px, 10px, 10px bold */
     uint8_t n;
     (void)rows_of(node, &n);
     return n;
@@ -465,10 +481,11 @@ static uint8_t row_node(uint8_t node, uint8_t i, uint8_t *val) {
         *val = (uint8_t)(i - 1u);
         return node == N_EFFECT ? N_EFFOPT : N_LTSOPT;
     }
-    if (node == N_FONT) {   /* 10-28: an option's face in val, MT_SMALL then MT_LARGE */
+    if (node == N_FONT) {   /* 10-28: an option's face in val, ENV_FONT_* (font_opt[]'s order) */
         if (!i) return N_BACK;
-        *val = (uint8_t)(i - 1u);
-        return i < 3u ? N_FOPT : N_NONE;
+        if (i > 3u) return N_NONE;
+        *val = font_opt[i - 1u];
+        return N_FOPT;
     }
 #ifdef MENU_WTEST
     if (node == N_WTEST) {
@@ -501,7 +518,9 @@ static bool is_list(uint8_t node) {
            node == N_PROFILES || is_pslot(node) || node == N_WTEST;
 }
 static bool is_bt_screen(uint8_t node) { return node == N_CONN || node == N_PAIRING; }   /* P3: on BT only */
-static bool is_preview(uint8_t node) { return node == N_EFFECT || node == N_LIGHTS; }   /* P1b's previewing choices */
+/* P1b's previewing choices; and (10-28) Font, whose preview waits for the
+ * knob's rest (menu_tick()), each one a re-layout of the whole menu. */
+static bool is_preview(uint8_t node) { return node == N_EFFECT || node == N_LIGHTS || node == N_FONT; }
 static bool is_choice(uint8_t node) {
     return node == N_POWER || node == N_CLOCK || node == N_BATT || node == N_FONT || is_preview(node);
 }
@@ -530,6 +549,7 @@ static uint8_t field_of(uint8_t node) {
         case N_SCREEN: return ME_LCD;
         case N_LOCKS:  return ME_LOCKS;
         case N_CHGL:   return ME_CHG;
+        case N_FONT:   return ME_FONT;   /* 10-28 */
         default:       return ME_NONE;
     }
 }
@@ -554,7 +574,9 @@ static uint8_t saved_row(uint8_t node) {
     if (node == N_EFFECT) return (uint8_t)(effect_index(me_saved()) + 1);
     if (node == N_LIGHTS) return me_saved() ? 2u : 1u;
     if (node == N_BATT) return env_batt_view();   /* P4: a view's row is its value, 1-3 */
-    if (node == N_FONT) return (uint8_t)(1u + face());   /* 10-28: Small's row, then Large's */
+    if (node == N_FONT)   /* 10-28: the saved face's row (me_saved(): never the preview's) */
+        for (uint8_t i = 0; i < 3u; i++)
+            if (font_opt[i] == me_saved()) return (uint8_t)(1u + i);
     for (uint8_t i = 0; i < CLOCK_ROWS; i++)
         if (clock_enum[i] == model_clock) return (uint8_t)(1u + i);
     return 1;
@@ -638,7 +660,7 @@ static const char *title_text(uint8_t id) {
         case T_CLOCK:      return "Clock";
         case T_DIAG:       return "Diagnostics";
         case T_HELP:       return "Help";
-        case T_ABOUT:      return "About";
+        case T_ABOUT:      return "System info";
         case T_RESET:      return "Reset counters";
         case T_SAVED:      return "Saved";
         case T_CANCELLED:  return "Cancelled";
@@ -708,7 +730,7 @@ static const char *title_icon(uint8_t id) {
         case T_DIAG:
         case T_RESET: return icon_of(N_DIAG);
         case T_HELP:  return icon_of(N_HELP);
-        case T_ABOUT: return icon_of(N_ABOUT);
+        case T_ABOUT: return icon_of(N_DIAG);   /* 10-28: System info, a Diagnostics page */
         case T_SCREEN: return icon_of(N_SCREEN);
         case T_BOOT:   return icon_of(N_BOOT);
         case T_DEFAULTS: return icon_of(N_DEFAULTS);
@@ -1036,6 +1058,12 @@ static row_t row_at(uint8_t r) {
         x.line = (uint8_t)(r - nr);
         return x;
     }
+    if (f->node == N_FONT && r >= nr && r < nr + 2u) {   /* 10-28: what the setting changes, as Battery's note */
+        x.kind = RK_NOTE;
+        x.node = N_FONT;
+        x.line = (uint8_t)(r - nr);
+        return x;
+    }
     if (is_pslot(f->node) && r >= PSUM_ROW0 && r < PSUM_ROW0 + PSUM_LINES) {   /* P5b: the summary; not selectable */
         x.kind = RK_PNOTE;
         x.node = f->node;
@@ -1071,7 +1099,7 @@ static row_t row_at(uint8_t r) {
     }
 #endif
     else if (x.node == N_EFFOPT || x.node == N_LTSOPT || x.node == N_FOPT) x.val = val;
-    else if (x.node == N_FONT) x.val = face();   /* 10-28: the value; only the menu and a restore change it */
+    else if (x.node == N_FONT) x.val = env_font();   /* 10-28: the saved value; only the menu and a restore change it */
     else if (value_which(x.node) >= 0) {
         x.kind = RK_VALUE;
         x.val  = live_value(x.node);
@@ -1191,7 +1219,8 @@ static void row_text(const row_t *x, char *out) {
         return;
     }
     if (x->kind == RK_NOTE) {
-        batt_note(x->line, buf, sizeof buf);
+        if (x->node == N_FONT) snprintf(buf, sizeof buf, "%s", font_note[large() ? 1 : 0][x->line & 1u]);
+        else batt_note(x->line, buf, sizeof buf);
         size_t n = strlen(buf);
         memcpy(out, buf, n > N ? N : n);
         return;
@@ -1222,7 +1251,7 @@ static void row_text(const row_t *x, char *out) {
     const bool  w     = large();
     const char *label = x->node == N_EFFOPT   ? env_effect_name(x->val)
                       : x->node == N_LTSOPT   ? (x->val ? "On" : "Off")
-                      : x->node == N_FOPT     ? (x->val == MT_SMALL ? "8px" : "10px")   /* the capitals' height; 10-28 */
+                      : x->node == N_FOPT     ? font_name[x->val % 3u]   /* the capitals' height; 10-28 */
                       : x->node == N_PAIRNOW  ? (w ? pair_labels_l : pair_labels)[x->val % 3u]
                       : x->node == N_PSLOT    ? pslot_label(x->val, nm)   /* P5b */
 #ifdef MENU_WTEST
@@ -1235,7 +1264,7 @@ static void row_text(const row_t *x, char *out) {
     else if (clk_row(x->node) >= 0 && w) label = clk_row(x->node) < 5 ? clock_example((uint8_t)clk_row(x->node), buf) : "Off";
     else if (clk_row(x->node) >= 0 && clk_row(x->node) < 5) value = clock_example((uint8_t)clk_row(x->node), buf);
     else if (x->node == N_BATT) value = w && x->val % 3u == 0u ? "%" : batt_short[x->val % 3u];
-    else if (x->node == N_FONT) value = x->val == MT_SMALL ? "8px" : "10px";   /* 10-28 */
+    else if (x->node == N_FONT) value = (w ? font_short : font_name)[x->val % 3u];   /* 10-28 */
     else if (x->node == N_CONN) value = link_names[x->val % 5u];          /* P3 */
     else if (x->node >= N_BT0 && x->node <= N_BT2) value = link_words[x->val % 5u];
     else if (bv_row(x->node) >= 0) value = batt_preview((uint8_t)(bv_row(x->node) + 1), buf);   /* P4 */
@@ -1258,7 +1287,7 @@ static void row_text(const row_t *x, char *out) {
         value = x->val == WT_STRATEGY ? (x->line ? "Scan" : "Blank") : x->line ? (x->val == WT_TEN && !w ? "Writing" : "On") : "";
 #endif
     else if (x->node == N_DIAG || x->node == N_HELP || x->node == N_ABOUT || x->node == N_HEALTH ||
-             x->node == N_CAMERA || x->node == N_RESET || is_topic(x->node) || x->node == N_LIGHT || x->node == N_BOOT ||
+             x->node == N_RESET || is_topic(x->node) || x->node == N_LIGHT || x->node == N_BOOT ||
              x->node == N_IND || x->node == N_DEFAULTS || x->node == N_WTEST)
         value = MT_TRI_R;                            /* JD, 10-24: ▶ for > */
     size_t      at   = 0;
@@ -1389,6 +1418,8 @@ static uint16_t row_sig(const row_t *x) {
      * the text cost 19 ms passes on the board), in 0x1000-0x1FFF (no other
      * kind's), with the bullet and the lit bit as RK_ITEM's. A collision only
      * delays a repaint to the text's next change. */
+    if (x->kind == RK_NOTE && x->node == N_FONT)   /* 10-28: fixed text; the face's change re-lays out the page */
+        return (uint16_t)((2u << 14) | (7u << 11) | ((uint16_t)(x->line & 1u) << 5));
     if (x->kind == RK_NOTE || (x->kind == RK_ITEM && bv_row(x->node) >= 0)) {
         uint32_t k = batt_key(x) ^ ((uint32_t)x->node << 24) ^ ((uint32_t)x->line << 30);
         uint16_t h = 0x811Cu;
@@ -1623,7 +1654,7 @@ static ms_paint_t text_piece(const char *cells, uint16_t y, bool row, uint8_t cu
                              uint8_t p, uint16_t fg, uint16_t icon_fg, bool bulb, uint8_t g0, bool ticon) {
     const uint8_t  lead  = row ? ROW_LEAD : 1u;
     const uint8_t  fc    = face(), cw = mt_cell_w(fc), ch = (uint8_t)(mt_cell_h(fc) - g0);
-    mt_line_t      l     = {cells, COLS, lead, 1, false, false, cursor, fc};
+    mt_line_t      l     = {cells, COLS, lead, 1, false, false, cursor, gface()};   /* 10-28: Regular's glyphs */
     const bool     lc    = row && c == 0;              /* the row's lead */
     const bool     split = row && icon_fg != 0;        /* P3: cells 0-1 a chunk of their own */
     const bool     ic    = split && c == 1;            /* that chunk */
@@ -2053,7 +2084,7 @@ void menu_open(uint32_t now) {
     ms_set_layout(l_list(), true);
 }
 
-void menu_return_from_diag(uint8_t page, uint32_t now) {
+void menu_return_from_diag(uint32_t now) {
     depth        = 0;
     last_idle    = 0;
     flash_id     = 0;
@@ -2065,7 +2096,7 @@ void menu_return_from_diag(uint8_t page, uint32_t now) {
     (void)me_take_pending();
     pv = PV_LIVE;
     push(N_TOP, row_index(N_TOP, N_DIAG));   /* Diagnostics' row, wherever it is */
-    push(N_DIAG, page ? 2 : 1);
+    push(N_DIAG, DIAG_ROW_HEALTH);
     title_id = T_DIAG;
     retitle(now);
     ms_set_layout(l_list(), true);
@@ -2290,7 +2321,6 @@ static menu_result_t activate(uint32_t now) {
         uint8_t i = (uint8_t)(f->cursor - 1u);
         if (f->node == N_POWER) { env_power_set(i); model_power = i; }
         else if (f->node == N_BATT) env_batt_view_set((uint8_t)(i + 1u));   /* P4: row i is view i + 1 */
-        else if (f->node == N_FONT) menu_font_set(i == MT_SMALL ? ENV_FONT_SMALL : ENV_FONT_LARGE);   /* re-lays out the menu */
         else { env_clock_set(clock_enum[i]); model_clock = clock_enum[i]; }
         flash(T_SAVED, now);
         return pop(now);
@@ -2299,7 +2329,6 @@ static menu_result_t activate(uint32_t now) {
         case N_POWER:
         case N_CLOCK:
         case N_BATT:
-        case N_FONT:   /* 10-28: Back, Small, Large */
             if (node == N_CLOCK) {
                 /* About's bytes: read afresh. Its examples repaint whole:
                  * rows a quick re-entry left committed could alias (codex). */
@@ -2320,6 +2349,7 @@ static menu_result_t activate(uint32_t now) {
             return MENU_NONE;
         case N_EFFECT:
         case N_LIGHTS:   /* P1b: a previewing choice opens its edit, then on the saved option */
+        case N_FONT:     /* 10-28: its preview's edit, the saved face shown */
             me_open(field_of(node));
             push(node, saved_row(node));
             show(false, false, now);
@@ -2469,7 +2499,6 @@ static menu_result_t activate(uint32_t now) {
         case N_EXIT:
             return MENU_CLOSE;
         case N_HEALTH: return MENU_DIAG_HEALTH;
-        case N_CAMERA: return MENU_DIAG_CAMERA;
         case N_RESET:
         case N_BOOT:
         case N_DEFAULTS:
@@ -2609,7 +2638,7 @@ menu_result_t menu_input(int8_t turns, mi_latch_t latch, uint32_t now) {
             if (c < 0) c += n;
             f->cursor = (uint8_t)c;
             f->top    = (uint8_t)(f->cursor / ROWS * ROWS);   /* lists page by a screen */
-            if (is_preview(f->node)) {   /* P1b: the option under the cursor shows at once; on Back, the old value */
+            if (is_preview(f->node) && f->node != N_FONT) {   /* P1b: the option under the cursor shows at once; on Back, the old value */
                 uint8_t val, node = row_node(f->node, f->cursor, &val);
                 me_preview(node == N_BACK ? me_saved() : option_value(node, val));
             }
@@ -2772,6 +2801,14 @@ void menu_tick(uint32_t now, uint32_t idle_ms) {
         if (is_confirm(n)) ms_set_layout(l_list(), false);
         else ms_retarget();
         moved = false;
+    }
+    /* 10-28 (JD, through ak820-pro-90): the Font page's preview, once the knob
+     * has rested MENU_PREVIEW_MS, as a profile's: the face under the cursor,
+     * the saved one on Back, the whole menu re-laid out in it (a spin through
+     * the options repaints nothing). Never written: the click saves. */
+    if (cur()->node == N_FONT && me_field() == ME_FONT && idle_ms >= MENU_PREVIEW_MS) {
+        uint8_t v, node = row_node(N_FONT, cur()->cursor, &v);
+        me_preview(node == N_FOPT ? v : me_saved());
     }
     /* P5e: the preview, once the knob has rested on Profiles' row MENU_PREVIEW_MS:
      * a saved slot's, or the live settings on Back and Save new. */

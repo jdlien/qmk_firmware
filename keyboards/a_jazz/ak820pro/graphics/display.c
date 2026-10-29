@@ -96,8 +96,9 @@ _Static_assert(PANEL_WIDTH <= 255, "draw_battery() keeps x and widths in a byte"
  * table in internal flash, cropped to its rows 1-14. Not an asset: lcd_bus.h's
  * pseudo font id, drawn by the CPU. Only the slot's two lines and its single
  * line of 12 or more characters use it; the overlay, the 20px single line,
- * the debug and camera pages and the bootloader splash keep their faces. */
+ * the debug page and the bootloader splash keep their faces. */
 #define FONT_SONG_LARGE     LCD_FONT_SONG_LARGE
+#define FONT_SONG_REGULAR   LCD_FONT_SONG_REGULAR   /* 10-28: the third face's */
 #define FONT_SONG_LARGE_ADV LCD_FONT_SONG_LARGE_W   /* 8 */
 
 /* Align the text with the TRANSPORT ICON, not with the band.
@@ -164,7 +165,6 @@ static volatile bool display_powered = true;
  * debug_exit_step, whose uses are migrated one by one below. */
 #define OWNER_IS(o) (po_owner() == (o))
 static uint8_t debug_clear_band = 0;   // >0 while the entry clear is banding down the panel
-static bool    debug_big        = false; // the second Fn+D tap: the camera page (big digits)
 static bool    locks_stage_first = true; // restore: the next lock-band pass forgets the (cleared) band
 static bool splash_cleared = false;
 static bool mac_mode = false;
@@ -253,7 +253,7 @@ static bool pass_deferred = false;
 static bool clock_ticked_this_pass = false;
 /* The same for the debug page. Composition is 5-9 ms, a glyph's DMA arm ~3,
  * and the two in one pass, with QMK's core, were the 14-19 ms passes on the
- * Fn+D and Camera pages (HC_ACCT, the S1 gate, 10-24). A pass runs the
+ * Fn+D pages (HC_ACCT, the S1 gate, 10-24; the camera page is gone since 10-28). A pass runs the
  * second edge, the menu task, the pump, then the 10 Hz block, so:
  *  - composed at the second edge (before the pump): the pump waits for the
  *    next pass (dbg_composed_this_pass);
@@ -410,8 +410,8 @@ static bool display_backlight_init(void) {
  * was a trade against another.
  *
  * ⚠️ DESCENDERS ARE CLIPPED IN THAT ATLAS. g/p/q/y and friends lost their
- * tails, because only the clock and the Fn+D camera page draw with FONT_CLOCK,
- * and neither draws a descender (the camera page: digits . : % V < > -). If you
+ * tails, because only the clock draws with FONT_CLOCK (and, until 10-28, the
+ * Fn+D camera page: digits . : % V < > -), and it draws no descender. If you
  * ever draw general text at this size, regenerate the atlas at its full 15x34
  * cell and hand these 12 rows back -- do not try to fix it by nudging offsets. */
 #define CLOCK_Y 58
@@ -442,7 +442,6 @@ static bool draw_locks_staged(bool first);   // Fn+D restore: one lock-band comp
 static void draw_text_slot(bool force);
 static void draw_debug_page(void);   // Fn+D full-panel diagnostics
 static bool debug_pump_glyph(void);  // one changed debug cell, non-blocking
-static bool cam_pump_glyph(void);    // one changed camera-page cell, non-blocking
 static void debug_restore_step(void); // one step of the restore's CLEAR and STAGES (C1)
 static void draw_conn_row(void);      // three-transport strip, top row
 static void shadow_mark_all_blank(void);   // the restore's clear done: every line and the clock known blank
@@ -798,7 +797,6 @@ static char dbg_shown[DBG_ROWS][DBG_COLS + 1];
  * stale characters behind. */
 static bool dbg_isr_rebase = true;   /* Health's ISR window starts afresh (page entry) */
 static bool dbg_text_changed;   /* C10: a Health row's composed text changed */
-static bool cam_text_changed;   /* ...a Camera line's */
 static void dbg_row(uint8_t row, const char *label, const char *value) {
     if (row >= DBG_ROWS) return;
     char line[DBG_COLS + 1];
@@ -876,17 +874,17 @@ static bool dbg_force_recompose = false;
  * its completion. dbg_gen moves when a composition's text differs from the
  * last one's, when the page is reset, and when a loss invalidates it: a
  * repair is a new generation. dbg_sec is the RTC second the composition
- * shows, from the same rtc_get_time() sample that composes Camera's clock. */
+ * shows, from the draw's rtc_get_time() sample. */
 #ifdef AK820_DEV_HOOKS
 static uint8_t    dbg_gen, dbg_done_gen;
 static uint8_t    dbg_sec = 0xFFu;
 static bool       dbg_composed;        /* a composition since the page was entered or reset */
-static void       dbg_note_composed(void);   /* after the camera page's grids */
+static void       dbg_note_composed(void);   /* after the page's grid */
 #    define DBG_GEN(stmt) do { stmt; } while (0)
 #else
 #    define DBG_GEN(stmt) do { } while (0)
 #endif
-static rtc_time_t compose_now;         /* the sample this composition uses: Camera's clock */
+static rtc_time_t compose_now;         /* the sample this composition uses: dbg_sec's */
 static bool       compose_now_ok;
 
 /* Recompose on the next tick regardless of the second edge, so hold-Fn+D shows
@@ -906,7 +904,7 @@ static void draw_debug_page(void) {
     dbg_composed_this_pass = true;
 
     compose_now_ok = rtc_get_time(&compose_now);
-    dbg_text_changed = cam_text_changed = false;
+    dbg_text_changed = false;
     dbg_compose();
     for (uint8_t r = 0; r < DBG_ROWS; r++)
         if (memcmp(dbg_text[r], dbg_shown[r], DBG_COLS) != 0)
@@ -932,10 +930,6 @@ static bool debug_pump_glyph(void) {
         if (ok && ++debug_clear_band > DBG_CLEAR_BANDS) debug_clear_band = 0;
         return true;
     }
-    /* Exclusive: on the camera page, the Health grid is never painted, even
-     * when the camera has nothing left to paint (a loss recovery's reset
-     * would otherwise paint Health's spaces over the camera's digits). */
-    if (debug_big) return cam_pump_glyph();
     if (!dbg_dirty) return false;
     for (uint8_t r = 0; r < DBG_ROWS; r++) {
         if (!(dbg_dirty & (1u << r))) continue;
@@ -953,191 +947,23 @@ static bool debug_pump_glyph(void) {
     return false;
 }
 
-/* --- Fn+D's camera page ----------------------------------------------------------
- * The pack and the level in text a camera can read across a room. The debug
- * page's 6x14 text is ~3 px tall on the security camera JD films battery runs
- * with (2026-10-02), and the moment worth filming -- the board dying on the
- * lights-off reserve -- is the one no RAM log survives. The second tap of Fn+D;
- * a third returns to the dashboard. It shares the debug page's machinery: the
- * banded clear on entry, the staged restore on exit, and one glyph per pass.
- *
- * In the CLOCK's font (15x22, the largest face), since 2026-10-06. It replaced
- * seven-segment digits drawn as rectangles, which JD found ugly and cryptic;
- * the atlas, cropped for the clock, still holds all 95 ASCII glyphs, and the
- * ones drawn here (digits . : % V < > -) have no descenders, which the crop cut
- * (see CLOCK_Y). The previews were rendered from the shipped atlases first.
- *
- *   line 1  the pack, "3.712V"; ">4.036V" / "<3.161V" at the top and bottom
- *           clamps (bounds, never numbers, as on the Batt row); "-.---V" none
- *   line 2  the level and, on battery, the time left to the cut at the
- *           recent draw (battery.c's energy count, Phase 2): "58% 31h",
- *           "100% 4d" from 100 h, "9% <1h" under one, "~" in place of the
- *           space while the average has under an hour; the level alone on USB,
- *           at the cut or before the first minute; "--%" unknown
- *   line 3  the board's clock, "14:03:27", for time-lapse video: every frame
- *           dates itself from the clock the timekeeper keeps right
- *   line 4  the raw 5C and its age in s, "5C 62@3" (the 10x23 status face)
- *
- * Each line is a FIXED grid of cells, so a changed character repaints only its
- * own cell (a glyph tile paints its background too, so a space clears one).
- * Text is centred by padding within the grid; each grid's width is chosen so
- * the usual length sits exactly centred (6 chars of volts, 3 of percent, 8 of
- * clock, 7 of 5C) and the rest are off by at most half a cell. Line 2 is 8
- * cells since Phase 2: "100% 51h" is eight (codex), and 8 x 15 px fits the
- * 128 px panel. */
-#define CAM_BIG_ADV   15   /* FONT_CLOCK's advance (draw_clock's 8 * 15) */
-#define CAM_LINES     4
-#define CAM_MAX_COLS  11
-typedef struct {
-    uint16_t font;
-    uint8_t  adv, cols, y;
-} cam_line_t;
-static const cam_line_t cam_lines[CAM_LINES] = {
-    {FONT_CLOCK,  CAM_BIG_ADV,     8,  4},
-    {FONT_CLOCK,  CAM_BIG_ADV,     8,  32},
-    {FONT_CLOCK,  CAM_BIG_ADV,     8,  64},
-    {FONT_STATUS, FONT_STATUS_ADV, 11, 98},
-};
-_Static_assert(8 * CAM_BIG_ADV <= PANEL_WIDTH && 11 * FONT_STATUS_ADV <= PANEL_WIDTH, "camera lines must fit the panel");
-_Static_assert(98 + 23 <= PANEL_HEIGHT, "the 5C line must fit the panel");
-static char    cam_text[CAM_LINES][CAM_MAX_COLS];
-static char    cam_shown[CAM_LINES][CAM_MAX_COLS];
-static uint8_t cam_dirty;   /* bit per line: text differs from the panel */
-
-/* Blank both grids: the banded clear on entry leaves the panel blank, which is
- * what a grid of spaces looks like. */
-static void cam_reset(void) {
-    memset(cam_text, ' ', sizeof(cam_text));
-    memset(cam_shown, ' ', sizeof(cam_shown));
-    cam_dirty = 0;
-}
-
-/* COMPOSE ONLY: line `i` becomes `s`, centred in its grid. */
-static void cam_set(uint8_t i, const char *s) {
-    const uint8_t cols = cam_lines[i].cols;
-    uint8_t n = 0;
-    while (s[n] && n < cols) n++;
-    uint8_t pad = (uint8_t)((cols - n) / 2u);
-    char    line[CAM_MAX_COLS];
-    memset(line, ' ', sizeof(line));
-    memcpy(&line[pad], s, n);
-    if (memcmp(line, cam_text[i], cols) != 0) {
-        memcpy(cam_text[i], line, cols);
-        cam_dirty |= (uint8_t)(1u << i);
-        cam_text_changed = true;
-    }
-}
-
-/* COMPOSE ONLY -- no LCD I/O. Once a second, from dbg_compose(). */
-static void cam_compose(void) {
-    char t[12], *p;
-
-    uint8_t  med = battery_5c_rounded();
-    uint16_t pk  = battery_pack_mv();
-    p = t;
-    if (battery_is_absent() || !pk) {
-        p = dbg_append(t, "-.---");
-    } else {
-        if (med == 100u) *p++ = '>';
-        else if (med == 0u) *p++ = '<';
-        *p++ = (char)('0' + (pk / 1000u) % 10u);
-        *p++ = '.';
-        *p++ = (char)('0' + (pk / 100u) % 10u);
-        *p++ = (char)('0' + (pk / 10u) % 10u);
-        *p++ = (char)('0' + pk % 10u);
-    }
-    dbg_append(p, "V");
-    cam_set(0, t);
-
-    uint8_t lv = battery_level_pct();   /* 0xFF unknown */
-    if (lv > 100u) {
-        cam_set(1, "--%");
-    } else {
-        p = dbg_append(dbg_u32(t, lv), "%");
-        uint16_t left = battery_time_left_min();
-        if (left != 0xFFFFu) {
-            /* "~" for the space while the average is young: "100%~51h" stays
-             * eight cells. */
-            *p++ = battery_avg_minutes() < 60u ? '~' : ' ';
-            if (left < 60u) {
-                dbg_append(p, "<1h");
-            } else if (left < 100u * 60u) {
-                dbg_append(dbg_u32(p, left / 60u), "h");
-            } else {
-                dbg_append(dbg_u32(p, (left + 720u) / 1440u), "d");
-            }
-        }
-        cam_set(1, t);
-    }
-
-    char clk[9] = "--:--:--";
-    if (compose_now_ok) {   /* draw_debug_page()'s sample: dbg_sec is this second */
-        const rtc_time_t now  = compose_now;
-        const uint8_t    f[3] = {now.hours, now.minutes, now.seconds};
-        for (uint8_t i = 0; i < 3; i++) {
-            clk[i * 3]     = (char)('0' + f[i] / 10u);
-            clk[i * 3 + 1] = (char)('0' + f[i] % 10u);
-        }
-    }
-    cam_set(2, clk);
-
-    uint8_t  raw  = ch582_get_battery();
-    uint32_t rage = ch582_battery_age_ms();
-    p = dbg_append(t, "5C ");
-    if (raw <= 100 && rage < 20000u) {
-        p = dbg_u32(p, raw);
-        p = dbg_append(p, "@");
-        dbg_u32(p, rage / 1000u);
-    } else {
-        dbg_append(p, "--");
-    }
-    cam_set(3, t);
-}
+/* 10-28: Fn+D's second page, the camera page (the pack, the level and the
+ * clock in the clock's face, for filming a battery run), is gone (JD: the
+ * bench's power cut and the INA228 logger replaced filming the screen; the
+ * debug page shows the 5C). Fn+D's tap goes debug page <-> dashboard. */
 
 #ifdef AK820_DEV_HOOKS
-/* C10: a new generation when the page showing's composed text changed (each
- * cell compared as it was composed: dbg_row, cam_set); Camera's Health grid,
- * composed behind it, doesn't count. The second it shows. */
+/* C10: a new generation when the page's composed text changed (each cell
+ * compared as it was composed: dbg_row). The second it shows. */
 static void dbg_note_composed(void) {
-    bool changed = debug_big ? cam_text_changed : dbg_text_changed;
-    if (!dbg_composed || changed) dbg_gen++;
+    if (!dbg_composed || dbg_text_changed) dbg_gen++;
     dbg_composed = true;
     dbg_sec      = compose_now_ok ? compose_now.seconds : 0xFFu;
 }
 #endif
 
-/* One changed cell per call, non-blocking, as debug_pump_glyph(). Returns true
- * if it owned this pass. */
-static bool cam_pump_glyph(void) {
-    for (uint8_t i = 0; i < CAM_LINES; i++) {
-        if (!(cam_dirty & (1u << i))) continue;
-        const cam_line_t *ln = &cam_lines[i];
-        const uint16_t    x0 = (uint16_t)((PANEL_WIDTH - ln->cols * ln->adv) / 2u);
-        for (uint8_t c = 0; c < ln->cols; c++) {
-            if (cam_text[i][c] == cam_shown[i][c]) continue;
-            if (!lcd_draw_flash_glyph_try(ln->font, cam_text[i][c], (uint16_t)(x0 + c * ln->adv), ln->y))
-                return true;   /* bus busy: keep the cell dirty, retry next pass */
-            cam_shown[i][c] = cam_text[i][c];
-            return true;
-        }
-        cam_dirty &= (uint8_t)~(1u << i);   /* line fully painted */
-    }
-    return false;
-}
-
 static void dbg_compose(void) {
     char v[24], *p;
-
-    /* The camera page draws none of the debug rows: its four lines are its
-     * own (cam_compose), and a debug cell left non-blank would paint over
-     * them. It composes only its own: composing all nine Health rows behind
-     * it, then blanking them, made Camera's passes 15-19 ms (HC_ACCT, the S1
-     * gate, 10-24). */
-    if (debug_big) {
-        for (uint8_t r = 0; r < DBG_ROWS; r++) dbg_row(r, "", "");
-        cam_compose();
-        return;
-    }
 
     /* Uptime -- the timebase for every since-boot counter below, and the thing
      * that says whether a reading is meaningful yet. */
@@ -1157,9 +983,8 @@ static void dbg_compose(void) {
     uint32_t entries, ticks;
     uint16_t tmin, tmax;
     health_isr_stats(&entries, &ticks, &tmin, &tmax);
-    /* A fresh window on entering the page: Camera doesn't compose Health, so
-     * the last sample may be minutes old, or from before a health reset. "--"
-     * until the next whole second. */
+    /* A fresh window on entering the page: the last sample may be minutes
+     * old, or from before a health reset. "--" until the next whole second. */
     if (dbg_isr_rebase) {
         prev_ms        = 0;
         dbg_isr_rebase = false;
@@ -1293,7 +1118,7 @@ bool display_debug_active(void) {
     return OWNER_IS(PANEL_DEBUG);
 }
 
-/* Entering a debug page, or Health to Camera in place: the page's text
+/* Entering the debug page: the page's text
  * blanked NOW, not at the next compose (the clear takes eight passes and the
  * compose runs on the 10 Hz tick, so a stale dirty row could otherwise be
  * painted straight over it), and the clear handed to the pump, one band a pass.
@@ -1303,38 +1128,30 @@ bool display_debug_active(void) {
  *
  * A cleared panel is BLANK, which is exactly what a space paints, so the
  * shadows are seeded with spaces and the diff skips every blank cell. */
-static void debug_page_reset(bool camera) {
-    debug_big        = camera;
+static void debug_page_reset(void) {
     debug_clear_band = 1;
     for (uint8_t r = 0; r < DBG_ROWS; r++) {
         memset(dbg_text[r], ' ', DBG_COLS);  dbg_text[r][DBG_COLS]  = '\0';
         memset(dbg_shown[r], ' ', DBG_COLS); dbg_shown[r][DBG_COLS] = '\0';
     }
     dbg_dirty = 0;
-    cam_reset();
     dbg_force_recompose = true;
     dbg_isr_rebase      = true;
     DBG_GEN(dbg_composed = false; dbg_gen++; dbg_sec = 0xFFu);   /* C10: incomplete until its first composition is painted */
 }
 
-/* A loss under the debug page: only the page showing is invalidated, so every
- * one of its cells repaints after the clear. Its shown cells advance when a
- * glyph's DMA starts, which is why a loss has to reset them. On Camera, the
- * Health grid stays blank and clean. */
+/* A loss under the debug page: the page is invalidated, so every one of its
+ * cells repaints after the clear. Its shown cells advance when a glyph's DMA
+ * starts, which is why a loss has to reset them. */
 static void debug_page_invalidate(void) {
-    if (debug_big) {
-        memset(cam_shown, 0x01, sizeof(cam_shown));
-        cam_dirty = (uint8_t)((1u << CAM_LINES) - 1u);
-    } else {
-        for (uint8_t r = 0; r < DBG_ROWS; r++) memset(dbg_shown[r], 0x01, DBG_COLS);
-        dbg_dirty = (uint16_t)((1u << DBG_ROWS) - 1u);
-    }
+    for (uint8_t r = 0; r < DBG_ROWS; r++) memset(dbg_shown[r], 0x01, DBG_COLS);
+    dbg_dirty = (uint16_t)((1u << DBG_ROWS) - 1u);
     debug_clear_band = 1;
     DBG_GEN(dbg_gen++);   /* C10: the repair is a new generation */
 }
 
-/* The DBG_PAGE key and op 1: dashboard -> Health -> Camera -> dashboard on
- * its own, and inside the menu's session Health -> Camera -> the menu. C1's
+/* The DBG_PAGE key and op 1: dashboard -> Health -> dashboard on its own, and
+ * inside the menu's session Health -> the menu (10-28: no Camera page). C1's
  * table decides; it refuses under the animation, which would tear the panel
  * between two painters, and while the menu's opening is pending. The way back
  * to the dashboard is the staged restore, one step a pass from the pump: the
@@ -2366,7 +2183,8 @@ _Static_assert(DISPLAY_TEXT_MAX_L1 == (PANEL_WIDTH - TEXT_X2) / FONT_SMALL_ADV, 
 /* The faces' budgets (text_fit.h), cut when a line is queued: Small's are the
  * host's, so Small shows what it always has; Large's follow from the same x
  * and its 8 px advance (B6). text_buf keeps the host's whole line either way. */
-_Static_assert(TEXT_FACE_LARGE == KB_FONT_LARGE && TEXT_FACE_SMALL == KB_FONT_SMALL, "text_fit.h's faces are kb_eeconfig's");
+_Static_assert(TEXT_FACE_LARGE == KB_FONT_LARGE && TEXT_FACE_SMALL == KB_FONT_SMALL && TEXT_FACE_REGULAR == KB_FONT_REGULAR,
+               "text_fit.h's faces are kb_eeconfig's");
 _Static_assert(TEXT_FIT_SMALL_L0 == DISPLAY_TEXT_MAX_L0 && TEXT_FIT_SMALL_L1 == DISPLAY_TEXT_MAX_L1, "Small's budgets are the host's");
 _Static_assert(TEXT_FIT_LARGE_L0 == (PANEL_WIDTH - TEXT_X) / FONT_SONG_LARGE_ADV, "Large's line-0 budget vs icon gutter");
 _Static_assert(TEXT_FIT_LARGE_L1 == (PANEL_WIDTH - TEXT_X2) / FONT_SONG_LARGE_ADV, "Large's line-1 budget vs full width");
@@ -3485,7 +3303,7 @@ static void queue_text_line(uint8_t line, uint16_t x, uint16_t y) {
     const uint8_t n = text_fit_len(face, line, text_buf[line]);
     memcpy(cut, text_buf[line], n);
     cut[n] = '\0';
-    queue_line(line, face == TEXT_FACE_SMALL ? FONT_SMALL : FONT_SONG_LARGE, x, y, cut);
+    queue_line(line, face == TEXT_FACE_SMALL ? FONT_SMALL : face == TEXT_FACE_REGULAR ? FONT_SONG_REGULAR : FONT_SONG_LARGE, x, y, cut);
 }
 
 static void text_line_step(uint8_t line) {
@@ -3690,7 +3508,7 @@ static void debug_done_note(void) {
 }
 static bool debug_painted(void) {
     if (!OWNER_IS(PANEL_DEBUG) || !dbg_composed || debug_clear_band || dbg_force_recompose) return false;
-    if (debug_big ? cam_dirty != 0 : dbg_dirty != 0) return false;
+    if (dbg_dirty != 0) return false;
     if (lcd_blit_busy() || lcd_blit_lost_pending()) return false;
     rtc_time_t t;
     uint8_t    now = rtc_get_time(&t) ? t.seconds : 0xFFu;
@@ -3698,7 +3516,7 @@ static bool debug_painted(void) {
 }
 void display_debug_meas(uint8_t *page, uint8_t *gen, uint8_t *done_gen, uint8_t *sec) {
     if (debug_painted()) dbg_done_gen = dbg_gen;
-    *page     = OWNER_IS(PANEL_DEBUG) ? (debug_big ? 2u : 1u) : 0u;
+    *page     = OWNER_IS(PANEL_DEBUG) ? 1u : 0u;   /* 2 was the camera page's */
     *gen      = dbg_gen;
     *done_gen = dbg_done_gen;
     *sec      = dbg_sec;
@@ -3982,7 +3800,6 @@ static void po_apply(uint16_t a) {
             memset(dbg_shown[r], ' ', DBG_COLS); dbg_shown[r][DBG_COLS] = '\0';
         }
         dbg_dirty = 0;
-        cam_reset();
     }
     if (a & PO_ACT_OVERLAYS_OFF) {
 #ifdef PARAM_OVERLAY
@@ -3991,8 +3808,7 @@ static void po_apply(uint16_t a) {
         param_overlay_cancel();
     }
     if (a & PO_ACT_REPEAT_CANCEL) param_repeat_cancel();
-    if (a & PO_ACT_DEBUG_ENTER) debug_page_reset(po_debug_page() == DEBUG_PAGE_CAMERA);
-    if (a & PO_ACT_DEBUG_CAMERA) debug_page_reset(true);
+    if (a & PO_ACT_DEBUG_ENTER) debug_page_reset();
     if (a & PO_ACT_OVERLAYS_REPRIME) param_status_reprime();
     /* The menu's side: the input cleared, its screen opened, an injected loss
      * that was dropped ended (menu_ops.c). */

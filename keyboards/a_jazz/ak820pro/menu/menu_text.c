@@ -11,6 +11,7 @@ _Static_assert(MT_CELL_W == FONT_MONO_W && MT_CELL_H == FONT_MONO_H, "menu_text.
 _Static_assert(MT_CELL_W_L == FONT_LARGE_W && MT_CELL_H_L == FONT_LARGE_H, "menu_text.h's Large cell is the face's");
 _Static_assert(FONT_MONO_XFIRST == 0x80 && FONT_MONO_N - FONT_MONO_ASCII == 46, "menu_text.h's MT_LSAQUO..MT_I_FONT");
 _Static_assert(FONT_LARGE_N == FONT_MONO_N, "the faces share their codes");
+_Static_assert(FONT_REGULAR_N == FONT_MONO_ASCII && FONT_MONO_FIRST == 0x20, "Regular: the ASCII, Bold's extras");
 
 /* A code's index in either table: '?' for a code the faces lack. */
 static uint8_t index_of(uint8_t code) {
@@ -19,10 +20,14 @@ static uint8_t index_of(uint8_t code) {
         return (uint8_t)(FONT_MONO_ASCII + (code - FONT_MONO_XFIRST));
     return (uint8_t)('?' - FONT_MONO_FIRST);
 }
-static const uint8_t *glyph(uint8_t face, uint8_t code) {
-    return face == MT_LARGE ? font_large_mono[index_of(code)] : font_small_mono[index_of(code)];
-}
 const uint8_t *mt_glyph_large(uint8_t code) { return font_large_mono[index_of(code)]; }
+const uint8_t *mt_glyph_regular(uint8_t code) {
+    uint8_t i = index_of(code);
+    return i < FONT_REGULAR_N ? font_regular_mono[i] : font_large_mono[i];
+}
+static const uint8_t *glyph(uint8_t face, uint8_t code) {
+    return face == MT_LARGE ? mt_glyph_large(code) : face == MT_LARGE_R ? mt_glyph_regular(code) : font_small_mono[index_of(code)];
+}
 
 uint16_t mt_width(const mt_line_t *l) { return (uint16_t)(l->lead + l->cells * mt_cell_w(l->face) + l->trail); }
 
@@ -39,7 +44,7 @@ static void ink_cols(uint8_t *bits, uint8_t stride, uint8_t rows, uint16_t a, ui
 void mt_bits(const mt_line_t *l, uint16_t c0, uint16_t w, uint8_t r0, uint8_t rows, uint8_t *bits, uint8_t stride) {
     memset(bits, 0, (size_t)stride * rows);
     const uint8_t  cw   = mt_cell_w(l->face);
-    const uint8_t  mask = l->face == MT_LARGE ? 0xFFu : 0xFCu;   /* the cell's columns: Small's six are bits 7..2 */
+    const uint8_t  mask = l->face != MT_SMALL ? 0xFFu : 0xFCu;   /* the cell's columns: Small's six are bits 7..2 */
     const uint16_t end  = (uint16_t)(c0 + w);                    /* line columns [c0, end) */
     const uint16_t text = (uint16_t)(l->lead + l->cells * cw);
     /* The edges, ink only (background is the zeroed bits). A lead glyph's

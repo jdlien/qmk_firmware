@@ -15,12 +15,23 @@
 #define PROF_BVIEW_PERCENT 1u   /* KB_BATT_VIEW_PERCENT */
 #define PROF_BVIEW_HOURS   2u   /* KB_BATT_VIEW_HOURS */
 #define PROF_BVIEW_BOTH    3u   /* KB_BATT_VIEW_BOTH (JD, 10-26) */
-/* 10-28: the menu's face, bit 2 of the LIVE record's PR_BVIEW, set Small, and
- * only at HC_PROFILES' edges (4 packs it, 5 takes it out), so flash.sh keeps
- * it. Saved profiles and the last record never carry it: the capture, the
- * `*`'s compare, the range check and the apply all stay face-free, and the
- * readout's setter keeps the face. */
+/* 10-28: the menu's face, in PR_BVIEW beside the readout (bits 0-1) under
+ * PF_BVIEW: bit 2 Small, bit 3 Regular, neither Large (Terminus Bold), as
+ * kb_eeconfig's byte. Every record carries it since JD's "profiles respect
+ * the font size setting": the capture, the `*`'s compare, the range check
+ * and the apply (menu_font_set(), the one way to change it). A record saved
+ * before has the bits clear and loads as Bold, the default. */
+#define PROF_BVIEW_VIEW    0x03u
 #define PROF_BVIEW_SMALL   0x04u
+#define PROF_BVIEW_REG     0x08u
+#define PROF_BVIEW_FACE    (PROF_BVIEW_SMALL | PROF_BVIEW_REG)
+static uint8_t face_bits(uint8_t font) {
+    return font == ENV_FONT_SMALL ? PROF_BVIEW_SMALL : font == ENV_FONT_REGULAR ? PROF_BVIEW_REG : 0u;
+}
+static uint8_t face_of(uint8_t bview) {
+    uint8_t f = bview & PROF_BVIEW_FACE;
+    return f == PROF_BVIEW_SMALL ? ENV_FONT_SMALL : f == PROF_BVIEW_REG ? ENV_FONT_REGULAR : ENV_FONT_LARGE;
+}
 
 /* A restore's transaction (3 B): the host's token; the pages received, in
  * order (bits 0-4, a count: P5d's nine pages outgrew P5a's five bits of a
@@ -130,7 +141,12 @@ static bool body_ok(const uint8_t *rec) {
     if ((f & PF_LOCKS) && rec[PR_LOCKS] > ENV_IND_MAX) return false;
     if ((f & PF_CHARGING) && rec[PR_CHARGING] > ENV_IND_MAX) return false;
     if ((f & PF_CLOCK) && rec[PR_CLOCK] >= PROF_CLOCK_MODES) return false;
-    if ((f & PF_BVIEW) && (rec[PR_BVIEW] < PROF_BVIEW_PERCENT || rec[PR_BVIEW] > PROF_BVIEW_BOTH)) return false;
+    if (f & PF_BVIEW) {   /* the readout 1-3, one face or none, nothing else */
+        uint8_t b = rec[PR_BVIEW], v = (uint8_t)(b & PROF_BVIEW_VIEW);
+        if (v < PROF_BVIEW_PERCENT || v > PROF_BVIEW_BOTH || (b & ~(PROF_BVIEW_VIEW | PROF_BVIEW_FACE)) ||
+            (b & PROF_BVIEW_FACE) == PROF_BVIEW_FACE)
+            return false;
+    }
     if ((f & PF_POWER) && rec[PR_POWER] >= PROF_POWER_MODES) return false;
     if ((f & PF_NAME) && !name_ok(&rec[PR_NAME])) return false;
     return true;
@@ -308,7 +324,7 @@ static void capture_body(uint8_t *rec, uint8_t fields) {
     rec[PR_LOCKS]    = env_ind_level(ENV_IND_LOCKS);
     rec[PR_CHARGING] = env_ind_level(ENV_IND_CHARGING);
     rec[PR_CLOCK]    = env_clock_mode();
-    rec[PR_BVIEW]    = env_batt_view();
+    rec[PR_BVIEW]    = (uint8_t)(env_batt_view() | face_bits(env_font()));   /* 10-28: the face beside it */
     if (fields & PF_POWER) rec[PR_POWER] = env_power_mode();
 }
 void prof_capture(uint8_t *rec, uint8_t fields) {
@@ -352,7 +368,10 @@ uint8_t prof_apply(const uint8_t *rec, bool live) {
     if (f & PF_LOCKS) env_ind_set(ENV_IND_LOCKS, rec[PR_LOCKS], true);
     if (f & PF_CHARGING) env_ind_set(ENV_IND_CHARGING, rec[PR_CHARGING], true);
     if (f & PF_CLOCK) env_clock_set(rec[PR_CLOCK]);
-    if (f & PF_BVIEW) env_batt_view_set(rec[PR_BVIEW]);
+    if (f & PF_BVIEW) {
+        env_batt_view_set(rec[PR_BVIEW] & PROF_BVIEW_VIEW);
+        menu_font_set(face_of(rec[PR_BVIEW]));   /* 10-28: re-lays out an open menu, redraws the song text */
+    }
     if (live && (f & PF_POWER)) env_power_set(rec[PR_POWER]);   /* never a profile's (Decided 2) */
     return st;
 }
@@ -607,6 +626,7 @@ static void cancel_previews(void) {
     menu_edit_external(ME_DOM_RGB);
     menu_edit_external(ME_DOM_LCD);
     menu_edit_external(ME_DOM_IND);
+    menu_edit_external(ME_DOM_FONT);   /* 10-28: the Font page's; an apply carries the face */
 }
 
 /* The page p's span of the block. */
@@ -774,24 +794,13 @@ bool prof_hid(uint8_t *d) {
         case 4:
             cancel_previews();
             memset(&d[4], 0, 28);
-            prof_capture(&d[4], PF_LIVE);
-            if (env_font() == ENV_FONT_SMALL) {   /* 10-28: the face packed, the crc taken again */
-                d[4 + PR_BVIEW] |= PROF_BVIEW_SMALL;
-                d[4 + PR_CRC] = body_crc(&d[4]);
-            }
+            prof_capture(&d[4], PF_LIVE);   /* the face in it, as every record's (10-28) */
             d[31] = PROF_OK;
             return true;
         case 5: {
-            /* 10-28: the crc as the record came, then a live record's face
-             * taken out and the crc taken again, so the shared checks and
-             * the apply never see it. */
-            uint8_t *r     = &d[4];
-            bool     live  = r[PR_FIELDS] == PF_LIVE;
-            bool     small = live && (r[PR_BVIEW] & PROF_BVIEW_SMALL);
-            if (live && r[PR_CRC] == body_crc(r)) {
-                r[PR_BVIEW] &= (uint8_t)~PROF_BVIEW_SMALL;
-                r[PR_CRC] = body_crc(r);
-            }
+            /* 10-28: the face is the record's own field (PR_BVIEW's bits
+             * 2-3), checked and applied as any other: no unpacking. */
+            uint8_t *r = &d[4];
             if (r[PR_STATE] != PS_SAVED_V1) {
                 d[31] = PROF_FORMAT;
             } else if (!prof_rec_valid(r)) {
@@ -799,9 +808,8 @@ bool prof_hid(uint8_t *d) {
             } else if (env_recovering()) {
                 d[31] = PROF_BUSY;
             } else {
-                cancel_previews();
+                cancel_previews();   /* the Font page's preview too: "Cancelled", the restore's face shows */
                 d[31] = prof_apply(r, true);
-                if (live) menu_font_set(small ? ENV_FONT_SMALL : ENV_FONT_LARGE);
             }
             return true;
         }

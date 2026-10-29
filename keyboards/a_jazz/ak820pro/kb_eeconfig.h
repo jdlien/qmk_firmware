@@ -75,12 +75,14 @@ uint8_t kb_eeconfig_get_batt_view(void);   /* KB_BATT_VIEW_* */
 void    kb_eeconfig_set_batt_view(uint8_t view);   /* ignores anything else */
 
 /* The menu's face (10-28, plans/MENU-8X16-PLAN.md B5): Large, Terminus Bold
- * 8x16, or Small, Cozette 6x14. Bit 2 of the readout's byte, set Small, so a
- * zeroed block reads Large, the default; a byte with any of bits 3-7 set is
- * garbage as a whole and reads Large and percent. The setter keeps the
- * readout. */
-#define KB_FONT_LARGE 0u
-#define KB_FONT_SMALL 1u
+ * 8x16, or Small, Cozette 6x14, or (10-28) Regular, Terminus regular 8x16.
+ * Bit 2 of the readout's byte, set Small; bit 3, set Regular; so a zeroed
+ * block reads Large, the default. A byte with any of bits 4-7 set, or both
+ * bits 2 and 3, is garbage as a whole and reads Large and percent. The
+ * setter keeps the readout. */
+#define KB_FONT_LARGE   0u
+#define KB_FONT_SMALL   1u
+#define KB_FONT_REGULAR 2u
 uint8_t kb_eeconfig_get_font(void);          /* KB_FONT_* */
 void    kb_eeconfig_set_font(uint8_t font);  /* ignores anything else */
 

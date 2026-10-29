@@ -20,10 +20,12 @@ _Static_assert(ME_RM_FIRST == QK_RGB_MATRIX_ON && ME_RM_LAST == QK_RGB_MATRIX_FL
                "QMK's RGB keycode ranges");
 #endif
 
+#include "menu.h"       /* menu_font_shown(): ME_FONT's preview re-lays out the open menu */
+
 /* The one edit (C6): its field and its domain's snapshot, 9 B. */
 static struct {
     uint8_t   field;   /* ME_NONE: none */
-    uint8_t   level;   /* ME_LCD, ME_LOCKS, ME_CHG, ME_PROFILE: the level when it opened */
+    uint8_t   level;   /* ME_LCD, ME_LOCKS, ME_CHG, ME_PROFILE: the level when it opened; ME_FONT: the face shown */
     env_rgb_t rgb;     /* an RGB field, ME_PROFILE: the config when it opened */
 } ed;
 static uint8_t  pending;     /* ME_PEND_* for menu_tick() */
@@ -32,7 +34,9 @@ static uint16_t ext_count;   /* external writes that cancelled an edit (op 27 su
 static bool    is_rgb(uint8_t f) { return (f >= ME_MODE && f <= ME_ENABLE) || f == ME_PROFILE; }
 static bool    is_ind(uint8_t f) { return f == ME_LOCKS || f == ME_CHG; }
 static uint8_t ind_of(uint8_t f) { return f == ME_LOCKS ? ENV_IND_LOCKS : ENV_IND_CHARGING; }
-static uint8_t domain_of(uint8_t f) { return is_rgb(f) ? ME_DOM_RGB : f == ME_LCD ? ME_DOM_LCD : ME_DOM_IND; }
+static uint8_t domain_of(uint8_t f) {
+    return is_rgb(f) ? ME_DOM_RGB : f == ME_LCD ? ME_DOM_LCD : f == ME_FONT ? ME_DOM_FONT : ME_DOM_IND;
+}
 /* A writer of domain d conflicts with the edit: its own domain, and P5e's
  * profile preview the LCD's too. */
 static bool in_domain(uint8_t f, uint8_t d) { return domain_of(f) == d || (f == ME_PROFILE && d == ME_DOM_LCD); }
@@ -62,6 +66,7 @@ static void set_field(uint8_t f, uint8_t v, bool save) {
     env_rgb_t c;
     env_rgb_get(&c);
     switch (f) {
+        case ME_FONT:   if (save) menu_font_set(v); return;   /* the one way to change it; a preview writes nothing */
         case ME_LCD:    env_lcd_set(v, save); return;
         case ME_LOCKS:
         case ME_CHG:    env_ind_set(ind_of(f), v, save); return;
@@ -78,8 +83,10 @@ static void set_field(uint8_t f, uint8_t v, bool save) {
     if (!c.enable) env_rgb_enable(false, false);
 }
 
-/* The snapshot back, every field _noeeprom, the enable last. */
+/* The snapshot back, every field _noeeprom, the enable last. ME_FONT's is
+ * the saved face, which a preview never left: nothing to set. */
 static void restore(void) {
+    if (ed.field == ME_FONT) return;
     if (ed.field == ME_LCD || is_ind(ed.field)) {
         set_field(ed.field, ed.level, false);
         return;
@@ -109,8 +116,12 @@ static void close_edit(void) {
 
 void me_open(uint8_t field) {
     menu_edit_rollback();
-    if (field == ME_NONE || field > ME_PROFILE) return;
+    if (field == ME_NONE || field > ME_FONT) return;
     ed.field = field;
+    if (field == ME_FONT) {   /* the saved face shown: the open changes nothing */
+        ed.level = env_font();
+        return;
+    }
     if (field == ME_LCD || is_ind(field)) ed.level = level_now(field);
     else env_rgb_get(&ed.rgb);
     if (field == ME_PROFILE) ed.level = env_lcd_level();
@@ -121,15 +132,34 @@ bool    me_active(void) { return ed.field != ME_NONE; }
 uint8_t me_field(void) { return ed.field; }
 
 uint8_t me_value(void) {
+    if (ed.field == ME_FONT) return ed.level;
     if (ed.field == ME_LCD || is_ind(ed.field)) return level_now(ed.field);
     env_rgb_t c;
     env_rgb_get(&c);
     return field_of(&c, ed.field);
 }
 
-uint8_t me_saved(void) { return ed.field == ME_LCD || is_ind(ed.field) ? ed.level : field_of(&ed.rgb, ed.field); }
+uint8_t me_saved(void) {
+    if (ed.field == ME_FONT) return env_font();
+    return ed.field == ME_LCD || is_ind(ed.field) ? ed.level : field_of(&ed.rgb, ed.field);
+}
+
+uint8_t me_font(void) { return ed.field == ME_FONT ? ed.level : env_font(); }
+
+/* ME_FONT's face shown changed: the open menu re-lays out in it (only while
+ * the configuration menu holds the panel: menu_ops.c's gate). */
+static void font_shown(uint8_t was) {
+    if (me_font() != was) menu_font_shown();
+}
 
 void me_preview(uint8_t value) {
+    if (ed.field == ME_FONT) {
+        if (value > ENV_FONT_REGULAR || value == ed.level) return;
+        uint8_t was = ed.level;
+        ed.level    = value;
+        font_shown(was);
+        return;
+    }
     if (ed.field != ME_NONE && ed.field != ME_PROFILE) set_field(ed.field, value, false);   /* a profile's: prof_preview() */
 }
 
@@ -139,7 +169,12 @@ void me_save(void) {
     close_edit();
 }
 
-void me_cancel(void) { menu_edit_rollback(); }
+/* The menu stays: an ME_FONT preview's face goes back on the panel too. */
+void me_cancel(void) {
+    uint8_t was = me_font();
+    menu_edit_rollback();
+    font_shown(was);
+}
 
 void me_base(env_rgb_t *rgb, uint8_t *level) {
     *rgb   = ed.rgb;
@@ -155,7 +190,7 @@ void menu_edit_rollback(void) {
 void menu_edit_external(uint8_t domain) {
     pending |= ME_PEND_CHANGED;
     if (ed.field == ME_NONE || !in_domain(ed.field, domain)) return;
-    menu_edit_rollback();
+    me_cancel();   /* the rollback; an ME_FONT preview's face off the panel at once, before any slot paints */
     pending |= ME_PEND_CANCELLED;
     if (ext_count < 0xFFFFu) ext_count++;
 }

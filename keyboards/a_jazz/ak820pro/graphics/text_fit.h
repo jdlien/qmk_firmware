@@ -11,8 +11,9 @@
 /* The faces, kb_eeconfig's KB_FONT_* (display.c checks they agree): Large,
  * Terminus Bold cropped to 8x14, the default; Small, Cozette 6x14. Anything
  * but Small is Large, as kb_eeconfig reads an unset or garbage byte. */
-#define TEXT_FACE_LARGE 0u
-#define TEXT_FACE_SMALL 1u
+#define TEXT_FACE_LARGE   0u
+#define TEXT_FACE_SMALL   1u
+#define TEXT_FACE_REGULAR 2u   /* 10-28: Terminus regular, Large's cell and budgets */
 
 /* Each line's cells. Line 0 (the artist, or the title alone) starts beside
  * the transport icon, line 1 (the title) at the bezel's margin; display.c
