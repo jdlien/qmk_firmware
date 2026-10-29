@@ -100,7 +100,8 @@ static const uint8_t pslot_rows[] = {N_BACK, N_PLOAD, N_PSAVE, N_PRENAME, N_PDEL
  * it changes. Both faces' text spans x 4-123 (20 x 6 = 15 x 8). */
 /* The face the menu draws: the Font page's preview while it's open, else the
  * saved one (me_font()). Regular (10-28) is Large's layout in its own glyphs:
- * face() is the layout, gface() the glyphs. */
+ * face() is the layout, gface() the glyphs; its titles stay Bold's
+ * (text_piece()). */
 static uint8_t face(void) { return me_font() == ENV_FONT_SMALL ? MT_SMALL : MT_LARGE; }
 static uint8_t gface(void) { return me_font() == ENV_FONT_REGULAR ? MT_LARGE_R : face(); }
 static bool    large(void) { return face() == MT_LARGE; }
@@ -1651,10 +1652,11 @@ static bool icon12_paint(uint8_t icon, uint16_t x, uint16_t y, uint16_t w, uint1
  * `cursor_fg`; the title and the confirm's lines a 1 px one. g0: the first
  * glyph row drawn, at y (Large's title, 1: its rows 1-15 at y 0-14). */
 static ms_paint_t text_piece(const char *cells, uint16_t y, bool row, uint8_t cursor, uint16_t cursor_fg, uint8_t c,
-                             uint8_t p, uint16_t fg, uint16_t icon_fg, bool bulb, uint8_t g0, bool ticon) {
+                             uint8_t p, uint16_t fg, uint16_t icon_fg, bool bulb, uint8_t g0, bool ticon, bool title) {
     const uint8_t  lead  = row ? ROW_LEAD : 1u;
     const uint8_t  fc    = face(), cw = mt_cell_w(fc), ch = (uint8_t)(mt_cell_h(fc) - g0);
-    mt_line_t      l     = {cells, COLS, lead, 1, false, false, cursor, gface()};   /* 10-28: Regular's glyphs */
+    /* 10-28: Regular's glyphs, but a title in Bold's (JD: "we still judiciously use bold"); the same cell */
+    mt_line_t      l     = {cells, COLS, lead, 1, false, false, cursor, title ? fc : gface()};
     const bool     lc    = row && c == 0;              /* the row's lead */
     const bool     split = row && icon_fg != 0;        /* P3: cells 0-1 a chunk of their own */
     const bool     ic    = split && c == 1;            /* that chunk */
@@ -1727,7 +1729,7 @@ static ms_paint_t l_paint(uint8_t s, uint8_t c, uint8_t p) {
         else if (large() && ni + n > N && ni && ic[ni - 1u] == ' ') ni--;   /* Large: the icon's space goes first (the mock-up's) */
         memcpy(cells, ic, ni);
         memcpy(cells + ni, tt, n > N - ni ? N - ni : n);
-        return text_piece(cells, 0, false, 0, 0, c, p, pal[MP_WHITE], 0, false, geo()->title_r0, k != ICON12_NONE);
+        return text_piece(cells, 0, false, 0, 0, c, p, pal[MP_WHITE], 0, false, geo()->title_r0, k != ICON12_NONE, true);
     }
     row_t x = row_at((uint8_t)(s - S_ROW0));
     if (row_bulb(&x)) {   /* 10-27: chunk 0 the bulb, the row's own after it */
@@ -1750,7 +1752,7 @@ static ms_paint_t l_paint(uint8_t s, uint8_t c, uint8_t p) {
                                      : pal[MP_DIM];
     /* The cursor (JD, 10-24): in the lit row's lead, in its own colour. */
     return text_piece(cells, (uint16_t)(ROW_Y0 + (s - S_ROW0) * ROW_H), true, x.lit ? (uint8_t)MT_CURSOR[0] : 0u,
-                      pal[MP_CURSOR], c, p, fg, row_icon_colour(&x), row_bulb(&x), 0, false);
+                      pal[MP_CURSOR], c, p, fg, row_icon_colour(&x), row_bulb(&x), 0, false, false);
 }
 
 /* A Clock example's tick (10-25): the right half only, its cells 10-19 and
@@ -1874,7 +1876,7 @@ static ms_paint_t c_paint(uint8_t s, uint8_t c, uint8_t p) {
     size_t n = strlen(buf);
     memcpy(cells, buf, n > N ? N : n);
     return text_piece(cells, (node == N_CONNINFO ? geo()->info_y : geo()->c_y)[i], false, 0, 0, c, p, pal[MP_WHITE], 0, false, 0,
-                      false);
+                      false, false);
 }
 static const ms_layout_t L_CONFIRM = {6, c_sig, c_chunks, c_pieces, c_paint, 0, 0, 0};
 
@@ -2045,7 +2047,7 @@ static ms_paint_t e_paint(uint8_t s, uint8_t c, uint8_t p) {
     cells[COLS] = '\0';
     memcpy(cells, ln, strlen(ln));
     return text_piece(cells, (uint16_t)(HINT_Y0 + (s - vs - 1u) * ROW_H), false, 0, 0, c, p, pal[MP_WHITE], 0, false, 0,
-                      false);
+                      false, false);
 }
 static const ms_layout_t L_RANGE = {2 + BAR_N + 1 + 3, e_sig, e_chunks, e_pieces, e_paint, 0, 0, 0};
 static const ms_layout_t L_HUE   = {2 + ENV_N + 1 + 3, e_sig, e_chunks, e_pieces, e_paint, 0, 0, 0};

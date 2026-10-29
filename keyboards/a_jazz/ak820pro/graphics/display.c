@@ -3303,7 +3303,13 @@ static void queue_text_line(uint8_t line, uint16_t x, uint16_t y) {
     const uint8_t n = text_fit_len(face, line, text_buf[line]);
     memcpy(cut, text_buf[line], n);
     cut[n] = '\0';
-    queue_line(line, face == TEXT_FACE_SMALL ? FONT_SMALL : face == TEXT_FACE_REGULAR ? FONT_SONG_REGULAR : FONT_SONG_LARGE, x, y, cut);
+    /* Regular keeps the song's title in Bold (JD, 10-28: "we still judiciously
+     * use bold"): line 1, or line 0 alone, which is the title then; the
+     * artist above it in Regular. Line 1's arrival or retirement moves line
+     * 0's font id, which queue_line repaints as a moved run. */
+    const bool title = line == 1u || !text_buf[1][0];
+    queue_line(line, face == TEXT_FACE_SMALL ? FONT_SMALL : face == TEXT_FACE_REGULAR && !title ? FONT_SONG_REGULAR : FONT_SONG_LARGE,
+               x, y, cut);
 }
 
 static void text_line_step(uint8_t line) {
