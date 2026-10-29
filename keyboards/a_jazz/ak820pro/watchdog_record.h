@@ -20,7 +20,14 @@ enum watchdog_site {
      * operation that was running. */
     WDT_SITE_HARD_FAULT = 23, WDT_SITE_UNHANDLED_EXCEPTION = 24, WDT_SITE_HALT = 25,
     WDT_SITE_TEST_FAULT = 26,
-    WDT_SITE_DEEP_SLEEP = 27,   /* sleep.c's experiment: the reset happened asleep */
+    WDT_SITE_DEEP_SLEEP = 27,   /* sleep.c's deep_sleep(); since 10-28, awake in its own code */
+    /* deep_sleep()'s phases, parent DEEP_SLEEP (10-28: a reset on gremlin's
+     * board ~8 min into an untouched sleep named only site 27). Stored
+     * straight into the path (watchdog_record_path()), not scoped. */
+    WDT_SITE_DS_ASLEEP = 28,    /* stored before each WFI: the core in it */
+    WDT_SITE_DS_WAKING = 29,    /* stored from SRAM after the WFI: woke, no flash fetched yet */
+    WDT_SITE_DS_RESTORE = 30,   /* the loop left: the clocks and the registers, under the lock */
+    WDT_SITE_DS_UNLOCKED = 31,  /* interrupts back on, to the return (recovery_begin too) */
     /* 32 + enum loop_site in ak820pro.h; keep that enum append-only too. */
     WDT_SITE_LOOP_BASE = 32
 };
@@ -36,6 +43,14 @@ void watchdog_record_leave(uint32_t *previous);
  * No timers, allocation, I/O or interrupt masking on these paths. */
 #define WDT_SCOPE(site) uint32_t wdt_saved_scope __attribute__((cleanup(watchdog_record_leave), unused)) = watchdog_record_enter(site)
 #define WDT_CALL(site, call) do { WDT_SCOPE(site); call; } while (0)
+
+/* For a path a scope's cleanup can't mark: a loop's phases, and code in SRAM
+ * that must not call into the flash (sleep.c's ds_deep_wfi()). The encoded
+ * word for (parent, site), and where to store it: NULL until boot's capture.
+ * The enclosing WDT_SCOPE's cleanup still puts its parent back at the
+ * return. Main-loop context only, as for a scope. */
+uint32_t watchdog_record_word(uint8_t parent, uint8_t site);
+volatile uint32_t *watchdog_record_path(void);
 
 /* HC_GET5, protocol >=6, 28 bytes, little endian:
  * u8 format, flags (bit0 valid), site, parent;

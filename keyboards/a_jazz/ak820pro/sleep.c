@@ -323,16 +323,31 @@ static void recovery_begin(uint8_t reason);
  * From SRAM, nothing is fetched from the flash until ~1,300 cycles have
  * passed and one flash word has been read and dropped. How long the flash
  * needs is not measured either: do not shorten the wait without measuring
- * it. noinline and long_call: the call from the flash is a blx to SRAM. */
+ * it. noinline and long_call: the call from the flash is a blx to SRAM.
+ *
+ * `phase` and `waking` (10-28): the watchdog record's path and the word that
+ * says "woke, no flash fetched yet" (WDT_SITE_DS_WAKING), both in registers,
+ * so the store needs nothing from the flash. A reset that reads it is one
+ * where the core woke and never ran flash code again: this wait's class. */
 static const uint32_t ds_flash_word = 0x5A5AA5A5u;
 
-__attribute__((section(".ramtext"), noinline, long_call)) static void ds_deep_wfi(volatile uint32_t *pmu_ctrl, const volatile uint32_t *flash) {
+__attribute__((section(".ramtext"), noinline, long_call)) static void ds_deep_wfi(volatile uint32_t *pmu_ctrl, const volatile uint32_t *flash,
+                                                                                  volatile uint32_t *phase, uint32_t waking) {
     *pmu_ctrl = 2u;   /* Deep-sleep (p. 75) */
     __DSB();
     __WFI();
     *pmu_ctrl = 0u;
+    *phase    = waking;
+    *phase    = waking;   /* twice: a lone last write can be lost at the reset (watchdog_record.c) */
     for (uint32_t d = 260u; d; d--) __asm volatile("");   /* ~5 cycles a pass: ~108 us at the IHRC's 12 MHz */
     (void)*flash;
+}
+
+/* A phase of deep_sleep() into the watchdog record (watchdog_record.h, sites
+ * 27-31), twice for the same reason. */
+static inline void ds_phase(volatile uint32_t *phase, uint32_t word) {
+    *phase = word;
+    *phase = word;
 }
 
 #ifdef AK820_DEV_HOOKS
@@ -434,6 +449,18 @@ static bool deep_sleep(uint32_t cap_s, bool no_feed, uint32_t preset_s) {
     WDT_SCOPE(WDT_SITE_DEEP_SLEEP);
     static volatile uint32_t sacrificial;
     sacrificial++;   /* the breadcrumb above must reach RAM before the CPU stops */
+    /* Where in here a reset happened (10-28: gremlin's board, ~8 min into an
+     * untouched sleep on BT, reset with only site 27 to go on). The scope's
+     * own word, 27, now means awake in this code: before the loop, or in its
+     * body after a wake. The scope's cleanup puts its parent back. */
+    static volatile uint32_t ph_sink;
+    volatile uint32_t       *ph = watchdog_record_path();
+    if (!ph) ph = &ph_sink;
+    const uint32_t ph_own      = *ph;
+    const uint32_t ph_asleep   = watchdog_record_word(WDT_SITE_DEEP_SLEEP, WDT_SITE_DS_ASLEEP);
+    const uint32_t ph_waking   = watchdog_record_word(WDT_SITE_DEEP_SLEEP, WDT_SITE_DS_WAKING);
+    const uint32_t ph_restore  = watchdog_record_word(WDT_SITE_DEEP_SLEEP, WDT_SITE_DS_RESTORE);
+    const uint32_t ph_unlocked = watchdog_record_word(WDT_SITE_DEEP_SLEEP, WDT_SITE_DS_UNLOCKED);
 
     wake_pins_t w;
     wake_pins(&w);
@@ -532,7 +559,9 @@ static bool deep_sleep(uint32_t cap_s, bool no_feed, uint32_t preset_s) {
         /* Asleep. PRIMASK is set: a pending wake source ends the WFI, but no
          * handler runs; these vectors have none. */
         for (;;) {
-            ds_deep_wfi(&SN_PMU->CTRL, &ds_flash_word);   /* from SRAM, see above */
+            ds_phase(ph, ph_asleep);
+            ds_deep_wfi(&SN_PMU->CTRL, &ds_flash_word, ph, ph_waking);   /* from SRAM, see above */
+            ds_phase(ph, ph_own);
             uint32_t r0 = SN_GPIO0->RIS & p0w, r1 = SN_GPIO1->RIS & p1w, r2 = SN_GPIO2->RIS & p2w;
             bool second = take_second();
             if (second) {
@@ -563,6 +592,7 @@ static bool deep_sleep(uint32_t cap_s, bool no_feed, uint32_t preset_s) {
         }
     }
 
+    ds_phase(ph, ph_restore);
     bool pll_ceiling = false;
     if (slept) {
         /* Awake: the flash's speed first, then the PLL, and only then select it. */
@@ -609,6 +639,7 @@ static bool deep_sleep(uint32_t cap_s, bool no_feed, uint32_t preset_s) {
     uint32_t counted = secs - preset_s;
     rtc_account_sleepI(counted);   /* both software clocks, before any second is served */
     if (slept) rtc_wake_beginI(counted);
+    ds_phase(ph, ph_unlocked);   /* before the unlock: an interrupt that never lets go reads this */
     chSysUnlock();
 
     ch582_rx_resync();

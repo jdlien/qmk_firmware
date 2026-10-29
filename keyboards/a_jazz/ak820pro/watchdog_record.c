@@ -106,6 +106,14 @@ void watchdog_record_leave(uint32_t *previous) {
     if (ready && *previous) retained.path = *previous;
 }
 
+uint32_t watchdog_record_word(uint8_t parent, uint8_t site) {
+    return encode_path((uint16_t)(((uint16_t)parent << 8) | site));
+}
+
+volatile uint32_t *watchdog_record_path(void) {
+    return ready ? &retained.path : NULL;
+}
+
 void watchdog_record_uptime(uint32_t pass_uptime_ms) {
     if (!ready) return;
     retained.pass_uptime_ms = pass_uptime_ms;
