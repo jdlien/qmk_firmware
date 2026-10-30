@@ -64,22 +64,25 @@ void kb_eeconfig_set_power_mode(uint8_t mode);
 bool kb_eeconfig_get_ind_level(uint8_t which, uint8_t *level);
 void kb_eeconfig_set_ind_level(uint8_t which, uint8_t level);
 
-/* The battery readout (the menu's P4): percent, hours of use, or both.
- * The encoding is frozen: 0 unset, 1 percent, 2 hours, 3 both (JD, 10-26; a
- * firmware from before reads it as garbage), in bits 0-1 of its byte since
- * 10-28; unset or garbage reads percent. The setter keeps the face. */
+/* The battery readout (the menu's P4): percent, hours of use, both, or
+ * the icon alone. The encoding is frozen: 0 unset, 1 percent, 2 hours, 3 both
+ * (JD, 10-26; a firmware from before reads it as garbage), in bits 0-1 of its
+ * byte since 10-28; Icon only (10-30) is bit 4 with bits 0-1 clear, garbage
+ * to a firmware from before. Unset or garbage reads percent. The setter
+ * keeps the face. */
 #define KB_BATT_VIEW_PERCENT 1u
 #define KB_BATT_VIEW_HOURS   2u
 #define KB_BATT_VIEW_BOTH    3u
+#define KB_BATT_VIEW_ICON    4u   /* JD, 10-27: the icon, the bolt and the bulb, no number */
 uint8_t kb_eeconfig_get_batt_view(void);   /* KB_BATT_VIEW_* */
 void    kb_eeconfig_set_batt_view(uint8_t view);   /* ignores anything else */
 
 /* The menu's face (10-28, plans/MENU-8X16-PLAN.md B5): Large, Terminus Bold
  * 8x16, or Small, Cozette 6x14, or (10-28) Regular, Terminus regular 8x16.
  * Bit 2 of the readout's byte, set Small; bit 3, set Regular; so a zeroed
- * block reads Large, the default. A byte with any of bits 4-7 set, or both
- * bits 2 and 3, is garbage as a whole and reads Large and percent. The
- * setter keeps the readout. */
+ * block reads Large, the default. A byte with any of bits 5-7 set, both bits
+ * 2 and 3, or bit 4 (Icon only) beside a readout in bits 0-1, is garbage as a
+ * whole and reads Large and percent. The setter keeps the readout. */
 #define KB_FONT_LARGE   0u
 #define KB_FONT_SMALL   1u
 #define KB_FONT_REGULAR 2u

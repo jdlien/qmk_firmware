@@ -178,9 +178,9 @@ _Static_assert(PROF_BASE + PROF_BLOCK_SIZE == TOTAL_EEPROM_BYTE_COUNT, "the prof
                          DYNAMIC_KEYMAP_LAYER_COUNT * NUM_ENCODERS * 2 * 2)
 _Static_assert(PROF_MACRO_ADDR + DYNAMIC_KEYMAP_MACRO_EEPROM_SIZE == PROF_BASE, "the macros end just below the profile block");
 _Static_assert(DISPLAY_CLOCK_MODE_COUNT == 6 && POWER_MODE_COUNT == 4 && KB_BATT_VIEW_PERCENT == 1 && KB_BATT_VIEW_HOURS == 2 &&
-               KB_BATT_VIEW_BOTH == 3, "profiles.c's ranges");
+               KB_BATT_VIEW_BOTH == 3 && KB_BATT_VIEW_ICON == 4, "profiles.c's ranges");
 _Static_assert(BATT_VIEW_PERCENT == KB_BATT_VIEW_PERCENT && BATT_VIEW_HOURS == KB_BATT_VIEW_HOURS &&
-               BATT_VIEW_BOTH == KB_BATT_VIEW_BOTH, "batt_text.h's views are kb_eeconfig's");
+               BATT_VIEW_BOTH == KB_BATT_VIEW_BOTH && BATT_VIEW_ICON == KB_BATT_VIEW_ICON, "batt_text.h's views are kb_eeconfig's");
 void env_prof_read(uint16_t addr, void *dst, uint8_t n) { eeprom_read_block(dst, (const void *)(uintptr_t)addr, n); }
 uint8_t env_prof_write(uint16_t addr, const void *src, uint8_t n) {
     switch (wear_leveling_write(addr, src, n)) {

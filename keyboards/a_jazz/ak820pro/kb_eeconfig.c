@@ -29,7 +29,8 @@
  * indicator levels, the menu's P2a) 2026-10-25 and byte 9 (the battery
  * readout, P4) the same day, each with a version bump. Byte 9's bit 2, the
  * menu's face (10-28), took no bump: a zeroed byte reads Large, the default,
- * and a firmware from before reads the bit set as garbage (percent). */
+ * and a firmware from before reads the bit set as garbage (percent). Nor did
+ * its bit 4, the readout's Icon only (10-30), for the same reasons. */
 typedef struct __attribute__((packed)) {
     uint8_t bt_profile;        // last BT slot selected (CH582_PROFILE_BT_1..3)
     uint8_t rtc_period_lo;     // converged RTC divider period, LE; 0 = unset
@@ -40,7 +41,7 @@ typedef struct __attribute__((packed)) {
     uint8_t power_mode_p1;     // power mode (power_mode_t) + 1; 0 = unset
     uint8_t ind_locks_p1;      // the lock lights' level (0-100) + 1; 0 = unset
     uint8_t ind_charging_p1;   // the charging light's level (0-100) + 1; 0 = unset
-    uint8_t batt_view;         // bits 0-1 the battery readout: 0 unset, 1 percent, 2 hours, 3 both (frozen; P4); bit 2 the menu's face, set Small (10-28)
+    uint8_t batt_view;         // bits 0-1 the battery readout: 0 unset, 1 percent, 2 hours, 3 both (frozen; P4); bit 2 the menu's face, set Small (10-28); bit 4 Icon only (10-30)
 } kb_config_t;
 _Static_assert(sizeof(kb_config_t) == 10, "block layout is assign-only; do not grow casually");
 _Static_assert(sizeof(kb_config_t) == EECONFIG_KB_DATA_SIZE, "config.h EECONFIG_KB_DATA_SIZE must match the struct");
@@ -202,18 +203,21 @@ void kb_eeconfig_set_ind_level(uint8_t which, uint8_t level) {
 }
 
 /* Byte 9: the readout in bits 0-1 (0 unset), the menu's face in bits 2-3
- * (10-28: bit 2 set Small, bit 3 set Regular, neither Large). A byte with any
- * of bits 4-7 set (0xFF, an erased block), or both face bits, is garbage as a
- * whole: every reader and writer takes it as 0, both defaults, before it
- * reads, compares or keeps a field (codex, 10-28: keeping the raw bit 2 of
- * 0xFF would turn Large into Small). */
+ * (10-28: bit 2 set Small, bit 3 set Regular, neither Large), and Icon only
+ * in bit 4 with bits 0-1 clear (10-30: the 2-bit field was full). A byte with
+ * any of bits 5-7 set (0xFF, an erased block), both face bits, or bit 4 beside
+ * a readout, is garbage as a whole: every reader and writer takes it as 0,
+ * both defaults, before it reads, compares or keeps a field (codex, 10-28:
+ * keeping the raw bit 2 of 0xFF would turn Large into Small). */
 #define BV_VIEW  0x03u
 #define BV_SMALL 0x04u
 #define BV_REG   0x08u
 #define BV_FACE  (BV_SMALL | BV_REG)
+#define BV_ICON  0x10u
 static uint8_t bv_norm(void) {
-    uint8_t b = kb_config.batt_view;
-    return (b & (uint8_t)~(BV_VIEW | BV_FACE)) || (b & BV_FACE) == BV_FACE ? 0u : b;
+    uint8_t b   = kb_config.batt_view;
+    bool    bad = (b & (uint8_t)~(BV_VIEW | BV_FACE | BV_ICON)) || (b & BV_FACE) == BV_FACE || ((b & BV_ICON) && (b & BV_VIEW));
+    return bad ? 0u : b;
 }
 /* The canonical byte, written when it isn't what is stored. A valid byte
  * differs only in the field being set; a garbage one always differs, so a
@@ -225,13 +229,14 @@ static void bv_put(uint8_t b) {
 }
 
 uint8_t kb_eeconfig_get_batt_view(void) {
-    uint8_t v = (uint8_t)(bv_norm() & BV_VIEW);
+    uint8_t b = bv_norm(), v = (uint8_t)(b & BV_VIEW);
+    if (b & BV_ICON) return KB_BATT_VIEW_ICON;
     return v ? v : KB_BATT_VIEW_PERCENT;   /* unset or garbage: percent */
 }
 
 void kb_eeconfig_set_batt_view(uint8_t v) {
-    if (v < KB_BATT_VIEW_PERCENT || v > KB_BATT_VIEW_BOTH) return;
-    bv_put((uint8_t)((bv_norm() & BV_FACE) | v));   /* the face kept */
+    if (v < KB_BATT_VIEW_PERCENT || v > KB_BATT_VIEW_ICON) return;
+    bv_put((uint8_t)((bv_norm() & BV_FACE) | (v == KB_BATT_VIEW_ICON ? BV_ICON : v)));   /* the face kept */
 }
 
 uint8_t kb_eeconfig_get_font(void) {
@@ -241,7 +246,7 @@ uint8_t kb_eeconfig_get_font(void) {
 
 void kb_eeconfig_set_font(uint8_t font) {
     if (font != KB_FONT_LARGE && font != KB_FONT_SMALL && font != KB_FONT_REGULAR) return;
-    bv_put((uint8_t)((bv_norm() & BV_VIEW) | (font == KB_FONT_SMALL ? BV_SMALL : font == KB_FONT_REGULAR ? BV_REG : 0u)));   /* the readout kept */
+    bv_put((uint8_t)((bv_norm() & (BV_VIEW | BV_ICON)) | (font == KB_FONT_SMALL ? BV_SMALL : font == KB_FONT_REGULAR ? BV_REG : 0u)));   /* the readout kept */
 }
 
 #ifdef WDT_TEST_HOOKS

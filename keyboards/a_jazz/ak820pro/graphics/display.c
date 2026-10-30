@@ -1746,8 +1746,10 @@ static void draw_battery(bool force) {
     else if (batt <= 100) {
         /* The percent, with the hours of use under 10 h ("18% 6h"); or the
          * hours of use ("160h", the menu's Battery: JD, 10-25), or both
-         * ("85% 160h", JD 10-26), once the estimate is ready.
-         * graphics/batt_text.c has the rules. */
+         * ("85% 160h", JD 10-26), once the estimate is ready; or nothing,
+         * Icon only (10-30), where the bar alone shows the level. "Low",
+         * "Charge", "USB" and "No Batt" stay in every view: they say what an
+         * empty or red bar means. graphics/batt_text.c has the rules. */
         _Static_assert(sizeof(txt) == BATT_TEXT_MAX + 1u, "the text slot's cells and its NUL");
         batt_level_text(txt, batt, st == BATTERY_STATE_BATTERY, battery_time_left_min(),
                         battery_avg_minutes() >= 60u, kb_eeconfig_get_batt_view());

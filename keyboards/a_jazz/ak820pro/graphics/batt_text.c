@@ -13,7 +13,9 @@ void batt_level_text(char *out, uint8_t pct, bool on_battery, uint16_t left_min,
     if (h > 999u) h = 999u;   /* three digits: the estimate's ceiling is 1092 h, and nothing awake draws that little */
     if (left_min < 60u) snprintf(hrs, sizeof hrs, "<1h");
     else                snprintf(hrs, sizeof hrs, "%uh", h);
-    if (ready && view == BATT_VIEW_HOURS) {
+    if (view == BATT_VIEW_ICON) {
+        wide[0] = '\0';
+    } else if (ready && view == BATT_VIEW_HOURS) {
         /* JD, 10-25: "160 h ... all the time there" */
         snprintf(wide, sizeof wide, "%s", hrs);
     } else if (ready && (view == BATT_VIEW_BOTH || left_min < 600u)) {

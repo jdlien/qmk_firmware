@@ -21,7 +21,7 @@
 
 /* --- The tree ---------------------------------------------------------------
  * Every row a node of its own (options included: the top level's "Clock 24h"
- * and the choice's "24 hour" never share a signature). At most 63. */
+ * and the choice's "24 hour" never share a signature). At most 64: 0-63. */
 enum {
     N_NONE = 0,
     N_TOP, N_POWER, N_CLOCK, N_DIAG, N_HELP, N_ABOUT, N_EXIT,   /* 1-7 */
@@ -54,9 +54,12 @@ enum {
     N_DEFAULTS,                                                 /* 58: Reset settings (JD, 10-27), its confirm as a frame */
     N_WTEST, N_WROW,                                            /* 59-60: dev builds' write test (10-27); a row's index in val */
     N_FONT, N_FOPT,                                             /* 61-62: Font (10-28), its page; an option, its face in val */
+    N_BV3,                                                      /* 63: Battery's fourth readout, Icon only (JD, 10-27) */
     N_COUNT
 };
-_Static_assert(N_COUNT <= 63, "a row's node is 6 bits");   /* 63 since Font: the next node widens row_sig */
+/* RK_ITEM's signature holds the node in bits 8-13, under its kind's bit 14:
+ * 63 is the last that fits (0x7F00-0x7FFF, below RK_TEXT's 0x8000). */
+_Static_assert(N_COUNT <= 64, "a row's node is 6 bits");   /* 64 since Icon only: the next node widens row_sig */
 _Static_assert(MENU_HELP_TOPICS == 4, "Help's four topics");
 static bool is_pslot(uint8_t node) { return node == N_PSLOT; }
 
@@ -87,7 +90,7 @@ static const uint8_t diag_rows[]  = {N_BACK, N_ABOUT, N_HEALTH, N_RESET};   /* 1
 static const uint8_t help_rows[]  = {N_BACK, N_TOPIC0, N_TOPIC1, N_TOPIC2, N_TOPIC3, N_MORE};   /* P1d: More info last */
 static const uint8_t power_rows[] = {N_BACK, N_POW0, N_POW1, N_POW2, N_POW3};
 static const uint8_t clock_rows[] = {N_BACK, N_CLK0, N_CLK1, N_CLK2, N_CLK3, N_CLK4, N_CLK5};
-static const uint8_t batt_rows[]  = {N_BACK, N_BV0, N_BV1, N_BV2};   /* P4; Both, 10-26 */
+static const uint8_t batt_rows[]  = {N_BACK, N_BV0, N_BV1, N_BV2, N_BV3};   /* P4; Both, 10-26; Icon only, 10-30 */
 /* P5d: Profiles' rows are Back, the saved slots in slot order, then Save
  * new (row_count(), row_node()), no empty slot shown (JD, 10-26: "just a
  * 'Save New' makes more sense than finite grayed out unused slots"). */
@@ -137,7 +140,7 @@ typedef struct {
     uint8_t val_y[2];                        /* the editors' value: the range's, the hue's */
     uint8_t hint_y0;                         /* the editors' hints, a row's pitch apart */
     uint8_t bulb_dy;                         /* a bulb's first pixel row in its row */
-    uint8_t psum_lines, note_row0;           /* a slot's summary's lines (from PSUM_ROW0); Battery's notes' first row */
+    uint8_t psum_lines, note_row0;           /* a slot's summary's lines (from PSUM_ROW0); the Font page's note's first row */
 } geom_t;
 static const geom_t geoms[2] = {
     [MT_SMALL] = {COLS_S, ROWS_S, 15, ROWH_S, 14, 0, {22, 36, 72, 86}, {22, 36, 50, 86}, 51, 20, 22, {22, 44}, 72, 0, 3, 5},
@@ -172,15 +175,22 @@ static int8_t clk_row(uint8_t node) {
 }
 static const char *clock_example(uint8_t row, char *buf);   /* by row_sig(), below */
 /* P4: the battery readout, by its row (0 percent, 1 hours, 2 both: JD,
- * 10-26), and the top level's value. A row is its view less one
- * (BATT_VIEW_*). */
-static const char *const batt_full[3]  = {"Percent", "Hours of use", "Both"};
-static const char *const batt_short[3] = {"Percent", "Hours", "Both"};
-/* A Battery row's index (0-2), or -1. */
+ * 10-26; 3 the icon alone: JD, 10-27), and the top level's value (Large's:
+ * "%" and "Icon"). A row is its view less one (BATT_VIEW_*). */
+#define BATT_VIEWS 4u
+static const char *const batt_full[BATT_VIEWS]  = {"Percent", "Hours of use", "Both", "Icon only"};
+static const char *const batt_short[BATT_VIEWS] = {"Percent", "Hours", "Both", "Icon only"};
+/* A Battery row's index (0-3), or -1. */
 static int8_t bv_row(uint8_t node) {
     if (node == N_BV0 || node == N_BV1) return (int8_t)(node - N_BV0);
-    return node == N_BV2 ? 2 : -1;
+    return node == N_BV2 ? 2 : node == N_BV3 ? 3 : -1;
 }
+/* Battery's note under the choice: from row 5 in both faces, under Icon
+ * only's row 4, a grey rule over its first line in place of the gap (JD,
+ * 10-27); Small's three lines, Large's two. */
+#define BATT_NOTE_ROW0 5u
+_Static_assert(sizeof batt_rows == BATT_NOTE_ROW0 && BATT_NOTE_ROW0 + 3u == ROWS_S && BATT_NOTE_ROW0 + 2u == ROWS_L,
+               "the note under the choice, to the last row");
 /* P4 (JD, 10-25): the choice previews each readout as the dashboard shows it
  * on battery, and a note under it says why the hours don't show yet. Read
  * live: the rows' signatures follow the text (row_sig), so a change repaints
@@ -190,6 +200,7 @@ static bool batt_hours_ready(const env_batt_t *b) {
 }
 static const char *batt_preview(uint8_t view, char *buf) {   /* buf: BATT_TEXT_MAX + 1 at least */
     env_batt_t b;
+    if (view == BATT_VIEW_ICON) return "";   /* the dashboard's text slot left clear: nothing to preview */
     env_batt_facts(&b);
     if (b.pct > 100u) return "--";
     if (b.pct == 0u && b.on_battery) return "Low";
@@ -210,9 +221,13 @@ static void batt_note(uint8_t line, char *buf, size_t n) {
      * no wait will bring the hours (codex). */
     if (b.on_battery && (b.pct == 0u || b.pct > 100u)) return;
     if (b.avg_minutes < 60u) {
-        static const char *const warm[2][2] = {{"Hours show after an", "hour on battery:"}, {"Hours show once", "on battery 1 h:"}};
-        if (line < 2u) snprintf(buf, n, "%s", warm[large()][line]);
-        else           snprintf(buf, n, "%u min to go.", (unsigned)(60u - b.avg_minutes));
+        static const char *const warm[2] = {"Hours show after an", "hour on battery:"};
+        unsigned                 left    = 60u - b.avg_minutes;
+        if (large()) {   /* two lines (10-30): "Hours in 60 min" is Large's 15 */
+            if (line == 0u) snprintf(buf, n, "Hours in %u min", left);
+            else if (line == 1u) snprintf(buf, n, "on battery.");
+        } else if (line < 2u) snprintf(buf, n, "%s", warm[line]);
+        else snprintf(buf, n, "%u min to go.", left);
     } else if (!b.on_battery && line < 2u) {
         static const char *const off[2] = {"Hours show only", "on battery."};
         snprintf(buf, n, "%s", off[line]);
@@ -1072,9 +1087,10 @@ static row_t row_at(uint8_t r) {
         return x;
     }
     uint8_t i = (uint8_t)(f->top + r), val, nr = geo()->note_row0;
-    if (f->node == N_BATT && r >= nr && r < nr + 3u) {   /* P4: the hours' note, under the choice; not selectable */
+    if (f->node == N_BATT && r >= BATT_NOTE_ROW0 && r < ROWS) {   /* P4: the hours' note, under the choice; not selectable */
         x.kind = RK_NOTE;
-        x.line = (uint8_t)(r - nr);
+        x.node = N_BATT;
+        x.line = (uint8_t)(r - BATT_NOTE_ROW0);
         return x;
     }
     if (f->node == N_FONT && r >= nr && r < nr + 2u) {   /* 10-28: what the setting changes, as Battery's note */
@@ -1096,7 +1112,7 @@ static row_t row_at(uint8_t r) {
     x.lit  = i == f->cursor;
     if (x.node == N_POWER) x.val = model_power & 3u;
     else if (x.node == N_CLOCK) x.val = model_clock < CLOCK_ROWS ? model_clock : 0u;
-    else if (x.node == N_BATT) x.val = (uint8_t)(env_batt_view() - 1u);   /* P4: only the menu changes it, so no latch */
+    else if (x.node == N_BATT) x.val = (uint8_t)((env_batt_view() - 1u) % BATT_VIEWS);   /* P4: only the menu changes it, so no latch */
     else if (x.node == N_CONN) x.val = link_code();   /* P3: the link, link_names[] */
     else if (x.node == N_PAIRNOW) x.val = (uint8_t)(link_slot() > 2u ? 2u : link_slot());   /* the slot it pairs */
     else if (x.node >= N_BT0 && x.node <= N_BT2) {   /* the current slot: its check, and its link's word */
@@ -1415,7 +1431,10 @@ static void row_text(const row_t *x, char *out) {
     else if (x->node == N_CLOCK) value = clock_short_by_enum[x->val % CLOCK_ROWS];
     else if (clk_row(x->node) >= 0 && w) label = clk_row(x->node) < 5 ? clock_example((uint8_t)clk_row(x->node), buf) : "Off";
     else if (clk_row(x->node) >= 0 && clk_row(x->node) < 5) value = clock_example((uint8_t)clk_row(x->node), buf);
-    else if (x->node == N_BATT) value = w && x->val % 3u == 0u ? "%" : batt_short[x->val % 3u];
+    else if (x->node == N_BATT) {   /* Large's room for it: 5 */
+        uint8_t v = (uint8_t)(x->val % BATT_VIEWS);
+        value     = w && v == 0u ? "%" : w && v == 3u ? "Icon" : batt_short[v];
+    }
     else if (x->node == N_FONT) value = (w ? font_short : font_name)[x->val % 3u];   /* 10-28 */
     else if (x->node == N_CONN) value = link_names[x->val % 5u];          /* P3 */
     else if (x->node >= N_BT0 && x->node <= N_BT2) value = link_words[x->val % 5u];
@@ -1467,11 +1486,13 @@ static uint32_t batt_key(const row_t *x) {
     env_batt_t b;
     env_batt_facts(&b);
     bool ready = batt_hours_ready(&b);
-    if (x->kind == RK_NOTE) {
+    if (x->kind == RK_NOTE) {   /* 0 exactly when the line is empty: row_ruled() reads it so */
         if (ready || x->line > 2u || (b.on_battery && (b.pct == 0u || b.pct > 100u))) return 0;
-        if (b.avg_minutes < 60u) return x->line < 2u ? 1u : 2u | (uint32_t)(60u - b.avg_minutes) << 2;
+        bool timed = large() ? x->line == 0u : x->line == 2u;   /* the line with the minutes in it */
+        if (b.avg_minutes < 60u) return timed ? 2u | (uint32_t)(60u - b.avg_minutes) << 2 : 1u;
         return !b.on_battery && x->line < 2u ? 3u : 0u;
     }
+    if (x->node == N_BV3) return 5;                /* Icon only: blank, always */
     if (b.pct > 100u) return 1;                    /* "--" */
     if (b.pct == 0u && b.on_battery) return 2;     /* "Low" */
     if (x->node == N_BV1) {                        /* "--", "<1h", "160h" (999 at most) */
@@ -1656,9 +1677,15 @@ static bool row_split(uint8_t s) {
  * action. A rule over it, grey as the title's separator, on its first line's
  * top pixel row, which no glyph inks (the cursor, which does, never sits on
  * the summary): a chunk of its own, after the text's, whose pieces clear
- * that row. */
+ * that row. Battery's note has it too, while it says something (10-30): its
+ * line's key is 0 exactly when it's empty, so the signature changes with
+ * the rule. */
 #define RULE_CHUNK 3u
-static bool row_ruled(const row_t *x) { return x->kind == RK_PNOTE && x->line == 0u; }
+static uint32_t batt_key(const row_t *x);
+static bool     row_ruled(const row_t *x) {
+    if (x->line != 0u) return false;
+    return x->kind == RK_PNOTE || (x->kind == RK_NOTE && x->node == N_BATT && batt_key(x) != 0u);
+}
 /* 10-27 (JD: "use the power mode icons that we show on the battery row,
  * right aligned on the right edge"): a Power option's row ends in its mode's
  * bulb, the dashboard's (graphics/power_bulb.c), at x 111-123 beside the

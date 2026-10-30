@@ -15,6 +15,7 @@
 #define PROF_BVIEW_PERCENT 1u   /* KB_BATT_VIEW_PERCENT */
 #define PROF_BVIEW_HOURS   2u   /* KB_BATT_VIEW_HOURS */
 #define PROF_BVIEW_BOTH    3u   /* KB_BATT_VIEW_BOTH (JD, 10-26) */
+#define PROF_BVIEW_ICON    4u   /* KB_BATT_VIEW_ICON (10-30): bit 4 with bits 0-1 clear, as kb_eeconfig's byte */
 /* 10-28: the menu's face, in PR_BVIEW beside the readout (bits 0-1) under
  * PF_BVIEW: bit 2 Small, bit 3 Regular, neither Large (Terminus Bold), as
  * kb_eeconfig's byte. Every record carries it since JD's "profiles respect
@@ -25,6 +26,9 @@
 #define PROF_BVIEW_SMALL   0x04u
 #define PROF_BVIEW_REG     0x08u
 #define PROF_BVIEW_FACE    (PROF_BVIEW_SMALL | PROF_BVIEW_REG)
+#define PROF_BVIEW_ICONBIT 0x10u
+static uint8_t view_bits(uint8_t view) { return view == PROF_BVIEW_ICON ? PROF_BVIEW_ICONBIT : view; }
+static uint8_t view_of(uint8_t bview) { return (bview & PROF_BVIEW_ICONBIT) ? PROF_BVIEW_ICON : bview & PROF_BVIEW_VIEW; }
 static uint8_t face_bits(uint8_t font) {
     return font == ENV_FONT_SMALL ? PROF_BVIEW_SMALL : font == ENV_FONT_REGULAR ? PROF_BVIEW_REG : 0u;
 }
@@ -141,10 +145,10 @@ static bool body_ok(const uint8_t *rec) {
     if ((f & PF_LOCKS) && rec[PR_LOCKS] > ENV_IND_MAX) return false;
     if ((f & PF_CHARGING) && rec[PR_CHARGING] > ENV_IND_MAX) return false;
     if ((f & PF_CLOCK) && rec[PR_CLOCK] >= PROF_CLOCK_MODES) return false;
-    if (f & PF_BVIEW) {   /* the readout 1-3, one face or none, nothing else */
+    if (f & PF_BVIEW) {   /* the readout 1-3 or Icon only's bit alone, one face or none, nothing else */
         uint8_t b = rec[PR_BVIEW], v = (uint8_t)(b & PROF_BVIEW_VIEW);
-        if (v < PROF_BVIEW_PERCENT || v > PROF_BVIEW_BOTH || (b & ~(PROF_BVIEW_VIEW | PROF_BVIEW_FACE)) ||
-            (b & PROF_BVIEW_FACE) == PROF_BVIEW_FACE)
+        bool    bad_view = (b & PROF_BVIEW_ICONBIT) ? v != 0u : v < PROF_BVIEW_PERCENT || v > PROF_BVIEW_BOTH;
+        if (bad_view || (b & ~(PROF_BVIEW_VIEW | PROF_BVIEW_FACE | PROF_BVIEW_ICONBIT)) || (b & PROF_BVIEW_FACE) == PROF_BVIEW_FACE)
             return false;
     }
     if ((f & PF_POWER) && rec[PR_POWER] >= PROF_POWER_MODES) return false;
@@ -324,7 +328,7 @@ static void capture_body(uint8_t *rec, uint8_t fields) {
     rec[PR_LOCKS]    = env_ind_level(ENV_IND_LOCKS);
     rec[PR_CHARGING] = env_ind_level(ENV_IND_CHARGING);
     rec[PR_CLOCK]    = env_clock_mode();
-    rec[PR_BVIEW]    = (uint8_t)(env_batt_view() | face_bits(env_font()));   /* 10-28: the face beside it */
+    rec[PR_BVIEW]    = (uint8_t)(view_bits(env_batt_view()) | face_bits(env_font()));   /* 10-28: the face beside it */
     if (fields & PF_POWER) rec[PR_POWER] = env_power_mode();
 }
 void prof_capture(uint8_t *rec, uint8_t fields) {
@@ -369,7 +373,7 @@ uint8_t prof_apply(const uint8_t *rec, bool live) {
     if (f & PF_CHARGING) env_ind_set(ENV_IND_CHARGING, rec[PR_CHARGING], true);
     if (f & PF_CLOCK) env_clock_set(rec[PR_CLOCK]);
     if (f & PF_BVIEW) {
-        env_batt_view_set(rec[PR_BVIEW] & PROF_BVIEW_VIEW);
+        env_batt_view_set(view_of(rec[PR_BVIEW]));
         menu_font_set(face_of(rec[PR_BVIEW]));   /* 10-28: re-lays out an open menu, redraws the song text */
     }
     if (live && (f & PF_POWER)) env_power_set(rec[PR_POWER]);   /* never a profile's (Decided 2) */
@@ -676,7 +680,7 @@ uint8_t prof_reset(void) {
     rec[PR_LOCKS]    = d.locks;
     rec[PR_CHARGING] = d.charging;
     rec[PR_CLOCK]    = d.clock;
-    rec[PR_BVIEW]    = d.bview;
+    rec[PR_BVIEW]    = view_bits(d.bview);
     rec[PR_POWER]    = d.power;
     cancel_previews();
     st = prof_apply(rec, true);
