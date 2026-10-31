@@ -159,13 +159,20 @@ bool battery_usb_configured(void) {
 }
 
 static void usb_wakeup_try(void) {
+    /* Only when the key goes to USB (the 10-31 audit, F-007): over BT or 2.4G
+     * the board stays enumerated on the cable, and a press would wake the
+     * computer there, which gets none of the keys. The host is never AUTO on
+     * this board, so the check is exact. */
+    if (connection_get_host() != CONNECTION_HOST_USB) return;
     if (USB_DRIVER.state != USB_SUSPENDED) return;
     if (!(USB_DRIVER.status & USB_STATUS_REMOTE_WAKEUP)) return;
 
-    static uint16_t last_try = 0;
+    /* 32-bit (F-028): the last try may be days old, and a 16-bit stamp read
+     * a press within 500 ms of each 65.536 s after it as "just tried". */
+    static uint32_t last_try = 0;
     static bool     tried    = false;
-    if (tried && timer_elapsed(last_try) < USB_WAKEUP_RETRY_MS) return;
-    last_try = timer_read();
+    if (tried && timer_elapsed32(last_try) < USB_WAKEUP_RETRY_MS) return;
+    last_try = timer_read32();
     tried    = true;
     usbWakeupHost(&USB_DRIVER);
 }
