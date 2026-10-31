@@ -71,7 +71,8 @@ _Static_assert(PROF_SLOTS <= 0xFu, "a side's slot in its nibble, 0xF none");
  * and the boot's check still to run (SD_BOOT, prof_tick()). The side
  * settles once the switch has rested SD_REST ticks, so a bouncing contact
  * loads once and a bounce back loads nothing; until then a Load or a Save
- * goes to the side it was on. */
+ * goes to the side it was on. Durably, the side the settings are is the
+ * owner byte's (OW_*, below), not this. */
 #define SD_MAC     0x01u
 #define SD_KNOWN   0x02u
 #define SD_SETTLED 0x04u
@@ -81,10 +82,18 @@ _Static_assert(PROF_SLOTS <= 0xFu, "a side's slot in its nibble, 0xF none");
 #define SD_BOOT    0x80u
 #define SD_REST    3u   /* 200-300 ms */
 static uint8_t side;
-/* The side the board was settled on before this boot (SD_MAC or 0), from
- * QMK's persisted default layer, given before the boot's reading
- * (prof_boot_side()); 0xFF if never given (the host tests' boots). */
-static uint8_t boot_was = 0xFFu;
+/* The owner byte (PROF_OWNER_ADDR, the 10-31 audit's review): OW_SETTLED |
+ * the side whose settings are live, or OW_MOVING | the side a flip began
+ * toward and has not finished; any other value (a fresh EEPROM's) is
+ * unknown, taken as the switch's side at the boot. A flip writes it first
+ * and last, so the boot knows a flip a cut stopped, and a move while the
+ * board was off, from it. QMK's persisted default layer can't say either:
+ * the keymap writes it at the reading, before the flip's countdown, and a
+ * PDF() key writes it with no flip at all (codex). Kept only while the
+ * block is formatted: with no profiles nothing is a side's, and the first
+ * save's format() writes it. */
+#define OW_SETTLED 0x50u
+#define OW_MOVING  0x60u
 
 static uint8_t cur_side(void) { return (side & SD_SETTLED) ? PROF_SIDE_MAC : PROF_SIDE_WIN; }
 static uint8_t nib(uint8_t pair, uint8_t sd) { return (uint8_t)((pair >> (sd * 4u)) & 0x0Fu); }
@@ -174,14 +183,28 @@ static uint8_t rd8(uint8_t off) {
     return b;
 }
 /* One write of exactly those bytes: false when it failed. */
-static bool wr(uint8_t off, const void *src, uint8_t n, bool *consolidated) {
+static bool wr_at(uint16_t addr, const void *src, uint8_t n, bool *consolidated) {
     if (tx_state & TX_FAILED) return false;
-    uint8_t s = env_prof_write((uint16_t)(PROF_BASE + off), src, n);
+    uint8_t s = env_prof_write(addr, src, n);
     if (s == ENV_WR_CONSOLIDATED) *consolidated = true;
     if (s == ENV_WR_FAILED) tx_state |= TX_FAILED;
     return s != ENV_WR_FAILED;
 }
+static bool wr(uint8_t off, const void *src, uint8_t n, bool *consolidated) {
+    return wr_at((uint16_t)(PROF_BASE + off), src, n, consolidated);
+}
 static bool wr8(uint8_t off, uint8_t v, bool *consolidated) { return wr(off, &v, 1, consolidated); }
+
+static uint8_t owner(void) {
+    uint8_t b;
+    env_prof_read(PROF_OWNER_ADDR, &b, 1);
+    return b;
+}
+/* The owner byte as v, unless it is already: false when the write failed. */
+static bool owner_set(uint8_t v) {
+    bool c = false;
+    return owner() == v || wr_at(PROF_OWNER_ADDR, &v, 1, &c);
+}
 
 bool prof_formatted(void) { return rd8(PROF_OFF_MAGIC) == PROF_MAGIC_V4; }
 
@@ -236,10 +259,12 @@ static void set_active(uint8_t a) {
     if (!(side & SD_BOOT) && last_of(cur_side(), r)) last_clear();
 }
 
-uint8_t prof_active_rec(uint8_t *rec) {
-    uint8_t a = prof_formatted() ? nib(active_byte(), cur_side()) : 0xFFu;
+/* Side sd's profile into rec: its slot, 0xFF none. */
+static uint8_t side_rec(uint8_t sd, uint8_t *rec) {
+    uint8_t a = prof_formatted() ? nib(active_byte(), sd) : 0xFFu;
     return a < PROF_USER && prof_slot(a, rec) ? a : 0xFFu;
 }
+uint8_t prof_active_rec(uint8_t *rec) { return side_rec(cur_side(), rec); }
 uint8_t prof_active(void) {
     uint8_t rec[PROF_REC];
     return prof_active_rec(rec);
@@ -263,7 +288,8 @@ static bool format(bool *consolidated) {
     side &= (uint8_t)~SD_PEND;   /* a fresh block's pair is none, none */
     for (uint8_t s = 0; s < PROF_SLOTS; s++)
         if (!wr8(PROF_REC_OFF(s) + PR_STATE, PS_EMPTY, consolidated)) return false;
-    return wr8(PROF_OFF_ACTIVE, 0xFFu, consolidated) && wr8(PROF_OFF_MAGIC, PROF_MAGIC_V4, consolidated);
+    return wr8(PROF_OFF_ACTIVE, 0xFFu, consolidated) && owner_set((uint8_t)(OW_SETTLED | cur_side())) &&
+           wr8(PROF_OFF_MAGIC, PROF_MAGIC_V4, consolidated);
 }
 
 /* Never inside a deep sleep's recovery (a menu can be open in its first
@@ -555,67 +581,115 @@ static void write_active(void) {
     if (prof_formatted()) (void)wr8(PROF_OFF_ACTIVE, a, &c);
 }
 
-/* A flip settled. A side with a profile keeps its settings (10-27): the side
- * left goes into the last record as it was, and the side arrived at comes
- * back from it as it was left, else its profile loads, as the Next and
- * Previous keys load one; either named (env_prof_switched()). A side
- * without one keeps nothing of its own: arriving at it changes nothing. A
- * bounce back to the side it was on changes nothing either. Refused by the
- * latch: nothing applied or kept, the side still moves.
+/* A flip from side x to the side now settled. A side with a profile keeps
+ * its settings (10-27): the side left goes into the last record as it was,
+ * and the side arrived at comes back from it as it was left, else its
+ * profile loads, as the Next and Previous keys load one; either named
+ * (env_prof_switched()). A side without one keeps nothing of its own:
+ * arriving at it changes nothing. Refused by the latch: nothing applied or
+ * kept, the side still moves, and the owner byte still names x, so the
+ * next boot runs the flip again.
  * Codex (10-27): an open preview goes back before anything is kept, so the
- * side's own settings are, never a preview's. And the side arrived at's
- * settings are saved at once, before the side left's record: the change of
- * computers that flips this switch often flips the slider too, which browns
- * the board out, and a cut in the settings' deferred write (5 s) would find
- * the record moved on while the saved settings were still the old side's.
- * A cut between the two writes loses the side left's changes only: the
- * boot knows the side from the default layer (prof_boot_side()), not from
- * this record, and clears the record the cut left naming this side (the
- * 10-31 audit, F-012; until then the boot read it as a move while off and
- * filed this side's settings as the other's). A cut inside the flush can
- * still leave this side a mix of its new and old settings. */
-static void settle_side(void) {
-    uint8_t now = (side & SD_MAC) ? SD_SETTLED : 0u;
-    if ((side & SD_SETTLED) == now) return;
+ * side's own settings are, never a preview's. The change of computers that
+ * flips this switch often flips the slider too, which browns the board out,
+ * so the flip is ordered for a cut anywhere (the 10-31 audit, F-012, and its
+ * review): the pending pair, so the boot reads each side's profile as this
+ * flip did; the owner byte OW_MOVING | y; the side left's record (the side
+ * arrived at's own is read first, into RAM); the side arrived at's settings,
+ * flushed; the owner byte OW_SETTLED | y; and only then, when nothing was
+ * kept, the used record cleared. boot_recover() finishes a flip cut short,
+ * and a cut costs at most the side arrived at's changes since its profile:
+ * once the side left's record is in, the RAM copy is all there was. */
+static void flip(uint8_t x) {
     uint8_t keep[PROF_REC], rec[PROF_REC];
-    uint8_t x     = cur_side();
-    bool    kept  = prof_active_rec(rec) < PROF_USER;
-    side          = (uint8_t)((side & ~SD_SETTLED) | now);
-    uint8_t s     = prof_active_rec(rec), st = writable();
-    bool    taken = false;
-    if (st == PROF_OK && (kept || s < PROF_USER)) {
-        cancel_previews();
-        if (kept) {   /* the side left, as it is now */
-            prof_capture(keep, PF_SIDE);
-            keep[PR_STATE] = (uint8_t)(PS_LAST | x);
+    uint8_t y = cur_side(), s = side_rec(y, rec), st = writable();
+    bool    kept = side_rec(x, keep) < PROF_USER, taken = false;
+    if (st == PROF_OK) {
+        if (kept || s < PROF_USER) {
+            cancel_previews();
+            if (side & SD_PEND) write_active();
+            if (s < PROF_USER) taken = last_of(y, rec);
+            if (!owner_set((uint8_t)(OW_MOVING | y))) {
+                st = PROF_WRITE_FAILED;
+            } else {
+                if (kept) {   /* the side left, as it is now */
+                    prof_capture(keep, PF_SIDE);
+                    keep[PR_STATE] = (uint8_t)(PS_LAST | x);
+                    last_put(keep);
+                }
+                if (prof_write_failed()) {
+                    st = PROF_WRITE_FAILED;
+                } else if (s < PROF_USER) {
+                    st = taken ? prof_apply(rec, false) : prof_load(s);
+                    env_settings_flush();
+                }
+            }
         }
-        if (s < PROF_USER) {
-            taken = last_of(cur_side(), rec);   /* read before the side left's goes in */
-            st    = taken ? prof_apply(rec, false) : prof_load(s);
-            env_settings_flush();
-        }
-        if (kept)
-            last_put(keep);
-        else if (taken)
+        if (prof_formatted() && !prof_write_failed() && owner_set((uint8_t)(OW_SETTLED | y)) && !kept && taken)
             last_clear();   /* used, and nothing to keep: no stale copy */
     }
     if (s < PROF_USER) env_prof_switched(s, st);
 }
 
-void prof_boot_side(bool mac) {
-    if (!(side & SD_KNOWN)) boot_was = mac ? SD_MAC : 0u;
+static void settle_side(void) {
+    uint8_t now = (side & SD_MAC) ? SD_SETTLED : 0u;
+    if ((side & SD_SETTLED) == now) return;
+    uint8_t x = cur_side();
+    side      = (uint8_t)((side & ~SD_SETTLED) | now);
+    flip(x);
+}
+
+/* A flip toward y that a cut stopped (the owner byte OW_MOVING | y): settled
+ * on y, and finished. The side left's record in (it names x) means its
+ * settings went there whole, and the side arrived at's load may have been
+ * cut: its profile loads again, its changes since lost. Otherwise nothing of
+ * the flip after the owner byte landed but, with nothing kept, possibly the
+ * apply, and the flip runs again: the side left still live, or, with nothing
+ * kept, the side arrived at's record still there to take. */
+static void boot_recover(uint8_t y) {
+    uint8_t rec[PROF_REC], x = (uint8_t)(y ^ 1u);
+    side = (uint8_t)((side & ~SD_SETTLED) | (y ? SD_SETTLED : 0u));
+    if (last_of(x, rec)) {
+        uint8_t s = side_rec(y, rec), st = PROF_OK;
+        if (s < PROF_USER) {
+            cancel_previews();
+            st = prof_load(s);
+            env_settings_flush();
+        }
+        if (!prof_write_failed()) (void)owner_set((uint8_t)(OW_SETTLED | y));
+        if (s < PROF_USER) env_prof_switched(s, st);
+    } else {
+        flip(x);
+    }
+}
+
+/* The boot's check, at the first tick outside a recovery or a restore: the
+ * side the settings are, from the owner byte; a flip a cut stopped,
+ * finished; then a switch read on the other side, a move while the board
+ * was off (the 10-31 audit, F-030), runs as a live flip's countdown. With
+ * the switch where it was, a last record naming this side is stale, as
+ * set_active() says, and goes (F-011). Until the audit the boot guessed a
+ * move from such a record, which swapped the settings wrongly whenever it
+ * was stale, and a move toward a side with no profile went unseen. */
+static void boot_check(void) {
+    uint8_t o = owner(), rec[PROF_REC];
+    if (writable() != PROF_OK || !prof_formatted()) return;
+    if ((o & ~1u) == OW_MOVING)
+        boot_recover(o & 1u);
+    else if ((o & ~1u) == OW_SETTLED)
+        side = (uint8_t)((side & ~SD_SETTLED) | ((o & 1u) ? SD_SETTLED : 0u));
+    else
+        (void)owner_set((uint8_t)(OW_SETTLED | cur_side()));   /* unknown: the switch's side */
+    if (((side & SD_MAC) != 0u) != ((side & SD_SETTLED) != 0u))
+        side = (uint8_t)((side & ~SD_TICKS) | (SD_REST * SD_TICK));
+    else if (last_of(cur_side(), rec) && writable() == PROF_OK)
+        last_clear();
 }
 
 void prof_switch(bool mac) {
     uint8_t m = mac ? SD_MAC : 0u;
-    if (!(side & SD_KNOWN)) {   /* the boot's (dip_switch_init(), before the EEPROM is read) */
-        if (boot_was <= SD_MAC && boot_was != m)
-            /* The switch moved while the board was off (the 10-31 audit,
-             * F-030): settled as the side it was on, then the flip, as a live
-             * flip's. The live settings are that side's. */
-            side = (uint8_t)((side & SD_PEND) | SD_KNOWN | m | (boot_was ? SD_SETTLED : 0u) | (SD_REST * SD_TICK));
-        else   /* where it was: no load, a check at the first tick */
-            side = (uint8_t)((side & SD_PEND) | SD_KNOWN | SD_BOOT | m | (mac ? SD_SETTLED : 0u));
+    if (!(side & SD_KNOWN)) {   /* the boot's (dip_switch_init(), before the EEPROM is read): the check at the first tick */
+        side = (uint8_t)((side & SD_PEND) | SD_KNOWN | SD_BOOT | m | (mac ? SD_SETTLED : 0u));
         return;
     }
     if ((side & SD_MAC) == m) return;   /* a reading again, not a change */
@@ -624,16 +698,9 @@ void prof_switch(bool mac) {
 
 void prof_tick(void) {
     if (prof_restore_open() && --tx_left == 0u) tx_close();   /* aborted: the block stays unformatted */
-    /* The boot's check, the switch where it was (a move while the board was
-     * off came as a flip, prof_switch()): a last record naming this side is
-     * stale, as set_active() says, and goes. Until the 10-31 audit (F-011,
-     * F-012, F-030) such a record was read as a move while off and swapped
-     * the settings, wrongly whenever it was stale, and a move toward a side
-     * with no profile went unseen. */
     if ((side & SD_BOOT) && writable() != PROF_BUSY) {
-        uint8_t rec[PROF_REC];
         side &= (uint8_t)~SD_BOOT;
-        if (last_of(cur_side(), rec) && writable() == PROF_OK) last_clear();
+        boot_check();
     }
     /* A flip's countdown; at its end the load waits out a recovery or a
      * restore, as the keys' would be refused. */
@@ -647,7 +714,7 @@ void prof_tick(void) {
 }
 
 #ifdef MENU_HOST_TEST
-void prof_test_reset(void) { tx_token = tx_state = tx_left = pend = side = 0u; boot_was = 0xFFu; }
+void prof_test_reset(void) { tx_token = tx_state = tx_left = pend = side = 0u; }
 #endif
 
 /* An open edit's preview back first, as VIA's lighting reads do
@@ -667,7 +734,9 @@ static uint8_t page_len(uint8_t p) {
 }
 
 /* The restore's commit: every page received; each record empty or valid; the
- * active byte normalized, each side's; the magic last, in its own write. */
+ * active byte normalized, each side's; the magic last, in its own write; the
+ * owner byte the side the switch is on, until sub 8 says the live settings
+ * restored after are the other side's. */
 static uint8_t commit(void) {
     bool    c = false;
     uint8_t rec[PROF_REC];
@@ -681,7 +750,10 @@ static uint8_t commit(void) {
             return PROF_INVALID;
         }
     }
-    return wr8(PROF_OFF_ACTIVE, a, &c) && wr8(PROF_OFF_MAGIC, PROF_MAGIC_V4, &c) ? PROF_OK : PROF_WRITE_FAILED;
+    return wr8(PROF_OFF_ACTIVE, a, &c) && wr8(PROF_OFF_MAGIC, PROF_MAGIC_V4, &c) &&
+                   owner_set((uint8_t)(OW_SETTLED | cur_side()))
+               ? PROF_OK
+               : PROF_WRITE_FAILED;
 }
 
 /* --- Reset settings (10-27) ------------------------------------------------- */
@@ -747,6 +819,11 @@ uint8_t prof_reset(void) {
  *                                             Windows, 2 the Mac, 0 before the switch's first reading; the
  *                                             builds before, 0). P5a's and P5b's builds answer it unhandled:
  *                                             the host takes them for four slots, five pages, magic 0xA1
+ *   8  the live settings' side: [4] 0 Windows, 1 the Mac -> [5] status (the 10-31 audit's review): a
+ *                                             backup taken on the other side of the switch, restored with its
+ *                                             live record, is that side's settings; on the switch's other side
+ *                                             it runs as a flip to it, so each side keeps its own. The builds
+ *                                             before answer it unhandled
  * 4, 5 and 6 cancel an open preview first. Dev builds: 0x40 save the live
  * settings to slot [4] -> [5] status, [6] 1 when the wear-leveling layer
  * consolidated; 0x41 delete slot [4] -> [5] status; 0x42 the switch read as
@@ -867,6 +944,22 @@ bool prof_hid(uint8_t *d) {
             d[7] = PROF_PAGE;
             d[8] = PROF_MAGIC_V4;
             d[9] = (side & SD_KNOWN) ? (uint8_t)(1u + cur_side()) : 0u;
+            return true;
+        case 8:
+            memset(&d[5], 0, 27);
+            if (p > PROF_SIDE_MAC || !(side & SD_KNOWN)) {
+                d[5] = PROF_BAD;
+            } else if (!prof_formatted()) {
+                d[5] = PROF_OK;   /* no profiles: nothing is a side's */
+            } else if ((side & SD_BOOT) || writable() != PROF_OK) {
+                d[5] = (side & SD_BOOT) ? PROF_BUSY : writable();
+            } else if (!owner_set((uint8_t)(OW_SETTLED | p))) {
+                d[5] = PROF_WRITE_FAILED;
+            } else {
+                side = (uint8_t)((side & ~(SD_SETTLED | SD_TICKS)) | (p ? SD_SETTLED : 0u));
+                if (((side & SD_MAC) != 0u) != (p != 0u)) side |= (uint8_t)(SD_REST * SD_TICK);   /* the flip to the switch's side */
+                d[5] = PROF_OK;
+            }
             return true;
 #if defined(AK820_DEV_HOOKS) || defined(MENU_HOST_TEST)
         case 0x40:

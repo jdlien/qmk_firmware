@@ -276,12 +276,13 @@
 // eight slots): the emulated EEPROM's top 218 B, 806-1023, out of VIA's
 // macro buffer, which shrinks from 237 B to 19 B (VIA asks the firmware for
 // its size): the 16 macros' terminators and two or three characters. JD's
-// call (10-26), who uses none. QMK refuses a buffer under 100 B when it
+// call (10-26), who uses none. 18 B since the 10-31 audit's review: the byte
+// below the block is the settings' owner (menu/profiles.h, PROF_OWNER_ADDR). QMK refuses a buffer under 100 B when it
 // derives the size from DYNAMIC_KEYMAP_EEPROM_MAX_ADDR (nvm_dynamic_keymap.c:
 // "something is wrong"), so the size is set here and the maximum keeps its
 // default, which nothing else reads. Nothing else moves. menu/menu_glue.c
 // asserts the macros end where the block starts.
-#define DYNAMIC_KEYMAP_MACRO_EEPROM_SIZE 19
+#define DYNAMIC_KEYMAP_MACRO_EEPROM_SIZE 18
 
 // Debounce eeconfig flushes from RGB adjustment. Without this QMK writes MCU
 // flash on every single step (~8/s while a key is held), which is both needless

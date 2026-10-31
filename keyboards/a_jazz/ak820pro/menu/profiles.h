@@ -29,6 +29,10 @@
 #define PROF_PAGE       26u     /* HC_PROFILES' page: [6..31] of the report */
 #define PROF_PAGES      9u      /* 8 x 26 + 10 */
 #define PROF_NAME       12u
+/* The settings' owner (the 10-31 audit's review): one byte just below the
+ * block, outside what HC_PROFILES pages, out of VIA's macro buffer (config.h):
+ * the side whose settings are live, and whether a flip to it is done. */
+#define PROF_OWNER_ADDR (PROF_BASE - 1u)
 
 /* The block: the magic, the active slots, eight records. The active byte
  * holds a slot a side of the Win/Mac switch (JD, 10-27: "the current profile
@@ -94,7 +98,6 @@ void    prof_tick(void);                            /* 10 Hz: a restore's 5 s wi
  * after it, once the switch has rested, brings that side's settings back as
  * they were left, or loads its profile. */
 void    prof_switch(bool mac);
-void    prof_boot_side(bool mac);   /* before the boot's prof_switch(): the side the default layer says it was on */
 /* The menu's Reset settings (10-27): the firmware's defaults (env_defaults()),
  * the power mode's too, saved; both sides forget their profile and the last
  * record. The profiles stay. PROF_BUSY in a recovery or a restore, nothing

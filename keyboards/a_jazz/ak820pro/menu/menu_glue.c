@@ -162,7 +162,8 @@ bool env_bootloader(void) {
 bool env_reserve(void) { return battery_on_battery() && power_lights_cut(); }
 
 /* P5a, the settings profiles (menu/profiles.c). The block is the EEPROM's top
- * 218 B (P5d's eight slots), and the dynamic keymap's macros end below it
+ * 218 B (P5d's eight slots), the settings' owner the byte below it (the
+ * 10-31 audit's review), and the dynamic keymap's macros end below that
  * (config.h): their start is nvm_dynamic_keymap.c's, computed the same way
  * here, and their size config.h's. Its writes
  * call wear_leveling_write() for the status QMK's EEPROM wrapper discards;
@@ -176,7 +177,8 @@ _Static_assert(PROF_BASE + PROF_BLOCK_SIZE == TOTAL_EEPROM_BYTE_COUNT, "the prof
 #endif
 #define PROF_MACRO_ADDR (VIA_EEPROM_CONFIG_END + DYNAMIC_KEYMAP_LAYER_COUNT * MATRIX_ROWS * MATRIX_COLS * 2 + \
                          DYNAMIC_KEYMAP_LAYER_COUNT * NUM_ENCODERS * 2 * 2)
-_Static_assert(PROF_MACRO_ADDR + DYNAMIC_KEYMAP_MACRO_EEPROM_SIZE == PROF_BASE, "the macros end just below the profile block");
+_Static_assert(PROF_MACRO_ADDR + DYNAMIC_KEYMAP_MACRO_EEPROM_SIZE == PROF_OWNER_ADDR && PROF_OWNER_ADDR + 1u == PROF_BASE,
+               "the macros end just below the settings' owner, and it just below the profile block");
 _Static_assert(DISPLAY_CLOCK_MODE_COUNT == 6 && POWER_MODE_COUNT == 4 && KB_BATT_VIEW_PERCENT == 1 && KB_BATT_VIEW_HOURS == 2 &&
                KB_BATT_VIEW_BOTH == 3 && KB_BATT_VIEW_ICON == 4, "profiles.c's ranges");
 _Static_assert(BATT_VIEW_PERCENT == KB_BATT_VIEW_PERCENT && BATT_VIEW_HOURS == KB_BATT_VIEW_HOURS &&
