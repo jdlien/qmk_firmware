@@ -42,12 +42,18 @@ static bool rtc_apply_bytes(const uint8_t *p) {
      * seconds register. Any local HID-capable process can send this packet;
      * "the host script is well-behaved" is not a guard. (Audit finding
      * IV-1, hardening-plan/findings-input-validation.md.) */
-    if (p[0] > 99 ||               /* year -- the PCF stores year %100 but
+    if (p[0] > 98 ||               /* year -- the PCF stores year %100 but
                                     * reads reconstruct 2000+yy, so 100..255
                                     * would set one year live and persist
-                                    * another (Codex phase-2 review #1) */
-        p[1] < 1 || p[1] > 12 ||   /* month   */
-        p[2] < 1 || p[2] > 31 ||   /* day     */
+                                    * another (Codex phase-2 review #1); and
+                                    * 2099's last second rolls into the
+                                    * century bit, read back as 2000 (F-016) */
+        p[1] < 1 || p[1] > 12 ||   /* month, before the day indexes by it */
+        p[2] < 1 || p[2] > rtc_days_in_month((uint16_t)(2000 + p[0]), p[1]) ||
+                                   /* day, the month's own (the 10-31 audit,
+                                    * F-016: 02-31 went into the PCF as sent
+                                    * while mktime() made the live clock
+                                    * 03-03), as RTC_SET_TIME_MS checks it */
         p[3] > 6 ||                /* weekday */
         p[4] > 23 ||               /* hours   */
         p[5] > 59 ||               /* minutes */
