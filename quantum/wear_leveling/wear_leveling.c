@@ -156,6 +156,29 @@
         ╚════════════════╝
         0 <= Address <= 0x3FFE (16382) */
 
+/* ak820pro (the 10-31 audit, F-010): with 8-byte backing store writes every
+ * entry is one multi-byte line, and an interrupted program can only drop
+ * logical 1-bits, so a torn line keeps type 00 and its address and length can
+ * only shrink: playback took it as a valid write to a lower address, and the
+ * next consolidation made it permanent. So on such stores a multi-byte line
+ * carries 4 value bytes, not 5, and byte 7 is a CRC-8 over bytes 0-6; a line
+ * that fails it ends playback, which keeps everything before it (the torn
+ * line can only be the last one programmed) and loses only that write. Every
+ * flash of this board erases the store, so no older log is ever read. */
+#if BACKING_STORE_WRITE_SIZE == 8
+#    define WL_MULTIBYTE_MAX 4u
+static uint8_t wl_line_crc(const write_log_entry_t *log) {
+    uint8_t c = 0xA5u;   /* seeded: a line of zeros is not its own check */
+    for (uint8_t i = 0; i < 7u; i++) {
+        c ^= log->raw8[i];
+        for (uint8_t b = 0; b < 8u; b++) c = (uint8_t)((c & 0x80u) ? (c << 1) ^ 0x07u : c << 1);
+    }
+    return c;
+}
+#else
+#    define WL_MULTIBYTE_MAX LOG_ENTRY_MULTIBYTE_MAX_BYTES
+#endif
+
 /**
  * Storage area for the wear-leveling cache.
  */
@@ -429,7 +452,8 @@ static wear_leveling_status_t wear_leveling_write_raw_multibyte(uint32_t address
         }
     }
 #elif BACKING_STORE_WRITE_SIZE == 8
-    status = wear_leveling_append_raw(log.raw64);
+    log.raw8[7] = wl_line_crc(&log);   /* ak820pro, F-010: length <= WL_MULTIBYTE_MAX, so byte 7 is free */
+    status      = wear_leveling_append_raw(log.raw64);
     if (status != WEAR_LEVELING_SUCCESS) {
         return status;
     }
@@ -481,7 +505,7 @@ static wear_leveling_status_t wear_leveling_write_raw(uint32_t address, const vo
             continue;
         }
 #endif // BACKING_STORE_WRITE_SIZE == 2
-        const size_t this_length = remaining >= LOG_ENTRY_MULTIBYTE_MAX_BYTES ? LOG_ENTRY_MULTIBYTE_MAX_BYTES : remaining;
+        const size_t this_length = remaining >= WL_MULTIBYTE_MAX ? WL_MULTIBYTE_MAX : remaining;
         status                   = wear_leveling_write_raw_multibyte(address, p, this_length);
         if (status != WEAR_LEVELING_SUCCESS) {
             // If consolidation occurred, then the cache has already been written to the consolidated area. No need to continue.
@@ -548,6 +572,15 @@ static wear_leveling_status_t wear_leveling_playback_log(void) {
                 const uint32_t a = LOG_ENTRY_MULTIBYTE_GET_ADDRESS(log);
                 const uint8_t  l = LOG_ENTRY_MULTIBYTE_GET_LENGTH(log);
 
+#if BACKING_STORE_WRITE_SIZE == 8
+                /* ak820pro, F-010: a torn line fails its check; the playback
+                 * stops, and the forced consolidation keeps what came before. */
+                if (l > WL_MULTIBYTE_MAX || log.raw8[7] != wl_line_crc(&log)) {
+                    cancel_playback = true;
+                    status          = WEAR_LEVELING_FAILED;
+                    break;
+                }
+#endif
                 if (a + l > (WEAR_LEVELING_LOGICAL_SIZE)) {
                     cancel_playback = true;
                     status          = WEAR_LEVELING_FAILED;
