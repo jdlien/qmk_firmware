@@ -18,6 +18,14 @@
 } while (0)
 
 #ifdef AK820_DEV_HOOKS
+/* The deep sleep's interrupt census (sleep.c, op 24 slot 11): every
+ * handler's entry, counted only in the wake's window from the unmask to the
+ * return; outside it a call and two tested bytes. */
+#    undef CH_CFG_IRQ_PROLOGUE_HOOK
+#    define CH_CFG_IRQ_PROLOGUE_HOOK() do {                                 \
+        extern void sleep_irq_hook(void);                                   \
+        sleep_irq_hook();                                                   \
+    } while (0)
 /* Sleep experiments (sleep.c, plans/SLEEP-PLAN.md). The board's idle hooks
  * write PMU_CTRL = 4 (Sleep) on every idle entry, harmless while no WFI runs
  * (config.h keeps CORTEX_ENABLE_WFI_IDLE off); with sleep.c's WFI that would

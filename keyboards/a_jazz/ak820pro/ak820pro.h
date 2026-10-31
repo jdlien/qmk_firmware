@@ -109,6 +109,7 @@ enum loop_site {
     LOOP_SITE_BATT, LOOP_SITE_EECFG, LOOP_SITE_HEALTH, LOOP_SITE_RGBFLUSH,
     LOOP_SITE_COUNT
 };
+_Static_assert(WDT_SITE_LOOP_BASE + LOOP_SITE_COUNT <= WDT_SITE_DS_READ, "the loop sites run into the deep sleep's from 64");
 /* hid_protocol.c: raw HID (USB or the 2.4G dongle) carried an accepted media
  * command less than `ms` ago (the lock-LED channel's lease, R3-2). */
 bool hid_rawhid_media_within(uint32_t now, uint32_t ms);

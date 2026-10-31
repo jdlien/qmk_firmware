@@ -30,7 +30,14 @@ enum watchdog_site {
     WDT_SITE_DS_RESTORE = 30,   /* stored as the loop is left: the clocks and registers, under the lock */
     WDT_SITE_DS_UNLOCKED = 31,  /* stored before the unlock, to the return (recovery_begin too) */
     /* 32 + enum loop_site in ak820pro.h; keep that enum append-only too. */
-    WDT_SITE_LOOP_BASE = 32
+    WDT_SITE_LOOP_BASE = 32,
+    /* More of deep_sleep()'s phases, past the loop sites, parent DEEP_SLEEP
+     * like 28-31 (10-31, the unanchored reviews: 30 split around CT16B3's
+     * reset, 29 around the dummy flash read): */
+    WDT_SITE_DS_READ = 64,      /* stored from SRAM after the dummy flash read; 27, back in the flash, not since */
+    WDT_SITE_DS_CLOCKED = 65,   /* the clocks back: the pins, the NVIC, UART2, the ADC, the system time, the LEDs */
+    WDT_SITE_DS_TICK = 66,      /* in pwm_tick_startI(): CT16B3's reset waits on CRST with no bound */
+    WDT_SITE_DS_TICKED = 67     /* the tick started: the USB transceiver, the clocks' accounting, to 31 */
 };
 
 /* Capture BEFORE instrumented operations start. Returns consecutive resets.

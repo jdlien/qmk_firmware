@@ -119,7 +119,7 @@ void sleep_deep_record(uint8_t *out);
  * outside it, b6 NVIC enabled != the wake set), u16 the strays counted at the
  * latest snapshot, u32 NVIC->ISPR[0] and u32 SCB->ICSR there. Slot 9 is the
  * sleep under way or the last one, written as it goes (10-28): u32 magic
- * 0x44534C32, u16 its sequence number (its ring entry's), u8 reason (NONE until
+ * 0x44534C33 (0x44534C32 before the census), u16 its sequence number (its ring entry's), u8 reason (NONE until
  * the loop is left), u8 flags (0x01 a CLKCFG ceiling, 0x20 the PLL's, 0x40
  * slept, 0x80 returned), u32 counted seconds, u32 the P0, P1 and P2 bits that
  * woke it, u16 strays; [26] 1 if it was inherited through a reset and not
@@ -128,6 +128,15 @@ void sleep_deep_record(uint8_t *out);
  * that kept the RAM powered (no POR or LVD); otherwise they read zero. Slot
  * 10 is slot 9 as this boot inherited it, frozen at boot until the next reset
  * (the next sleep replaces slot 9's within minutes on battery): the same 26
- * bytes, [26] 1 if there was one, [27] this boot's RSTST. False for a slot
- * past 10. */
+ * bytes, [26] 1 if there was one, [27] this boot's RSTST. Slot 11 is the
+ * interrupt census of the last wake's window, from the unmask to the return
+ * (10-31, sleep.c ds_irq_t): u32 handler entries, u32 USB's, u32 the IRQ
+ * numbers entered (bit n), u32 USB INSTS at the unmask (at the last USB
+ * entry if there was one), u8 IPSR at the last entry (0 none), u8 flags
+ * (0x01 counting, 0x02 opened, 0x04 closed at the return, 0x08 inherited
+ * from a reset inside the window and kept through this boot), u8 USB CFG's
+ * top byte and u8 INTEN's at the unmask; [20..21] the sleep's sequence
+ * number (slot 10's if 0x08, else slot 9's), [22..25] 0, [26] as slot 9's,
+ * [27] this boot's RSTST. Kept through a reset as slot 9 is. False for a
+ * slot past 11. */
 bool sleep_wake_ring_fill(uint8_t slot, uint8_t *out28);

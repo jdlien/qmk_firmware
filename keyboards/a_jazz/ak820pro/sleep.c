@@ -325,24 +325,28 @@ static void recovery_begin(uint8_t reason);
  * needs is not measured either: do not shorten the wait without measuring
  * it. noinline and long_call: the call from the flash is a blx to SRAM.
  *
- * `phase` and `waking` (10-28): the watchdog record's path and its word for
- * WDT_SITE_DS_WAKING, both in registers, so the store needs nothing from the
- * flash. A reset that reads it: this marker was stored after the WFI and the
- * next one (27, in the loop, after the return to the flash) was not. That
- * spans the wait, the flash read and the return; it points at this wait's
- * class without proving it (codex, ds-phase review). */
+ * `phase` and `marks` (10-28): the watchdog record's path, and its words for
+ * WDT_SITE_DS_WAKING and WDT_SITE_DS_READ on the caller's stack, so the
+ * stores need nothing from the flash. A reset that reads 29: stored after the
+ * WFI, and the read's marker not since: the wait or the flash read itself.
+ * One that reads 64: the read returned, and the next marker (27, in the loop,
+ * after the return to the flash) was not stored: the return's fetches. Each
+ * points at this wait's class without proving it (codex, ds-phase review;
+ * 64 since the unanchored reviews, 10-31). */
 static const uint32_t ds_flash_word = 0x5A5AA5A5u;
 
 __attribute__((section(".ramtext"), noinline, long_call)) static void ds_deep_wfi(volatile uint32_t *pmu_ctrl, const volatile uint32_t *flash,
-                                                                                  volatile uint32_t *phase, uint32_t waking) {
+                                                                                  volatile uint32_t *phase, const uint32_t *marks) {
     *pmu_ctrl = 2u;   /* Deep-sleep (p. 75) */
     __DSB();
     __WFI();
     *pmu_ctrl = 0u;
-    *phase    = waking;
-    *phase    = waking;   /* twice: a lone last write can be lost at the reset (watchdog_record.c) */
+    *phase    = marks[0];
+    *phase    = marks[0];   /* twice: a lone last write can be lost at the reset (watchdog_record.c) */
     for (uint32_t d = 260u; d; d--) __asm volatile("");   /* ~5 cycles a pass: ~108 us at the IHRC's 12 MHz */
     (void)*flash;
+    *phase = marks[1];   /* after the load: the M0 waits for its data */
+    *phase = marks[1];
 }
 
 /* A phase of deep_sleep() into the watchdog record (watchdog_record.h, sites
@@ -411,7 +415,7 @@ typedef struct __attribute__((packed)) {
     uint16_t strays;       /* as they come */
 } ds_last_t;
 _Static_assert(sizeof(ds_last_t) == 26, "op 24's slot 9: the record, then two bytes");
-#define DS_LAST_MAGIC    0x44534C32u   /* "DSL2", the sequence reserved since codex's review: a new value with any change to these layouts or the ring's */
+#define DS_LAST_MAGIC    0x44534C33u   /* "DSL3", the interrupt census beside it (10-31): a new value with any change to these layouts or the ring's */
 #define DS_LAST_CLK_CEIL 0x01u         /* a CLKCFG wait hit its ceiling (a reset follows) */
 #define DS_LAST_PLL_CEIL SLEEP_V_PLL_CEIL
 #define DS_LAST_SLEPT    SLEEP_V_SLEPT
@@ -424,6 +428,34 @@ static bool      ds_kept_checked, ds_kept;   /* .bss: false at every boot */
  * the same way). .bss: one reset deep, as that is. */
 static ds_last_t ds_inherited;
 static bool      ds_inherited_ok;
+
+/* The interrupts from the unmask to the return (op 24 slot 11, 10-31): phase
+ * 31's window, where a handler that never lets go starves the thread with
+ * nothing else to show for it. Both unanchored reviews put a USB storm there
+ * among the first (flags the LLD never clears; the transceiver back on with
+ * the cable out). Every handler entry while DSI_WATCH is set, from the IRQ
+ * prologue hook (chconf.h); kept through a reset like slot 9. A reset inside
+ * the window freezes it for the boot after (DSI_FROZEN): on battery the next
+ * sleep comes within minutes. 20 B, all the dev heap gap allows (its floor
+ * exactly): the sleep's number is slot 9's or 10's, and a UART2 storm shows
+ * as `seen` and `last` with n_all far over n_usb. Not packed, so the counts
+ * are word stores. Nested handlers can lose a count. */
+typedef struct {
+    uint32_t n_all;     /* handler entries in the window */
+    uint32_t n_usb;     /* USB's */
+    uint32_t seen;      /* the IRQ numbers entered, bit n (SysTick is IPSR 15, not among them) */
+    uint32_t insts;     /* USB INSTS at the unmask; at each USB entry after it */
+    uint8_t  last;      /* IPSR at the last entry: 16 + the IRQ number, 15 SysTick; 0 none */
+    uint8_t  flags;     /* DSI_* */
+    uint8_t  cfg;       /* USB CFG's top byte at the unmask: VREG33_EN, PHY_EN, DPPU_EN, SIE_EN, ESD_EN, ... */
+    uint8_t  inten;     /* USB INTEN's top byte there: BUS_IE, SOF_IE, USB_IE, BUSWK_IE */
+} ds_irq_t;
+_Static_assert(sizeof(ds_irq_t) == 20, "op 24's slot 11: the census, then the sleep's number");
+#define DSI_WATCH  0x01u   /* counting: the window is open */
+#define DSI_OPENED 0x02u   /* the window opened, at the unmask */
+#define DSI_CLOSED 0x04u   /* and closed, at the return */
+#define DSI_FROZEN 0x08u   /* inherited from a reset inside the window: kept through this boot */
+static volatile ds_irq_t ds_irq DS_KEPT;
 
 /* At every boot, right after the reset's cause is captured
  * (sleep_boot_check(), ak820pro.c), and again before any read or sleep as a
@@ -441,11 +473,59 @@ static void ds_keep_boot(void) {
         memset((void *)&ds_last, 0, sizeof(ds_last));
         memset(wake_ring, 0, sizeof(wake_ring));
         memset((void *)&stray_diag, 0, sizeof(stray_diag));
+        memset((void *)&ds_irq, 0, sizeof(ds_irq));
         wake_seq = 0;
     } else {
         memcpy(&ds_inherited, (const void *)&ds_last, sizeof(ds_inherited));
         ds_inherited_ok = true;
+        /* The census: a reset inside its window keeps it through this boot;
+         * one frozen at an earlier boot is done with. */
+        uint8_t f = ds_irq.flags;
+        if (f & DSI_FROZEN)
+            memset((void *)&ds_irq, 0, sizeof(ds_irq));
+        else if ((f & DSI_OPENED) && !(f & DSI_CLOSED))
+            ds_irq.flags = DSI_OPENED | DSI_FROZEN;
+        else
+            ds_irq.flags = f & (uint8_t)~DSI_WATCH;
     }
+}
+
+/* Every handler's prologue (chconf.h). Counts only after this boot's check:
+ * until then DSI_WATCH can be a reset's leftover, and the boot's own
+ * interrupts would overwrite what it kept. */
+void sleep_irq_hook(void) {
+    if (!ds_kept_checked || !(ds_irq.flags & DSI_WATCH)) return;
+    uint32_t e = __get_IPSR() & 0x3Fu;
+    ds_irq.n_all++;
+    if (e >= 16u) {
+        uint32_t n = e - 16u;
+        ds_irq.seen |= 1u << n;
+        if (n == USB_IRQn) {
+            ds_irq.n_usb++;
+            ds_irq.insts = SN_USB->INSTS;   /* a status read; INSTSC clears */
+        }
+    }
+    ds_irq.last = (uint8_t)e;
+    ds_irq.last = (uint8_t)e;   /* twice: a handler that then hangs writes nothing after it (watchdog_record.c) */
+}
+
+/* At the unmask, under the lock: what USB has pending and enabled as the
+ * handlers come back, and the count from zero. WATCH last. */
+static void ds_irq_open(void) {
+    if (ds_irq.flags & DSI_FROZEN) return;
+    ds_irq.flags   = 0;
+    ds_irq.n_all   = 0;
+    ds_irq.n_usb   = 0;
+    ds_irq.seen    = 0;
+    ds_irq.last    = 0;
+    ds_irq.insts   = SN_USB->INSTS;
+    ds_irq.cfg     = (uint8_t)(SN_USB->CFG >> 24);
+    ds_irq.inten   = (uint8_t)(SN_USB->INTEN >> 24);
+    ds_irq.flags   = DSI_OPENED | DSI_WATCH;
+}
+
+static void ds_irq_close(void) {
+    if (ds_irq.flags & DSI_WATCH) ds_irq.flags = DSI_OPENED | DSI_CLOSED;
 }
 
 static void ds_last_begin(uint32_t preset_s) {
@@ -508,6 +588,17 @@ static void stray_note(uint32_t strays, uint32_t secs, uint32_t p0w, uint32_t p1
 
 bool sleep_wake_ring_fill(uint8_t slot, uint8_t *out) {
     ds_keep_boot();
+    if (slot == 11u) {
+        /* The sleep it belongs to: a frozen one is the inherited sleep's
+         * (slot 10), any other the last sleep's (slot 9). */
+        uint16_t seq = (ds_irq.flags & DSI_FROZEN) ? ds_inherited.seq : ds_last.seq;
+        memset(out, 0, 28);
+        memcpy(out, (const void *)&ds_irq, sizeof(ds_irq));
+        memcpy(&out[20], &seq, 2);
+        out[26] = ds_kept;
+        out[27] = watchdog_boot_rstst();
+        return true;
+    }
     if (slot == 10u) {
         memcpy(out, &ds_inherited, sizeof(ds_inherited));
         out[26] = ds_inherited_ok;
@@ -561,6 +652,11 @@ static bool deep_sleep(uint32_t cap_s, bool no_feed, uint32_t preset_s) {
     const uint32_t ph_waking   = watchdog_record_word(WDT_SITE_DEEP_SLEEP, WDT_SITE_DS_WAKING);
     const uint32_t ph_restore  = watchdog_record_word(WDT_SITE_DEEP_SLEEP, WDT_SITE_DS_RESTORE);
     const uint32_t ph_unlocked = watchdog_record_word(WDT_SITE_DEEP_SLEEP, WDT_SITE_DS_UNLOCKED);
+    const uint32_t ph_clocked  = watchdog_record_word(WDT_SITE_DEEP_SLEEP, WDT_SITE_DS_CLOCKED);
+    const uint32_t ph_tick     = watchdog_record_word(WDT_SITE_DEEP_SLEEP, WDT_SITE_DS_TICK);
+    const uint32_t ph_ticked   = watchdog_record_word(WDT_SITE_DEEP_SLEEP, WDT_SITE_DS_TICKED);
+    /* The SRAM wait's two markers, on this stack: nothing from the flash */
+    const uint32_t ph_marks[2] = { ph_waking, watchdog_record_word(WDT_SITE_DEEP_SLEEP, WDT_SITE_DS_READ) };
 
     wake_pins_t w;
     wake_pins(&w);
@@ -666,7 +762,7 @@ static bool deep_sleep(uint32_t cap_s, bool no_feed, uint32_t preset_s) {
          * handler runs; these vectors have none. */
         for (;;) {
             ds_phase(ph, ph_asleep);
-            ds_deep_wfi(&SN_PMU->CTRL, &ds_flash_word, ph, ph_waking);   /* from SRAM, see above */
+            ds_deep_wfi(&SN_PMU->CTRL, &ds_flash_word, ph, ph_marks);   /* from SRAM, see above */
             ds_phase(ph, ph_own);
             uint32_t r0 = SN_GPIO0->RIS & p0w, r1 = SN_GPIO1->RIS & p1w, r2 = SN_GPIO2->RIS & p2w;
             bool second = take_second();
@@ -725,6 +821,7 @@ static bool deep_sleep(uint32_t cap_s, bool no_feed, uint32_t preset_s) {
                 NVIC_SystemReset();
             }
     }
+    ds_phase(ph, ph_clocked);
     /* The wake pins quiet again; the temporary vectors off BEFORE the old
      * enables go back (writing ISER cannot disable one; codex). P1 too. */
     SN_GPIO0->IE &= ~p0w;  SN_GPIO1->IE &= ~p1w;  SN_GPIO2->IE &= ~p2w;
@@ -751,12 +848,15 @@ static bool deep_sleep(uint32_t cap_s, bool no_feed, uint32_t preset_s) {
     SN32_ST_TIM->config.TMRCTRL |= mskCT16_CEN_EN;
     SCB->ICSR = SCB_ICSR_PENDSTSET_Msk;
     sn32f2xx_sleep_exitI();
+    ds_phase(ph, ph_tick);   /* CT16B3's reset in here spins on CRST with no bound (codex, 10-31) */
     pwm_tick_startI();
+    ds_phase(ph, ph_ticked);
     bool     phy_off = usb_phy_onI();
     uint32_t counted = secs - preset_s;
     rtc_account_sleepI(counted);   /* both software clocks, before any second is served */
     if (slept) rtc_wake_beginI(counted);
     ds_phase(ph, ph_unlocked);   /* before the unlock: an interrupt that never lets go reads this */
+    DS_LAST(ds_irq_open());      /* dev: and the census says which */
     chSysUnlock();
 
     ch582_rx_resync();
@@ -772,6 +872,7 @@ static bool deep_sleep(uint32_t cap_s, bool no_feed, uint32_t preset_s) {
 #endif
     (void)phy_off;
     if (slept) recovery_begin(ds_reason);
+    DS_LAST(ds_irq_close());
     DS_LAST(ds_last.flags |= DS_LAST_DONE);
     return true;
 }
