@@ -137,14 +137,25 @@
 #    define CH582_5A_PROMOTE_MS 3000
 #endif
 
+/* How long a pairing may hold off deep sleep (the 10-31 audit, F-003). The end
+ * of an advertising window with no device isn't observed (5B 23 is periodic,
+ * in every state), so is_pairing used to hold the board awake on battery until
+ * a slot key. Advertising lasts minutes; this is well past it. */
+#ifndef CH582_PAIRING_MAX_MS
+#    define CH582_PAIRING_MAX_MS 600000u
+#endif
+
 static volatile bool    is_module_connected = false;
 /* Active BT slot 1-3. Derived from the selected 0xA6 profile, NOT from the 5B
  * stream: a logic-analyzer capture proved the 5B second byte is a handshake-STAGE
  * code (0x23/0x31..0x34 seen regardless of slot), not the slot number. 0 = none. */
 static volatile uint8_t connected_slot = 0;
 
-/* True while the module is advertising / waiting to bond (5B 31). */
+/* True while the module is advertising / waiting to bond (5B 31). Holds off
+ * deep sleep (sleep.c), so it lapses CH582_PAIRING_MAX_MS after pairing_since,
+ * the last pair request or 5B 31. */
 static volatile bool    is_pairing = false;
+static volatile uint32_t pairing_since = 0;
 /* A 5B 31 has arrived, outside a bounce, since the last pair request or
  * select (the menu's Pairing page, P3): conn_state goes to PAIRING
  * optimistically when A6 51 is sent and stays there if the module never
@@ -1614,6 +1625,7 @@ void ch582_set_profile(ch582_profile_t profile) {
         return;
     }
 
+    is_pairing   = false;   /* a plain select ends a pairing (F-003); the bounce clears it at its real select */
     pa.kind      = PA_SELECT;
     pa.target    = param;
     pa.tries     = 1;
@@ -1634,6 +1646,7 @@ void ch582_enter_pairing(void) {
     is_module_connected = false;
     LOCKCHAN_LINK_LOST();
     is_pairing          = true;
+    pairing_since       = timer_read32();
     pair_confirmed      = false;   /* until this request's 5B 31 */
     /* Optimistic: show pairing immediately for feedback, and let the retry below
      * make it true. Waiting for 5B 31 to update the display would leave the band
@@ -1658,6 +1671,7 @@ void ch582_pair(ch582_profile_t profile) {
 void ch582_cancel_connect(void) {
     connect_requested = false;
     usb_mode          = true;
+    is_pairing        = false;
     pair_confirmed    = false;
     select_acked      = false;
     select_tx_failed  = false;
@@ -1822,6 +1836,11 @@ void ch582_task(void) {
         uint8_t param = requested_profile;
         ch582_send_command(0xA6, &param, 1);
     }
+
+    /* An abandoned pairing stops holding the board awake (F-003). Only the
+     * flag: conn_state and the band stay PAIRING, so a tap on the slot still
+     * takes the cancel-pairing bounce if the module is in fact advertising. */
+    if (is_pairing && timer_elapsed32(pairing_since) >= CH582_PAIRING_MAX_MS) is_pairing = false;
 
     /* Drive the pending control action -- one switch instead of three
      * independent timer blocks. Cadences, budgets and clearing rules are the
@@ -2119,6 +2138,7 @@ void ch582_task(void) {
                                 select_acked   = true;
                             }
                             is_pairing          = true;
+                            pairing_since       = timer_read32();
                             is_module_connected = false;
                             conn_state          = CH582_CONN_PAIRING;
                             connected_slot      = 0;
