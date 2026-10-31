@@ -468,8 +468,12 @@ static bool deep_sleep(uint32_t cap_s, bool no_feed, uint32_t preset_s) {
      * interrupt taken has no handler (codex, must-fix 1). */
     chSysLock();
     /* The admission again, under the lock: nothing can be queued for the
-     * radio, or a host's frames come, between the check and the teardown. */
-    if ((uint16_t)(SN_USB->FRMNO & 0x7FFu) != usb_fn_last || !tx_quietI()) {
+     * radio, or a host's frames come, between the check and the teardown.
+     * Nor anything the radio sent since this pass drained it (the 10-31
+     * audit, F-020): the wake's iqResetI() would throw away whole frames,
+     * a host's lock LEDs among them; the next pass takes them, and the pass
+     * after tries again (the module is silent at idle). */
+    if ((uint16_t)(SN_USB->FRMNO & 0x7FFu) != usb_fn_last || !tx_quietI() || !iqIsEmptyI(&SD2.iqueue)) {
         chSysUnlock();
         OD_ACTIVITY_CLEAR(OD_ACT_SLEEP);
         return false;
@@ -723,6 +727,9 @@ static void rc_close(uint8_t step) {
 }
 
 static void recovery_task(void) {
+    /* Nothing to watch: no timer read, a 64-bit divide on every pass (the
+     * 10-31 audit, F-027). */
+    if (!rc_usb_watch && !rc_active) return;
     uint32_t since = timer_elapsed32(rc_woke_at);
     /* The 20 s USB observation (the page): a host's frames again within it. */
     if (rc_usb_watch && ((uint16_t)(SN_USB->FRMNO & 0x7FFu) != ur_fn0 || since >= 20000u)) {
