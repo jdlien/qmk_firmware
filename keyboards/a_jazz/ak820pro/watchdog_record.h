@@ -69,6 +69,10 @@ void watchdog_record_fill(uint8_t *out28);
 void watchdog_record_fault_frame(uintptr_t frame_addr);
 /* Anything else terminal: site, the IPSR to report, and a PC if known. */
 void watchdog_record_stop(uint8_t site, uint8_t exception, uint32_t pc);
+/* An intentional bootloader entry before the boot capture (bootmagic): no
+ * record survives it, so the bootloader's software-reset exit cannot report
+ * a kept terminal record (68, 69) as its own. */
+void watchdog_record_forget(void);
 
 #ifdef WDT_TEST_HOOKS
 /* Instrumented builds only: boot copies the four raw retained words here

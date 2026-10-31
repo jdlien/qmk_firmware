@@ -48,6 +48,14 @@ void early_hardware_init_post(void) {
     SN_PFPA->UART_b.URXD2 = 0b11;
 }
 
+// Bootmagic (Esc held at power-up) jumps to the bootloader from quantum_init,
+// before watchdog_boot_check() has read the watchdog record: forget it first
+// (watchdog_record_forget), then QMK's default EEPROM reset.
+void bootmagic_reset_eeprom(void) {
+    watchdog_record_forget();
+    eeconfig_disable();
+}
+
 
  void keyboard_post_init_kb(void) {
 #ifdef FORCE_EEPROM_RESET

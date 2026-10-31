@@ -69,18 +69,18 @@ static bool usb_bus_live(void) {
  * both at a resume. So a sleep takes the pair as the driver left it and puts
  * back only what it had: setting PHY_EN alone, as before, left a cable-out
  * wake with the transceiver on and ESD off, a state no driver path makes
- * (F-045, the audit 10-31; seen on black's census). The pair is kept as CFG's
- * top byte, so the light sleep's copy costs one byte of the dev build's RAM.
- * Restoring returns whether a bit was off. */
+ * (F-045, the audit 10-31; seen on black's census). The dev light sleep does
+ * the same around each WFI, in the idle hook (chconf.h). Restoring returns
+ * whether a bit was off. */
 #define USB_CFG_PHY_EN  (1u << 30)
 #define USB_CFG_ESD_EN  (1u << 27)
 #define USB_CFG_PHY_ESD (USB_CFG_PHY_EN | USB_CFG_ESD_EN)
-static uint8_t usb_phy_takeI(void) {
-    return (uint8_t)((SN_USB->CFG & USB_CFG_PHY_ESD) >> 24);
+static uint32_t usb_phy_takeI(void) {
+    return SN_USB->CFG & USB_CFG_PHY_ESD;
 }
 
-static bool usb_phy_restoreI(uint8_t taken) {
-    uint32_t off = ((uint32_t)taken << 24) & USB_CFG_PHY_ESD & ~SN_USB->CFG;
+static bool usb_phy_restoreI(uint32_t taken) {
+    uint32_t off = taken & ~SN_USB->CFG;
     if (!off) return false;
     SN_USB->CFG |= off;
     return true;
@@ -94,7 +94,6 @@ static uint32_t ls_pmu_until = 0;   /* timer ms; bit 4 runs until then */
 static uint32_t ls_until     = 0;   /* timer ms; the whole mask ends then (codex: a probe that
                                      * breaks USB must end by itself, or nothing can end it) */
 static uint8_t  ls_applied   = 0;
-static uint8_t  ls_usb_phy   = USB_CFG_PHY_ESD >> 24;   /* usb_phy_takeI() as bits 2 and 4 began */
 /* Read by the idle thread's hooks (chconf.h). */
 volatile bool     ak820_wfi       = false;
 volatile bool     ak820_pmu_sleep = false;
@@ -131,20 +130,10 @@ static void light_task(void) {
     if ((m & SLEEP_LS_TICK) && (display_backlight_effective() > 0 || indicators_any_lit()))
         m &= (uint8_t)~SLEEP_LS_TICK;
     if ((m ^ ls_applied) & SLEEP_LS_TICK) pwm_tick_run(!(m & SLEEP_LS_TICK));
-    /* Entering PMU Sleep or the plain-WFI probe: the transceiver's pair as
-     * the driver has it. Leaving either (manual p. 79 documents mode 0 only as
-     * "disable": whether a WFI there touches USB is what bit 2 finds out;
-     * codex): what the sleeps took back, a no-op if nothing was. */
-    if ((m & (SLEEP_LS_PMU | SLEEP_LS_WFI)) && !(ls_applied & (SLEEP_LS_PMU | SLEEP_LS_WFI))) {
-        chSysLock();
-        ls_usb_phy = usb_phy_takeI();
-        chSysUnlock();
-    }
-    if ((ls_applied & (SLEEP_LS_PMU | SLEEP_LS_WFI)) & ~m) {
-        chSysLock();
-        usb_phy_restoreI(ls_usb_phy);
-        chSysUnlock();
-    }
+    /* What PMU Sleep or the plain-WFI probe takes of the transceiver's pair
+     * (manual p. 79 documents mode 0 only as "disable": whether a WFI there
+     * touches USB is what bit 2 finds out; codex) the idle hook puts back
+     * after each WFI, as the driver had it then (chconf.h). */
     sn32f2xx_set_scan_only((m & SLEEP_LS_SCAN) != 0);
     ak820_wfi       = (m & (SLEEP_LS_WFI | SLEEP_LS_PMU)) != 0;
     ak820_pmu_sleep = (m & SLEEP_LS_PMU) != 0;
@@ -488,7 +477,7 @@ static bool deep_sleep(uint32_t cap_s, bool no_feed, uint32_t preset_s) {
     /* Outputs off: the LED matrix, the 20 kHz tick with the pins it drives. */
     sn32f2xx_sleep_enterI();
     pwm_tick_stopI();
-    uint8_t  usb_phy = usb_phy_takeI();   /* the transceiver's pair as the driver left it */
+    uint32_t usb_phy = usb_phy_takeI();   /* the transceiver's pair as the driver left it */
     /* UART2's receiver off across the clock change and the sleep (TX stays
      * enabled, so its line idles high); the ADC off (~100 uA, p. 96). */
     uint32_t uart_ctrl = SN_UART2->CTRL;
