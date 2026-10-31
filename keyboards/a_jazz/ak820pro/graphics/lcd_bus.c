@@ -69,7 +69,7 @@ extern void display_anim_end(void);
 // Frame-count ceiling, derived rather than guessed: the slot grows upward from
 // ANIM_BASE and must not reach the asset region. hdr[0] is one byte, so 255 is
 // the format's own ceiling; whichever is smaller wins.
-//   (0x0CE0000 - 0x540000 - 0x100) / 0x8000 = 244
+//   (0x0CE0000 - 0x540000 - 0x100) / 0x8000 = 243 (243.99, rounded down)
 #define ANIM_ROOM   ((FLASH_ASSET_BASE - ANIM_BASE - ANIM_HDR) / ANIM_STRIDE)
 #define ANIM_MAX    (ANIM_ROOM < 255u ? ANIM_ROOM : 255u)
 
@@ -628,8 +628,13 @@ void flash_set_unlocked(bool on) { flash_unlocked = on; }
 static bool in_anim_slot(uint32_t a, uint32_t len) {
     static const uint32_t slots[] = {0x1AA000u, 0x200000u, 0x38B000u, 0x540000u};
     for (uint8_t i = 0; i < 4; i++) {
-        // Slots are sized generously: header + up to 132 frames.
-        if (a >= slots[i] && a + len <= slots[i] + 0x100u + 132u * 0x8000u) return true;
+        // Slots are sized generously: header + up to 132 frames. The one the
+        // player reads, ANIM_BASE, runs up to the asset region, so the
+        // ANIM_MAX (243) frames the player plays and mkanim.py makes can be
+        // written (the 10-31 audit, F-015: 132-243 frames failed at the last
+        // sector, after the old animation was erased). Sector-aligned.
+        uint32_t end = slots[i] == ANIM_BASE ? FLASH_ASSET_BASE : slots[i] + 0x100u + 132u * 0x8000u;
+        if (a >= slots[i] && a + len <= end) return true;
     }
     return false;
 }
