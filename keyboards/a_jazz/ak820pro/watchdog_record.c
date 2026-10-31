@@ -178,3 +178,14 @@ void watchdog_record_fault_frame(uintptr_t frame_addr) {
 void watchdog_record_stop(uint8_t site, uint8_t exception, uint32_t pc) {
     commit_terminal(site, exception, pc);
 }
+
+/* Bootmagic jumps to the bootloader before watchdog_record_boot() has read
+ * the record, and its exit is a software reset: a site-68/69 record kept
+ * across that round trip would read as the exit's own failure (codex,
+ * wake-fixes review). So it goes, ready or not, with commit_terminal's
+ * sacrificial write after it. */
+void watchdog_record_forget(void) {
+    ready = false;
+    retained.magic = 0;
+    write_drain = 0;
+}
