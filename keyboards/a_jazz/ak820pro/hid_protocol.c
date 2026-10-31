@@ -1376,14 +1376,21 @@ static inline bool rtc_is_get_time_cmd(const uint8_t *data, uint8_t length) {
            data[1] == RTC_CHANNEL && data[2] == RTC_GET_TIME;
 }
 
-/* Fill the reply in place with the live clock. */
+/* Fill the reply in place with the live clock, all of it from one stamp (the
+ * 10-31 audit, F-009): the calendar from rtc_get_time() and the count from a
+ * second stamp straddled a second boundary about 1 GET in 2,000, which the
+ * hosts read as the board exactly 1 s behind (BACKLOG, "Whole-second clock
+ * slips"). No stamp (the clock unset, or the second's ISR starved through
+ * rtc_now()'s retries) answers unset, which the hosts skip. */
 static void rtc_read_into(uint8_t *data) {
-    /* Zeroed up front: rtc_get_time() leaves t untouched when it fails, and the
-     * fields below are serialized regardless of ok. Without this the reply
-     * carries stack garbage -- nondeterministic, and a small leak of whatever
-     * was on the stack. data[3] already tells the host the reading is invalid. */
+    /* Zeroed up front: the fields below are serialized regardless of ok.
+     * Without this the reply carries stack garbage -- nondeterministic, and a
+     * small leak of whatever was on the stack. data[3] already tells the host
+     * the reading is invalid. */
+    rtc_stamp_t s;
+    bool ok = rtc_now(&s);
     rtc_time_t t = {0};
-    bool ok = rtc_get_time(&t);
+    if (ok) t = s.t;
     data[3] = ok ? 1 : 0;
     data[4] = (uint8_t)(t.year >= 2000 ? t.year - 2000 : 0);
     data[5] = t.month;
@@ -1398,7 +1405,7 @@ static void rtc_read_into(uint8_t *data) {
      * [18..19] period_nominal, [20] flags, [21..22] last_host_offset_ms,
      * [23..24] sof_bias_ppm, [25] ref_state, [26] sync_age_min,
      * [27] sof_epoch, [28..31] sof_frames_total. */
-    rtc_status_fill(1, &data[11]);
+    rtc_status_fill_page1(ok ? &s : NULL, &data[11]);
 }
 
 #if defined(VIA_ENABLE)

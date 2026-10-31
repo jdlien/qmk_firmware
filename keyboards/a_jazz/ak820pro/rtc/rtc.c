@@ -808,26 +808,35 @@ static void put32(uint8_t *p, uint32_t v) { put16(p, (uint16_t)v); put16(p + 2, 
 
 void rtc_status_fill_page4(uint8_t *out);
 static bool acq_state_done(void);
+/* Page 1 from a stamp the caller took (NULL: none could be), so RTC_GET_TIME
+ * builds its whole reply from one stamp (the 10-31 audit, F-009). */
+void rtc_status_fill_page1(const rtc_stamp_t *s, uint8_t *out)
+{
+    out[0] = 2;                                              /* RTC_PROTO_VERSION */
+    put32(&out[1], s ? s->cnt : 0);                          /* [12..15] */
+    /* [16..17] active: the stamp's, which the count was read against; the
+     * live register only when there is no stamp */
+    put16(&out[5], (uint16_t)(s ? s->period_active : rtc_lld_get_period(&RTCD1)));
+    put16(&out[7], (uint16_t)P_nom);                         /* [18..19] nominal */
+    out[9]  = (host_synced ? 0x01 : 0) | (slew_state != SLEW_IDLE ? 0x02 : 0) |
+              (acq_state_done() ? 0x04 : 0) | ((pcf_backoff || pcf_maybe_stopped) ? 0x08 : 0) |
+              (stale_count ? 0x10 : 0);       /* [20] flags */
+    put16(&out[10], (uint16_t)last_host_offset_ms);          /* [21..22] */
+    put16(&out[12], (uint16_t)sof_bias_ppm);                 /* [23..24] in use */
+    out[14] = ref_state;                                     /* [25] */
+    uint32_t age = host_synced ? (rtc_seconds_count - last_sync_secs) / 60u : 255u;
+    out[15] = (uint8_t)(age > 254 ? 255 : age);              /* [26] sync_age_min */
+    out[16] = sof_epoch;                                     /* [27] */
+    put32(&out[17], sof_frames_total);                       /* [28..31] */
+}
+
 void rtc_status_fill(uint8_t page, uint8_t *out)
 {
     switch (page) {
     case 1: {   /* 21 bytes: the RTC_GET_TIME[11..31] tail */
         rtc_stamp_t s;
         bool ok = rtc_now(&s);
-        out[0] = 2;                                          /* RTC_PROTO_VERSION */
-        put32(&out[1], ok ? s.cnt : 0);                      /* [12..15] */
-        put16(&out[5], (uint16_t)rtc_lld_get_period(&RTCD1));/* [16..17] active (live register) */
-        put16(&out[7], (uint16_t)P_nom);                     /* [18..19] nominal */
-        out[9]  = (host_synced ? 0x01 : 0) | (slew_state != SLEW_IDLE ? 0x02 : 0) |
-                  (acq_state_done() ? 0x04 : 0) | ((pcf_backoff || pcf_maybe_stopped) ? 0x08 : 0) |
-                  (stale_count ? 0x10 : 0);   /* [20] flags */
-        put16(&out[10], (uint16_t)last_host_offset_ms);      /* [21..22] */
-        put16(&out[12], (uint16_t)sof_bias_ppm);             /* [23..24] in use */
-        out[14] = ref_state;                                 /* [25] */
-        uint32_t age = host_synced ? (rtc_seconds_count - last_sync_secs) / 60u : 255u;
-        out[15] = (uint8_t)(age > 254 ? 255 : age);          /* [26] sync_age_min */
-        out[16] = sof_epoch;                                 /* [27] */
-        put32(&out[17], sof_frames_total);                   /* [28..31] */
+        rtc_status_fill_page1(ok ? &s : NULL, out);
         break;
     }
     case 2: {   /* 28 bytes of counters */

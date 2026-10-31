@@ -129,6 +129,8 @@ bool rtc_now(rtc_stamp_t *s);
  * page 2: 28 bytes of counters (stale reads, I2C failures, ISR latency ...)
  * page 3: the last 14 FRMNO deltas, u16 each (Phase 0 observation ring) */
 void rtc_status_fill(uint8_t page, uint8_t *out);
+/* Page 1 from the caller's stamp (NULL: none), for RTC_GET_TIME's reply. */
+void rtc_status_fill_page1(const rtc_stamp_t *s, uint8_t *out);
 
 /* ---- Phase 1: phase-correct set + deferred PCF write ---------------------- */
 #define RTC_MIN_FIRST_MS   20      /* closer than this to a boundary: label the next one */
