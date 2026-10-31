@@ -191,10 +191,11 @@ void param_status_task(void) {
     uint8_t v    = rgb_matrix_get_val();
     uint8_t sp   = rgb_matrix_get_speed();
     bool    on   = rgb_matrix_is_enabled();
-    /* NKRO has NO other feedback anywhere on the board, and it is toggled by a
-     * magic key (both shifts + N) that is easy to hit by accident. Finding out
-     * what state it was in previously meant attaching a console -- see the Caps
-     * Lock investigation in CLAUDE.md. */
+    /* NKRO has NO other feedback anywhere on the board. QMK Command's both
+     * shifts + N toggled it by accident until Command went off (the 10-31
+     * audit, F-002); a key bound to NK_TOGG still does. Finding out what state
+     * it was in previously meant attaching a console -- see the Caps Lock
+     * investigation in docs/hardware.md. */
     bool    nkro = keymap_config.nkro;
 
     /* First pass only records the baseline -- otherwise the band would flash a

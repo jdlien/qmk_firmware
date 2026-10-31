@@ -730,17 +730,6 @@ void backing_store_pre_write_hook(void) {
     lcd_blit_wait();
 }
 
-#ifdef COMMAND_ENABLE
-#    include "command.h"
-/* P1b (C6): the magic reset (both Shifts and Backspace) runs eeconfig_init(),
- * which writes the RGB defaults and force-flushes them. command_proc() calls
- * this before command_common() (command.c:71, 75), so an open RGB edit rolls
- * back first; false lets the reset go on. */
-bool command_extra(uint8_t code) {
-    if (code == MAGIC_KC(MAGIC_KEY_EEPROM_CLEAR)) menu_edit_external(ME_DOM_RGB);
-    return false;
-}
-#endif
 
 bool rgb_matrix_eeprom_flush_allowed(void) {
     /* Two gates.
