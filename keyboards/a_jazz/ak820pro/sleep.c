@@ -503,8 +503,8 @@ static void ds_keep_boot(void) {
  * higher priority can still enter above a stuck one. */
 void sleep_irq_hook(void) {
     if (!ds_kept_checked || !(ds_irq.flags & DSI_WATCH)) return;
-    uint32_t e = __get_IPSR() & 0x3Fu;
     __disable_irq();
+    uint32_t e = __get_IPSR() & 0x3Fu;   /* under the mask too, or a nested entry's `last` is overwritten by this older one (codex, census verify) */
     ds_irq.n_all++;
     if (e >= 16u) {
         uint32_t n = e - 16u;
