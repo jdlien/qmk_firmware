@@ -109,6 +109,7 @@ enum loop_site {
     LOOP_SITE_BATT, LOOP_SITE_EECFG, LOOP_SITE_HEALTH, LOOP_SITE_RGBFLUSH,
     LOOP_SITE_COUNT
 };
+_Static_assert(WDT_SITE_LOOP_BASE + LOOP_SITE_COUNT <= 64, "the loop's sites run into 64-69 (watchdog_record.h)");
 /* hid_protocol.c: raw HID (USB or the 2.4G dongle) carried an accepted media
  * command less than `ms` ago (the lock-LED channel's lease, R3-2). */
 bool hid_rawhid_media_within(uint32_t now, uint32_t ms);

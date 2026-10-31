@@ -22,7 +22,15 @@ enum watchdog_site {
     WDT_SITE_TEST_FAULT = 26,
     WDT_SITE_DEEP_SLEEP = 27,   /* sleep.c's experiment: the reset happened asleep */
     /* 32 + enum loop_site in ak820pro.h; keep that enum append-only too. */
-    WDT_SITE_LOOP_BASE = 32
+    WDT_SITE_LOOP_BASE = 32,
+    /* 28-31 and 64-67: gremlin/ds-phase's deep-sleep phases (a dev
+     * diagnostic, not on this branch); kept free. */
+    /* Terminal sites written just before a software reset, the one kind of
+     * record a SWRSTF boot keeps (F-032, the audit 10-31): a deep sleep's
+     * clock that did not come back (sleep.c, DS_CLOCK_*), and CT16B3's
+     * counter reset that did not complete as the 20 kHz tick started
+     * (indicators.c). The PC word holds what each found. */
+    WDT_SITE_DS_CLOCK = 68, WDT_SITE_TICK_RESET = 69
 };
 
 /* Capture BEFORE instrumented operations start. Returns consecutive resets.
