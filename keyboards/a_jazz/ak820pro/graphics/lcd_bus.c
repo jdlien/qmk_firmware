@@ -765,6 +765,27 @@ uint32_t flash_crc32(uint32_t addr, uint32_t len) {
 static flash_asset_t fa_tab[FA_MAX];
 static uint8_t       fa_count = 0;
 
+/* An index entry the drawing can trust (the 10-31 audit, F-018): its sizes go
+ * straight into a DMA length and a panel window, and the index sits in the
+ * region writable without an unlock, so a crafted one (an icon of 4096 x 4096)
+ * gave a ~3.9 s stall every ~5 s while the dashboard showed. Images within the
+ * panel, fonts' cells too, each wholly inside the chip. Every shipped entry
+ * passes (the largest, the splash, 128 x 128). */
+static bool fa_entry_ok(const flash_asset_t *a) {
+    uint32_t bytes;
+    if (a->fmt == 0) {
+        if (a->w < 1 || a->w > FRAME_W || a->h < 1 || a->h > FRAME_H) return false;
+        bytes = (uint32_t)a->w * a->h * 2u;
+    } else if (a->fmt == 1) {
+        if (a->cell_w < 1 || a->cell_w > FRAME_W || a->cell_h < 1 || a->cell_h > FRAME_H) return false;
+        if (a->w != a->cell_w || a->h != a->cell_h || a->count == 0) return false;
+        bytes = (uint32_t)a->cell_w * a->cell_h * 2u * a->count;
+    } else {
+        return false;
+    }
+    return a->off < FLASH_CHIP_SIZE - FLASH_ASSET_BASE && bytes <= FLASH_CHIP_SIZE - FLASH_ASSET_BASE - a->off;
+}
+
 bool flash_assets_init(void) {
     uint8_t hdr[8];
     fa_count = 0;
@@ -775,10 +796,10 @@ bool flash_assets_init(void) {
     if (magic != FA_MAGIC || hdr[4] != 1) return false;   // absent or wrong version
     uint8_t n = hdr[5] > FA_MAX ? FA_MAX : hdr[5];
 
-    uint8_t e[16];
+    uint8_t e[16], kept = 0;
     for (uint8_t i = 0; i < n; i++) {
         flash_read_bytes(FLASH_ASSET_BASE + 8u + (uint32_t)i * 16u, e, sizeof e);
-        flash_asset_t *a = &fa_tab[i];
+        flash_asset_t *a = &fa_tab[kept];
         a->id     = (uint16_t)(e[0] | (e[1] << 8));
         a->off    = (uint32_t)e[2] | ((uint32_t)e[3] << 8) | ((uint32_t)e[4] << 16);
         a->fmt    = e[5];
@@ -786,8 +807,9 @@ bool flash_assets_init(void) {
         a->h      = (uint16_t)(e[8] | (e[9] << 8));
         a->cell_w = e[10]; a->cell_h = e[11];
         a->first  = e[12]; a->count  = e[13];
+        if (fa_entry_ok(a)) kept++;   /* else skipped: its id draws nothing */
     }
-    fa_count = n;
+    fa_count = kept;
     return true;
 }
 
@@ -1072,6 +1094,9 @@ static void dma_unprepare(void) {
 bool lcd_blit_flash(uint32_t src, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
     WDT_SCOPE(WDT_SITE_LCD_TRANSFER);
     if (!w || !h) return true;
+    /* Inside the panel, as lcd_stream_begin() asks: a window past it, or a
+     * DMA longer than the panel's 32 KB, is refused (F-018's second guard). */
+    if (x + w > FRAME_W || y + h > FRAME_H) return false;
     /* NEVER RE-ARM UNDER A TRANSFER STILL IN FLIGHT. The glyph pump arms a DMA
      * and returns (lcd_draw_flash_glyph_try), and on the LAST glyph it resets
      * the queue -- so gq_pending() reads false while that transfer is still
