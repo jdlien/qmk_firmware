@@ -667,6 +667,20 @@ bool flash_busy(void) {
     return (flash_status() & 0x01) != 0;
 }
 
+/* A program or erase may still be running (the 10-31 audit, F-014): the chip
+ * ignores READ meanwhile, and a blit from it completes normally with whatever
+ * MISO holds, a white block or a blank cell that stays until its text
+ * changes. So erase and program latch flash_wip; a blit while it holds asks
+ * the chip, and one made while busy marks the screen to be repainted
+ * (blit_lost, the existing repair) once the chip reads idle. */
+static bool flash_wip    = false;
+static bool blit_in_wip  = false;
+static void flash_wip_note_blit(void) {
+    if (!flash_wip) return;
+    if (flash_busy()) blit_in_wip = true;
+    else              flash_wip = false;   /* idle: a blit now reads the chip */
+}
+
 static void flash_wren(void) {
     bus_quiesce();
     gpio_write_pin(FLASH_CS, 0);
@@ -707,6 +721,7 @@ bool flash_erase_sector(uint32_t addr) {
     flash_wren();
     flash_cmd_addr(FLASH_CMD_SEC_ERASE, addr);
     gpio_write_pin(FLASH_CS, 1);
+    flash_wip = true;   /* F-014 */
     return true;
 }
 
@@ -725,6 +740,7 @@ bool flash_page_program(uint32_t addr, const uint8_t *src, uint32_t len) {
     flash_cmd_addr(FLASH_CMD_PAGE_PROG, addr);
     for (uint32_t i = 0; i < len; i++) spi1_xfer(src[i]);
     gpio_write_pin(FLASH_CS, 1);
+    flash_wip = true;   /* F-014 */
     return true;
 }
 
@@ -1119,6 +1135,7 @@ bool lcd_blit_flash(uint32_t src, uint16_t x, uint16_t y, uint16_t w, uint16_t h
     // caller's job and the ordering was load-bearing but invisible (it only
     // worked because flash_assets_init() happened to run first). Cheap: a bool.
     lcd_flash_init();
+    flash_wip_note_blit();   /* F-014: only while a program or erase may run */
     uint32_t bytes = (uint32_t)w * (uint32_t)h * 2u;
     // SPI0 (sink) into DMA config + counts; SPI1 (source) recorded for Step 2.
     // SPI0 stays 8-bit so the command phase (window) can go out first.
@@ -1413,6 +1430,13 @@ bool lcd_blit_wait(void) {
 }
 
 bool lcd_blit_lost_take(void) {
+    /* F-014: blits made while the chip was busy are repainted once it reads
+     * idle; the repair finds them through this. */
+    if (flash_wip && blit_in_wip && !flash_busy()) {
+        flash_wip   = false;
+        blit_in_wip = false;
+        blit_lost   = true;
+    }
     bool lost = blit_lost;
     blit_lost = false;
     return lost;
