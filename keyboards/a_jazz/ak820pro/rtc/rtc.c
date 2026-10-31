@@ -1515,25 +1515,48 @@ static bool ps_state_idle(void) { return ps_state == PS_IDLE; }
  * it runs off the pack and keeps STOP through the reset, and nothing else
  * reads Control_status_1 (the 10-31 audit, F-005). Its calendar then never
  * moves, the seed takes the frozen time, and the 60 s discipline snapped the
- * clock back to it every minute until a host sync. Released at boot (rtc_init,
- * synchronous, the watchdog not yet armed), before the seed: the PCF runs
- * again, behind by the time it was stopped, so it is stale (no reference for
- * the discipline or the acquisition) and is not written back unasked (the
- * board's time came from it, so it is no truth either) until a host sets the
- * time. A release that fails is left to the run-time recovery, as a run's. */
+ * clock back to it every minute until a host sync. So the boot checks it
+ * (rtc_init, synchronous, the watchdog not yet armed), before the seed, and
+ * releases STOP: the PCF runs again, behind by the time it was stopped, so
+ * it is stale (no reference for the discipline or the acquisition) and is
+ * not written back unasked (the board's time came from it, so it is no truth
+ * either) until a host sets the time.
+ *
+ * Release only, never the calendar, and a check that does not answer is no
+ * answer: until a read says the PCF runs, it is maybe stopped (no elapsed
+ * seconds from it, no reference), and rtc_task() takes the next step at the
+ * check's cadence, one transaction, while the writer is idle (codex on
+ * F-005: the first version took a failed read for "running", and handed a
+ * failed release to the writer's recovery, whose give-up let a run write the
+ * board's guess back, or loop with no clock to write). */
+static uint8_t pcf_ctl_check = 0;   /* 1: Control_status_1 to read; 2: STOP to release */
+static uint8_t pcf_ctl_seen  = 0;
+
+static void pcf_ctl_step(void)
+{
+    if (pcf_ctl_check == 1) {
+        if (!pcf_reg_read_raw(0x00, &pcf_ctl_seen)) return;
+        if (pcf_ctl_seen & PCF_CTL_STOP) {
+            if (!pcf_boot_stopped) { pcf_boot_stopped = true; pcf_sync_host_skipped(&pcfs); }
+            pcf_ctl_check = 2;
+            return;
+        }
+        pcf_ctl_check     = 0;       /* it runs: its elapsed seconds count again */
+        pcf_maybe_stopped = false;
+        return;
+    }
+    if (pcf_ctl_check == 2 && pcf_reg_write_raw(0x00, (uint8_t)(pcf_ctl_seen & ~PCF_CTL_STOP)))
+        pcf_ctl_check = 1;           /* settled once a read says it runs */
+}
+
 static void pcf_boot_release_stop(void)
 {
-    uint8_t ctl;
-    rtc_bus_guard();
-    if (!pcf_reg_read_raw(0x00, &ctl) || !(ctl & PCF_CTL_STOP)) return;
-    pcf_boot_stopped = true;
-    pcf_sync_host_skipped(&pcfs);
-    rtc_bus_guard();
-    if (pcf_reg_write_raw(0x00, (uint8_t)(ctl & ~PCF_CTL_STOP))) return;
-    ps_ctl = ctl;
-    stop_asserted = true;
-    ps_state = PS_RECOVER;
-    pcf_maybe_stopped = true;
+    pcf_ctl_check     = 1;
+    pcf_maybe_stopped = true;        /* until a read says it runs */
+    for (uint8_t i = 0; i < 3u && pcf_ctl_check; i++) {   /* read, release, read back */
+        rtc_bus_guard();
+        pcf_ctl_step();
+    }
 }
 
 /* Choose S (the next whole second per the board clock) and T_rel. */
@@ -1621,6 +1644,7 @@ static void pcf_machine_step(void)
          * would keep the correction half done (codex, the wireless clock's
          * review, should-fix 8). A slew lasts at most ~25 s. */
         if (slew_state != SLEW_IDLE || reload_pending) return;
+        if (!rtc_valid) return;   /* no time of the board's to write (codex on F-005) */
         pcf_sync_run_start(&pcfs);
         ps_brk_void = false;   /* a correction from here on voids this run's bracket */
         ps_state = PS_STOP_READ; ps_attempts = 0;
@@ -2382,11 +2406,6 @@ void rtc_task(void)
      * 1). The check stays due and runs once the write is done. */
     if (wk_state != WK_IDLE || sleep_recovering()) return;
     if (pcf_pending || ps_state != PS_IDLE) return;
-    /* Nor while the PCF is stale (its calendar is not the time: a snap to it
-     * would undo a host's correction), nor mid-slew (the trim's window
-     * restarts once the correction is done): codex, the wireless clock's
-     * review, must-fixes 1 and 5. */
-    if (pcfs.stale || pcf_maybe_stopped || slew_state != SLEW_IDLE || reload_pending) return;
 #ifdef AK820_DEV_HOOKS
     if (burst_active()) return;   /* the check stays due while a bench burst runs */
 #endif
@@ -2396,19 +2415,31 @@ void rtc_task(void)
     if (rtc_check_seconds < RTC_CHECK_INTERVAL_S) {
         return;
     }
-    /* A failed boot seed is retried here, in place of the discipline's own
-     * read (the 10-31 audit, F-006): nothing but a host set rtc_valid after
-     * it, so one failed read at boot left 00:00 until a host sync, which on
-     * BT with no sender can be days. The acquisition waits on rtc_valid and
-     * starts once it takes. */
-    if (!rtc_valid) {
+    /* The boot's check of the PCF still owed (pcf_ctl_step(), F-005), or a
+     * failed boot seed retried (the 10-31 audit, F-006: nothing but a host set
+     * rtc_valid after it, so one failed read at boot left 00:00 until a host
+     * sync). Before the stale guard below, which would hold both off for good
+     * (codex on F-006): the seed is the boot's provisional one, the PCF kept
+     * stale. Once both are done, the acquisition a wake gave up on an invalid
+     * clock goes again, if the PCF is a reference. */
+    if (pcf_ctl_check || !rtc_valid) {
+        bool was_valid = rtc_valid;
         chSysLock();
         rtc_check_seconds = 0;
         chSysUnlock();
-        rtc_seed_from_pcf();
-        if (rtc_valid) clock_gen++;
+        if (pcf_ctl_check) { rtc_bus_guard(); pcf_ctl_step(); }   /* the raw access: guarded as pcf_read() is */
+        else               rtc_seed_from_pcf();
+        if (rtc_valid && !pcf_ctl_check) {
+            if (!was_valid) clock_gen++;
+            if (acq_state == ACQ_ABORTED && !host_synced && !pcfs.stale && !pcf_maybe_stopped) acq_rearm();
+        }
         return;
     }
+    /* Nor while the PCF is stale (its calendar is not the time: a snap to it
+     * would undo a host's correction), nor mid-slew (the trim's window
+     * restarts once the correction is done): codex, the wireless clock's
+     * review, must-fixes 1 and 5. The check stays due. */
+    if (pcfs.stale || pcf_maybe_stopped || slew_state != SLEW_IDLE || reload_pending) return;
     if (ref_state == REF_SOF) {
         /* SOF owns P_nom and the host owns phase: the PCF is write-only here
          * (PLAN.md 3.4/3.6). The check counter still runs so the legacy
