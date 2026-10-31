@@ -466,8 +466,7 @@ static volatile ds_irq_t ds_irq DS_KEPT;
  * ds_kept: the record was inherited through a reset and not yet replaced
  * this boot (it can be several boots old). */
 static void ds_keep_boot(void) {
-    if (ds_kept_checked) return;
-    ds_kept_checked = true;
+    if (ds_kept_checked) return;   /* the main thread's only: not reentered */
     ds_kept = ds_last.magic == DS_LAST_MAGIC && !(watchdog_boot_rstst() & ((1u << 2) | (1u << 4)));
     if (!ds_kept) {
         memset((void *)&ds_last, 0, sizeof(ds_last));
@@ -488,14 +487,24 @@ static void ds_keep_boot(void) {
         else
             ds_irq.flags = f & (uint8_t)~DSI_WATCH;
     }
+    /* Last, once the census is settled: the IRQ hook counts only from here,
+     * so the boot's own interrupts cannot touch what a reset left (codex,
+     * census review 1). */
+    __DMB();
+    ds_kept_checked = true;
 }
 
 /* Every handler's prologue (chconf.h). Counts only after this boot's check:
  * until then DSI_WATCH can be a reset's leftover, and the boot's own
- * interrupts would overwrite what it kept. */
+ * interrupts would overwrite what it kept. Masked while it counts, so a
+ * nested handler's update is not lost between a read and its write (codex,
+ * census review 3); ~20 cycles, and no handler is entered with PRIMASK set.
+ * `last` is the latest entry, not necessarily a hung handler: SysTick or a
+ * higher priority can still enter above a stuck one. */
 void sleep_irq_hook(void) {
     if (!ds_kept_checked || !(ds_irq.flags & DSI_WATCH)) return;
     uint32_t e = __get_IPSR() & 0x3Fu;
+    __disable_irq();
     ds_irq.n_all++;
     if (e >= 16u) {
         uint32_t n = e - 16u;
@@ -507,6 +516,7 @@ void sleep_irq_hook(void) {
     }
     ds_irq.last = (uint8_t)e;
     ds_irq.last = (uint8_t)e;   /* twice: a handler that then hangs writes nothing after it (watchdog_record.c) */
+    __enable_irq();
 }
 
 /* At the unmask, under the lock: what USB has pending and enabled as the
@@ -524,11 +534,16 @@ static void ds_irq_open(void) {
     ds_irq.flags   = DSI_OPENED | DSI_WATCH;
 }
 
+/* CLOSED: the close was reached; the scope's cleanup and the return follow. */
 static void ds_irq_close(void) {
     if (ds_irq.flags & DSI_WATCH) ds_irq.flags = DSI_OPENED | DSI_CLOSED;
 }
 
 static void ds_last_begin(uint32_t preset_s) {
+    /* The last wake's census is not this sleep's: gone until this one's
+     * window opens, so a reset before the unmask reads none (codex, census
+     * review 2). A frozen one stays. */
+    if (!(ds_irq.flags & DSI_FROZEN)) ds_irq.flags = 0;
     ds_kept       = false;
     ds_last.magic = DS_LAST_MAGIC;
     ds_last.seq   = wake_seq++;   /* reserved: a sleep a reset cuts short leaves its number unused (codex) */

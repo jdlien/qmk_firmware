@@ -130,7 +130,8 @@ void sleep_deep_record(uint8_t *out);
  * (the next sleep replaces slot 9's within minutes on battery): the same 26
  * bytes, [26] 1 if there was one, [27] this boot's RSTST. Slot 11 is the
  * interrupt census of the last wake's window, from the unmask to the return
- * (10-31, sleep.c ds_irq_t): u32 handler entries, u32 USB's, u32 the IRQ
+ * (10-31, sleep.c ds_irq_t; none from a sleep's teardown until its unmask,
+ * so a reset in between reads none): u32 handler entries, u32 USB's, u32 the IRQ
  * numbers entered (bit n), u32 USB INSTS at the unmask (at the last USB
  * entry if there was one), u8 IPSR at the last entry (0 none), u8 flags
  * (0x01 counting, 0x02 opened, 0x04 closed at the return, 0x08 inherited
