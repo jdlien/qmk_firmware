@@ -53,13 +53,33 @@ static bool     bt_pair_armed = false;
 static uint16_t menu_pair_timer = 0;
 static bool     menu_pair_armed = false;
 
+/* The slider's select waits for the saved slot (the 10-31 audit, F-024).
+ * dip_switch_init()'s forced reading runs before the EEPROM is read and
+ * reports both pins, so on BT it selected the default slot 1 twice, then
+ * post-init selected the saved one: A6 31, A6 31, A6 32. At a cold boot the
+ * module isn't up yet and drops the early ones, but at an MCU-only reset (the
+ * watchdog, a deep sleep's reset, a return from the bootloader) it keeps its
+ * power and its link, and left a live slot 2 for slot 1's host. Until
+ * bt_ui_resume_saved_profile() the slider sets the route and the logo only;
+ * after it, a reading selects only when the mode it reads changed. */
+static bool    slot_loaded   = false;
+static uint8_t selected_mode = 0xFFu;   /* the mode whose select went out */
+
+static void select_mode(void) {
+    if (!slot_loaded || wireless_mode == selected_mode) return;
+    selected_mode = wireless_mode;
+    if (wireless_mode == WL_MODE_BT)
+        ch582_set_profile(last_bt_profile);   // resume the slot last selected
+    else if (wireless_mode == WL_MODE_24G)
+        ch582_set_profile(CH582_PROFILE_PEER_24G);
+    else
+        ch582_cancel_connect();   // USB: stop retrying, but keep the module alive
+}
+
 void bt_ui_resume_saved_profile(void) {
     last_bt_profile = (ch582_profile_t)kb_eeconfig_get_bt_profile();
-    // dip_switch_init() runs BEFORE post-init, so its boot-time BT selection
-    // used the default slot (EEPROM had not been read yet). Now that we have
-    // the saved slot, re-select it if we booted with the slider already on BT.
-    if (wireless_mode == WL_MODE_BT)
-        ch582_set_profile(last_bt_profile);
+    slot_loaded     = true;
+    select_mode();   // the boot's one select: the saved slot, the dongle, or none
 }
 
 void bt_ui_mode_slider(uint8_t index, bool active) {
@@ -103,12 +123,12 @@ void bt_ui_mode_slider(uint8_t index, bool active) {
     // module which radio to use.
     if (bt_on) {
         wireless_mode = WL_MODE_BT;
-        ch582_set_profile(last_bt_profile);  // resume the slot last selected
+        select_mode();
         connection_set_host_noeeprom(CONNECTION_HOST_BLUETOOTH);
         display_draw_bluetooth_logo();
     } else if (g24_on) {
         wireless_mode = WL_MODE_24G;
-        ch582_set_profile(CH582_PROFILE_PEER_24G);
+        select_mode();
         connection_set_host_noeeprom(CONNECTION_HOST_BLUETOOTH);
         display_draw_2_4_g_logo();
     } else {
@@ -116,7 +136,7 @@ void bt_ui_mode_slider(uint8_t index, bool active) {
         // (it must stay powered to keep reporting battery level). Route key
         // reports back to USB.
         wireless_mode = WL_MODE_USB;
-        ch582_cancel_connect();
+        select_mode();
         connection_set_host_noeeprom(CONNECTION_HOST_USB);
         display_draw_usb_logo();
     }
