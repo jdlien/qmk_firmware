@@ -614,6 +614,7 @@ static void blit_stat_task(void) {
 
 void housekeeping_task_kb(void) {
     WDT_SCOPE(WDT_SITE_HOUSEKEEPING);
+    flash_channel_pass_end();   // the flash channel's one chip operation a pass (F-001)
     health_loop_tick();    // worst-gap max-hold; one timer read per pass
     menu_pass_begin();     // C10's pass timing, at the same boundary
 #ifdef LOOPGAP_INSTRUMENT

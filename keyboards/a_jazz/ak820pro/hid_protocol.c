@@ -200,10 +200,26 @@ enum {
 // CRC is computed in slices. Reading a whole range inside one HID callback
 // blocks the matrix scan for the entire read -- a 184 KB verify measured a drop
 // from ~1396 Hz to ~300 Hz. Everything else in this channel is non-blocking, so
-// the CRC must be too: each call folds at most CRC_SLICE bytes (~0.3 ms of SPI)
-// and returns FS_MORE until the range is consumed.
-#define CRC_SLICE 1024u
+// the CRC must be too: each call folds a slice and returns FS_MORE until the
+// range is consumed. The slice is bounded by time, CRC_SLICE_MS, checked every
+// CRC_CHUNK bytes, and by CRC_SLICE bytes: since the SPI1 reads went through
+// the ChibiOS driver (08-27) each byte is a driver call, an interrupt and a
+// thread switch, ~0.04-0.2 ms at this ISR load, so 1024 bytes were 40-200 ms
+// of main loop (the 10-31 audit, F-001; the "~0.3 ms" this said was the
+// bare-metal SPI's).
+#define CRC_SLICE    1024u
+#define CRC_CHUNK    32u
+#define CRC_SLICE_MS 8u
 static uint32_t crc_addr, crc_left, crc_acc;
+
+// One chip operation a main-loop pass (F-001): a CRC slice, a page program or
+// an erase. raw_hid_task() drains every queued report in one call, so a host
+// that kept CRC commands queued without reading the replies kept it looping
+// past the watchdog; now the rest of the pass's commands answer FS_BUSY,
+// which ak820ctl already re-sends, at no cost. Cleared each pass
+// (flash_channel_pass_end(), housekeeping).
+static bool flash_pass_used = false;
+void flash_channel_pass_end(void) { flash_pass_used = false; }
 
 // Streaming write state. Bytes accumulate here until a 256-byte page boundary,
 // because the chip WRAPS rather than continuing when a program crosses one.
@@ -214,7 +230,9 @@ static bool     fw_open  = false;
 
 static uint8_t flash_flush_page(void) {
     if (!fw_fill) return FS_OK;
+    if (flash_pass_used) return FS_BUSY;
     if (flash_busy()) return FS_BUSY;
+    flash_pass_used = true;
     if (!flash_page_program(fw_addr, fw_pg, fw_fill)) return FS_REFUSED;
     fw_addr += fw_fill;
     fw_fill  = 0;
@@ -247,7 +265,8 @@ static void flash_command(uint8_t *data, uint8_t length) {
             return;
 
         case FC_ERASE:
-            if (flash_busy())               { data[3] = FS_BUSY;    return; }
+            if (flash_pass_used || flash_busy()) { data[3] = FS_BUSY; return; }
+            flash_pass_used = true;
             data[3] = flash_erase_sector(a) ? FS_OK : FS_REFUSED;
             return;
 
@@ -284,15 +303,28 @@ static void flash_command(uint8_t *data, uint8_t length) {
         case FC_CRC32: {
             uint32_t len = ((uint32_t)p[3] << 16) | ((uint32_t)p[4] << 8) | p[5];
             if (!len)                       { data[3] = FS_BADARG;  return; }
+            /* A page program may still be running (the last partial one,
+             * sent by FC_WRITE_END just before): the chip ignores READ and the
+             * CRC would be of floating bytes (the 10-31 audit, F-044). Before
+             * the state is reset, so the host's resend starts it cleanly. */
+            if (flash_pass_used || flash_busy()) { data[3] = FS_BUSY; return; }
             crc_addr = a; crc_left = len; crc_acc = 0xFFFFFFFFu;
         }
         /* fall through: fold the first slice immediately */
         case FC_CRC_NEXT: {
             if (!crc_left)                  { data[3] = FS_BADARG;  return; }
-            uint32_t n = crc_left < CRC_SLICE ? crc_left : CRC_SLICE;
-            crc_acc   = flash_crc32_acc(crc_acc, crc_addr, n);
-            crc_addr += n;
-            crc_left -= n;
+            if (flash_pass_used || flash_busy()) { data[3] = FS_BUSY; return; }
+            flash_pass_used = true;
+            systime_t t0 = chVTGetSystemTimeX();
+            uint32_t  n  = 0;
+            while (crc_left && n < CRC_SLICE) {
+                uint32_t k = crc_left < CRC_CHUNK ? crc_left : CRC_CHUNK;
+                crc_acc   = flash_crc32_acc(crc_acc, crc_addr, k);
+                crc_addr += k;
+                crc_left -= k;
+                n        += k;
+                if (chTimeDiffX(t0, chVTGetSystemTimeX()) >= TIME_MS2I(CRC_SLICE_MS)) break;
+            }
             if (crc_left) { data[3] = FS_MORE; return; }
             uint32_t c = ~crc_acc;
             data[3] = FS_OK;

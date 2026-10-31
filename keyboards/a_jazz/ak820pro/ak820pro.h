@@ -116,6 +116,9 @@ bool hid_rawhid_media_within(uint32_t now, uint32_t ms);
 /* hid_protocol.c: raw HID set the clock (an accepted set) at most `s` seconds
  * ago, slept time included: the lock-LED clock's owner rule. */
 bool hid_rawhid_clock_within(uint32_t s);
+/* hid_protocol.c: the flash channel's chip operation for this pass is spent;
+ * housekeeping ends the pass (the 10-31 audit, F-001). */
+void flash_channel_pass_end(void);
 
 #ifdef LOOPGAP_INSTRUMENT
 void loop_site_begin(uint8_t site);
