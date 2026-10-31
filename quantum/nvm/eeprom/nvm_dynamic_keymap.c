@@ -94,9 +94,12 @@ uint16_t nvm_dynamic_keymap_read_keycode(uint8_t layer, uint8_t row, uint8_t col
 void nvm_dynamic_keymap_update_keycode(uint8_t layer, uint8_t row, uint8_t column, uint16_t keycode) {
     if (layer >= DYNAMIC_KEYMAP_LAYER_COUNT || row >= MATRIX_ROWS || column >= MATRIX_COLS) return;
     void *address = dynamic_keymap_key_to_eeprom_address(layer, row, column);
-    // Big endian, so we can read/write EEPROM directly from host if we want
-    eeprom_update_byte(address, (uint8_t)(keycode >> 8));
-    eeprom_update_byte(address + 1, (uint8_t)(keycode & 0xFF));
+    // Big endian, so we can read/write EEPROM directly from host if we want.
+    // ak820pro (the 10-31 audit, F-017): one block, so a power cut between two
+    // byte writes cannot store the new high byte with the old low one, a third
+    // keycode. One wear-leveling session and one log line, the same bytes.
+    uint8_t be[2] = {(uint8_t)(keycode >> 8), (uint8_t)(keycode & 0xFF)};
+    eeprom_update_block(be, address, 2);
 }
 
 #ifdef ENCODER_MAP_ENABLE
@@ -116,9 +119,10 @@ uint16_t nvm_dynamic_keymap_read_encoder(uint8_t layer, uint8_t encoder_id, bool
 void nvm_dynamic_keymap_update_encoder(uint8_t layer, uint8_t encoder_id, bool clockwise, uint16_t keycode) {
     if (layer >= DYNAMIC_KEYMAP_LAYER_COUNT || encoder_id >= NUM_ENCODERS) return;
     void *address = dynamic_keymap_encoder_to_eeprom_address(layer, encoder_id);
-    // Big endian, so we can read/write EEPROM directly from host if we want
-    eeprom_update_byte(address + (clockwise ? 0 : 2), (uint8_t)(keycode >> 8));
-    eeprom_update_byte(address + (clockwise ? 0 : 2) + 1, (uint8_t)(keycode & 0xFF));
+    // Big endian, so we can read/write EEPROM directly from host if we want.
+    // ak820pro, F-017: one block, as nvm_dynamic_keymap_update_keycode().
+    uint8_t be[2] = {(uint8_t)(keycode >> 8), (uint8_t)(keycode & 0xFF)};
+    eeprom_update_block(be, address + (clockwise ? 0 : 2), 2);
 }
 #endif // ENCODER_MAP_ENABLE
 
@@ -141,12 +145,22 @@ void nvm_dynamic_keymap_update_buffer(uint32_t offset, uint32_t size, uint8_t *d
     uint32_t dynamic_keymap_eeprom_size = DYNAMIC_KEYMAP_LAYER_COUNT * MATRIX_ROWS * MATRIX_COLS * 2;
     void    *target                     = (void *)(uintptr_t)(DYNAMIC_KEYMAP_EEPROM_ADDR + offset);
     uint8_t *source                     = data;
-    for (uint32_t i = 0; i < size; i++) {
-        if (offset + i < dynamic_keymap_eeprom_size) {
+    // ak820pro, F-017: a whole keycode, both its bytes, is one block, so a cut
+    // in a restore leaves each key old or new, never a third keycode. One big
+    // block would still split keycodes across log lines.
+    for (uint32_t i = 0; i < size;) {
+        if (offset + i >= dynamic_keymap_eeprom_size) break;
+        if (((offset + i) & 1u) == 0 && i + 1 < size && offset + i + 1 < dynamic_keymap_eeprom_size) {
+            eeprom_update_block(source, target, 2);
+            source += 2;
+            target += 2;
+            i += 2;
+        } else {
             eeprom_update_byte(target, *source);
+            source++;
+            target++;
+            i++;
         }
-        source++;
-        target++;
     }
 }
 
