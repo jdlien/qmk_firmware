@@ -36,8 +36,14 @@ enum watchdog_site {
      * reset, 29 around the dummy flash read): */
     WDT_SITE_DS_READ = 64,      /* stored from SRAM after the dummy flash read; 27, back in the flash, not since */
     WDT_SITE_DS_CLOCKED = 65,   /* the clocks back: the pins, the NVIC, UART2, the ADC, the system time, the LEDs */
-    WDT_SITE_DS_TICK = 66,      /* in pwm_tick_startI(): CT16B3's reset waits on CRST with no bound */
-    WDT_SITE_DS_TICKED = 67     /* the tick started: the USB transceiver, the clocks' accounting, to 31 */
+    WDT_SITE_DS_TICK = 66,      /* in pwm_tick_startI(): CT16B3's reset, bounded since wake-fixes (69) */
+    WDT_SITE_DS_TICKED = 67,    /* the tick started: the USB transceiver, the clocks' accounting, to 31 */
+    /* Terminal sites written just before a software reset, the one kind of
+     * record a SWRSTF boot keeps (F-032, the audit 10-31): a deep sleep's
+     * clock that did not come back (sleep.c, DS_CLOCK_*), and CT16B3's
+     * counter reset that did not complete as the 20 kHz tick started
+     * (indicators.c). The PC word holds what each found. */
+    WDT_SITE_DS_CLOCK = 68, WDT_SITE_TICK_RESET = 69
 };
 
 /* Capture BEFORE instrumented operations start. Returns consecutive resets.

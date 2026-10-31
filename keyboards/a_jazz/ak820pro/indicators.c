@@ -9,6 +9,7 @@
 #include "battery.h"                  /* battery_ran_from_pack */
 #include "overrun_diag.h"             /* dev: the interrupt-service-gap monitor rides this tick */
 #include "kb_eeconfig.h"              /* the saved levels (P2a) */
+#include "watchdog_record.h"          /* the tick's counter reset that does not complete */
 #include <hal.h>
 
 /* --- Indicator LEDs -------------------------------------------------------
@@ -211,9 +212,29 @@ void pwm_tick_stopI(void) {
     pwm_tick_stopped = true;
 }
 
+/* CT16B3's counter reset, bounded. The LLD's start (gptStartContinuousI)
+ * resets the counter by setting CRST and spinning until the hardware clears
+ * it, with no bound, under the lock; and this runs at every deep sleep's wake
+ * (the unanchored reviews, 10-31). So the same reset goes first here, bounded:
+ * one that has not completed after ~1000x its few clocks would hang the LLD's
+ * until the watchdog, so the board resets now instead, with a terminal record
+ * the next boot keeps (WDT_SITE_TICK_RESET; the PC word 0xD5C3 in the top
+ * half, TMRCTRL in the bottom). */
+#define TICK_CRST_LOOPS 4800u   /* ~0.5 ms at 48 MHz */
+static void pwm_tick_counter_resetI(void) {
+    SN_CT16B3->TMRCTRL = mskCT16_CRST;   /* the LLD's own write: CEN off with it, as it is stopped */
+    for (uint32_t k = 0; SN_CT16B3->TMRCTRL & mskCT16_CRST; k++) {
+        if (k >= TICK_CRST_LOOPS) {
+            watchdog_record_stop(WDT_SITE_TICK_RESET, 0, 0xD5C30000u | (SN_CT16B3->TMRCTRL & 0xFFFFu));
+            NVIC_SystemReset();
+        }
+    }
+}
+
 void pwm_tick_startI(void) {
     if (!pwm_tick_stopped) return;
     ind_last_out = IND_OUT_UNKNOWN;   /* every pin written on the next tick */
+    pwm_tick_counter_resetI();
     gptStartContinuousI(&GPTD4, PWM_TICK_TIMEBASE / PWM_TICK_HZ);
     SN_CT16B3->MCTRL = CT16_PWM_UNLOCK(SN_CT16B3->MCTRL | mskCT16_MRnRST_EN(0));
     pwm_tick_stopped = false;
