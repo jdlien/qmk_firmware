@@ -155,7 +155,9 @@ static void ft_snap(rtc_ft_snap_t *s);
  * service latency L, measured 0-7 cycles (T0.2, <= 200 us) idle and under
  * BT typing. That is far inside the host uncertainty (~3 ms), so the final
  * restore is written UNcompensated. Compensation is reserved for transient
- * values (Phase 2 slew segments), where it is exact. */
+ * values (Phase 2 slew segments) that the next tick rewrites: a compensated
+ * value left in the register makes every later interval L short (the 10-31
+ * audit, F-026). */
 static uint32_t          P_nom = SN32_RTC_PERIOD_DEFAULT;
 static volatile bool     reload_pending = false;
 static volatile uint16_t reload_writes  = 0;   /* every ISR reload write */
@@ -163,10 +165,15 @@ static volatile uint16_t reload_writes  = 0;   /* every ISR reload write */
 /* ---- Phase 2: slew (PLAN.md 3.3) ------------------------------------------
  * A phase correction of D cycles is applied as N shortened/lengthened
  * intervals: register P_nom - d for N-1 of them, P_nom - d - r for the last
- * (r = remainder), then P_nom. Two or three ISR writes total; the transient
- * ones are latency-compensated (R3, exact), the final restore is not (costs
- * <= L, measured 0-7 cycles). The estimator window is invalidated by every
- * write (R2). SLEW_STEP: 2 % of a period, i.e. 20 ms per second. */
+ * (r = remainder), then P_nom. Two or three ISR writes total. A transient
+ * value is latency-compensated (R3) only when the next tick rewrites it, which
+ * makes that interval exact; otherwise it stays in the register for the
+ * intervals after, so it is written as it is and only the interval containing
+ * the write runs L long (F-026: compensated, every later one ran L short).
+ * The final restore is not compensated either. So a slew ends at most two
+ * latencies off (L measured 0-7 cycles each). The estimator window is
+ * invalidated by every write (R2). SLEW_STEP: 2 % of a period, i.e. 20 ms
+ * per second. */
 enum { SLEW_IDLE = 0, SLEW_START = 1, SLEW_RUN = 2 };
 static volatile uint8_t  slew_state = SLEW_IDLE;
 static volatile int32_t  slew_d = 0, slew_r = 0;
@@ -575,12 +582,16 @@ static void rtc_second_cb(RTCDriver *rtcp, rtcevent_t event)
     bool     wrote = false;
     uint32_t next  = rtc_lld_get_period(&RTCD1) + 1;     /* default: unchanged register */
     if (slew_state == SLEW_START) {
-        /* transient value, latency-compensated (R3): interval == v+1 exactly */
+        /* Transient value. Latency-compensated (R3, the interval exactly v+1)
+         * only if the next tick rewrites the register: a one-interval slew, or
+         * the remainder segment next. Otherwise as it is, and this interval
+         * alone runs L long (F-026). */
         int32_t v = (int32_t)P_nom - slew_d - (slew_left == 1 ? slew_r : 0);
-        int32_t w = v - (int32_t)L;
+        bool    comp = slew_left == 1 || (slew_left == 2 && slew_r != 0);
+        int32_t w = comp ? v - (int32_t)L : v;
         if (v >= 14000 && v <= 80000 && w >= 14000 && L < (uint32_t)v / 2) {
             rtc_lld_set_period(&RTCD1, (uint32_t)w);
-            next = (uint32_t)v + 1;
+            next = comp ? (uint32_t)v + 1 : L + (uint32_t)v + 1;
             slew_state = SLEW_RUN;
         } else {                                          /* out of range: abandon, restore */
             rtc_lld_set_period(&RTCD1, P_nom);
