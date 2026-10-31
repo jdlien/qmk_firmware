@@ -117,6 +117,12 @@ void early_hardware_init_post(void) {
  }
 
  bool dip_switch_update_kb(uint8_t index, bool active) {
+    // The side the board was on: the keymap persists the default layer at
+    // every reading, and quantum_init() loaded it before dip_switch_init(),
+    // so until the keymap's write below it is the last side's. The boot's
+    // reading tells the profiles a move while off by it (the 10-31 audit,
+    // F-030); later readings are ignored there.
+    if (index == 0) prof_boot_side(get_highest_layer(default_layer_state) == MACBASE);
     // Let the keymap handle layer logic (Mac/Win, no_gui) first.
     if(!dip_switch_update_user(index, active)) {
         return false;

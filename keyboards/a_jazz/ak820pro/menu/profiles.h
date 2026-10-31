@@ -94,6 +94,7 @@ void    prof_tick(void);                            /* 10 Hz: a restore's 5 s wi
  * after it, once the switch has rested, brings that side's settings back as
  * they were left, or loads its profile. */
 void    prof_switch(bool mac);
+void    prof_boot_side(bool mac);   /* before the boot's prof_switch(): the side the default layer says it was on */
 /* The menu's Reset settings (10-27): the firmware's defaults (env_defaults()),
  * the power mode's too, saved; both sides forget their profile and the last
  * record. The profiles stay. PROF_BUSY in a recovery or a restore, nothing

@@ -81,6 +81,10 @@ _Static_assert(PROF_SLOTS <= 0xFu, "a side's slot in its nibble, 0xF none");
 #define SD_BOOT    0x80u
 #define SD_REST    3u   /* 200-300 ms */
 static uint8_t side;
+/* The side the board was settled on before this boot (SD_MAC or 0), from
+ * QMK's persisted default layer, given before the boot's reading
+ * (prof_boot_side()); 0xFF if never given (the host tests' boots). */
+static uint8_t boot_was = 0xFFu;
 
 static uint8_t cur_side(void) { return (side & SD_SETTLED) ? PROF_SIDE_MAC : PROF_SIDE_WIN; }
 static uint8_t nib(uint8_t pair, uint8_t sd) { return (uint8_t)((pair >> (sd * 4u)) & 0x0Fu); }
@@ -218,9 +222,18 @@ static void    set_pair(uint8_t pair) {
     env_settings_touch();
 }
 /* The side the profiles go by: its slot a (0xFF none). */
+static bool last_of(uint8_t sd, uint8_t *rec);
+static void last_clear(void);
 static void set_active(uint8_t a) {
     uint8_t sh = (uint8_t)(cur_side() * 4u);
     set_pair((uint8_t)((active_byte() & ~(0x0Fu << sh)) | ((a & 0x0Fu) << sh)));
+    /* While settled on a side, a last record naming it can only be stale: a
+     * flip back takes it, so one still there was orphaned (the side had no
+     * profile then, or a cut came between a flip's or a save's writes), and
+     * at the next flip it would bring back an old snapshot over everything
+     * changed since (the 10-31 audit, F-011). Not before the boot's check. */
+    uint8_t r[PROF_REC];
+    if (!(side & SD_BOOT) && last_of(cur_side(), r)) last_clear();
 }
 
 uint8_t prof_active_rec(uint8_t *rec) {
@@ -336,18 +349,19 @@ void prof_capture(uint8_t *rec, uint8_t fields) {
     rec[PR_CRC] = body_crc(rec);
 }
 
-/* The menu's `*`: a compare of the fields the record holds, not a hash, so
- * no collisions. The ladder's caps never touch these values, so they never
- * make it; any change does, Fn keys and VIA included. */
+/* The menu's `*`: a compare of the fields the record holds that a Load
+ * applies, not a hash, so no collisions. Never the power mode, which a Load
+ * leaves alone: a restored user profile carrying one starred after every
+ * Load (the 10-31 audit, F-041). The ladder's caps never touch these values,
+ * so they never make it; any change does, Fn keys and VIA included. */
 bool prof_differs(const uint8_t *rec) {
-    static const uint8_t field_at[6][2] = {
+    static const uint8_t field_at[5][2] = {
         {PF_LCD, PR_LCD}, {PF_LOCKS, PR_LOCKS}, {PF_CHARGING, PR_CHARGING}, {PF_CLOCK, PR_CLOCK}, {PF_BVIEW, PR_BVIEW},
-        {PF_POWER, PR_POWER},
     };
-    uint8_t live[PROF_REC], f = rec[PR_FIELDS];
+    uint8_t live[PROF_REC], f = rec[PR_FIELDS] & PF_PROFILE;
     capture_body(live, PF_LIVE);   /* no crc: only the fields are compared */
     if ((f & PF_LIGHTING) && memcmp(&live[PR_RGB_ON], &rec[PR_RGB_ON], PR_SPEED - PR_RGB_ON + 1u)) return true;
-    for (uint8_t i = 0; i < 6u; i++)
+    for (uint8_t i = 0; i < 5u; i++)
         if ((f & field_at[i][0]) && live[field_at[i][1]] != rec[field_at[i][1]]) return true;
     return false;
 }
@@ -554,7 +568,12 @@ static void write_active(void) {
  * computers that flips this switch often flips the slider too, which browns
  * the board out, and a cut in the settings' deferred write (5 s) would find
  * the record moved on while the saved settings were still the old side's.
- * A cut between the two writes loses the side left's changes only. */
+ * A cut between the two writes loses the side left's changes only: the
+ * boot knows the side from the default layer (prof_boot_side()), not from
+ * this record, and clears the record the cut left naming this side (the
+ * 10-31 audit, F-012; until then the boot read it as a move while off and
+ * filed this side's settings as the other's). A cut inside the flush can
+ * still leave this side a mix of its new and old settings. */
 static void settle_side(void) {
     uint8_t now = (side & SD_MAC) ? SD_SETTLED : 0u;
     if ((side & SD_SETTLED) == now) return;
@@ -583,10 +602,20 @@ static void settle_side(void) {
     if (s < PROF_USER) env_prof_switched(s, st);
 }
 
+void prof_boot_side(bool mac) {
+    if (!(side & SD_KNOWN)) boot_was = mac ? SD_MAC : 0u;
+}
+
 void prof_switch(bool mac) {
     uint8_t m = mac ? SD_MAC : 0u;
-    if (!(side & SD_KNOWN)) {   /* the boot's (dip_switch_init(), before the EEPROM is read): no load, a check at the first tick */
-        side = (uint8_t)((side & SD_PEND) | SD_KNOWN | SD_BOOT | m | (mac ? SD_SETTLED : 0u));
+    if (!(side & SD_KNOWN)) {   /* the boot's (dip_switch_init(), before the EEPROM is read) */
+        if (boot_was <= SD_MAC && boot_was != m)
+            /* The switch moved while the board was off (the 10-31 audit,
+             * F-030): settled as the side it was on, then the flip, as a live
+             * flip's. The live settings are that side's. */
+            side = (uint8_t)((side & SD_PEND) | SD_KNOWN | m | (boot_was ? SD_SETTLED : 0u) | (SD_REST * SD_TICK));
+        else   /* where it was: no load, a check at the first tick */
+            side = (uint8_t)((side & SD_PEND) | SD_KNOWN | SD_BOOT | m | (mac ? SD_SETTLED : 0u));
         return;
     }
     if ((side & SD_MAC) == m) return;   /* a reading again, not a change */
@@ -595,18 +624,16 @@ void prof_switch(bool mac) {
 
 void prof_tick(void) {
     if (prof_restore_open() && --tx_left == 0u) tx_close();   /* aborted: the block stays unformatted */
-    /* The boot's check (10-27): the last record holding this side's settings
-     * means the switch moved while the board was off, so the live settings
-     * are the other side's: settled as that side, then the flip's swap. A
-     * boot that didn't move it (the slider's flips reboot the board) finds
-     * the other side's there, and changes nothing. */
+    /* The boot's check, the switch where it was (a move while the board was
+     * off came as a flip, prof_switch()): a last record naming this side is
+     * stale, as set_active() says, and goes. Until the 10-31 audit (F-011,
+     * F-012, F-030) such a record was read as a move while off and swapped
+     * the settings, wrongly whenever it was stale, and a move toward a side
+     * with no profile went unseen. */
     if ((side & SD_BOOT) && writable() != PROF_BUSY) {
         uint8_t rec[PROF_REC];
         side &= (uint8_t)~SD_BOOT;
-        if (prof_active_rec(rec) < PROF_USER && last_of(cur_side(), rec)) {
-            side ^= SD_SETTLED;
-            settle_side();
-        }
+        if (last_of(cur_side(), rec) && writable() == PROF_OK) last_clear();
     }
     /* A flip's countdown; at its end the load waits out a recovery or a
      * restore, as the keys' would be refused. */
@@ -620,7 +647,7 @@ void prof_tick(void) {
 }
 
 #ifdef MENU_HOST_TEST
-void prof_test_reset(void) { tx_token = tx_state = tx_left = pend = side = 0u; }
+void prof_test_reset(void) { tx_token = tx_state = tx_left = pend = side = 0u; boot_was = 0xFFu; }
 #endif
 
 /* An open edit's preview back first, as VIA's lighting reads do
