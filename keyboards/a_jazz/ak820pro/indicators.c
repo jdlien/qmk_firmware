@@ -9,6 +9,7 @@
 #include "battery.h"                  /* battery_ran_from_pack */
 #include "overrun_diag.h"             /* dev: the interrupt-service-gap monitor rides this tick */
 #include "kb_eeconfig.h"              /* the saved levels (P2a) */
+#include "watchdog_record.h"          /* the tick's counter reset that does not complete */
 #include <hal.h>
 
 /* --- Indicator LEDs -------------------------------------------------------
@@ -211,10 +212,41 @@ void pwm_tick_stopI(void) {
     pwm_tick_stopped = true;
 }
 
+/* The tick's restart: gptStartContinuousI() as hal_gpt.c and the LLD's
+ * gpt_lld_start_timer() do it for CT16B3 on this part (the period, the
+ * counter reset, the flags cleared, the match interrupt, the counter on), but
+ * with the counter reset bounded. The LLD's own reset sets CRST and spins
+ * until the hardware clears it, with no bound, under the lock, at every deep
+ * sleep's wake (the unanchored reviews, 10-31); a bounded reset before the
+ * LLD's start still left that spin in place (codex, wake-fixes review). One
+ * that has not completed after ~1000x its few clocks resets the board now,
+ * with a terminal record the next boot keeps (WDT_SITE_TICK_RESET; the PC
+ * word 0xD5C3 in the top half, TMRCTRL in the bottom), rather than hanging
+ * until the watchdog. Boot's first start stays the LLD's (pwm_tick_init). */
+#define TICK_CRST_LOOPS 4800u   /* ~0.5 ms at 48 MHz */
+static void pwm_tick_restartI(gptcnt_t interval) {
+    osalDbgAssert(GPTD4.state == GPT_READY, "invalid state");
+    GPTD4.state = GPT_CONTINUOUS;
+    SN32_CT_GPT_SET(&GPTD4, MR[0], CT16_PWM_UNLOCK(interval - 1U));
+    SN_CT16B3->TMRCTRL = mskCT16_CRST;   /* the LLD's write: CEN off with it, as it is stopped */
+    for (uint32_t k = 0; SN_CT16B3->TMRCTRL & mskCT16_CRST; k++) {
+        if (k >= TICK_CRST_LOOPS) {
+            watchdog_record_stop(WDT_SITE_TICK_RESET, 0, 0xD5C30000u | (SN_CT16B3->TMRCTRL & 0xFFFFu));
+            NVIC_SystemReset();
+        }
+    }
+    /* The flags cleared as pwm_tick_stopI() clears them (the LLD's is an AND
+     * into a write-only register); then the match interrupt (pwm_tick_cfg has
+     * a callback) and the counter on. */
+    SN_CT16B3->IC = SN_CT16B3->RIS;
+    SN32_CT_GPT_OR(&GPTD4, match.MCTRL, CT16_PWM_UNLOCK(mskCT16_MRnIE_EN(0)));
+    SN32_CT_GPT_OR(&GPTD4, config.TMRCTRL, mskCT16_CEN_EN);
+}
+
 void pwm_tick_startI(void) {
     if (!pwm_tick_stopped) return;
     ind_last_out = IND_OUT_UNKNOWN;   /* every pin written on the next tick */
-    gptStartContinuousI(&GPTD4, PWM_TICK_TIMEBASE / PWM_TICK_HZ);
+    pwm_tick_restartI(PWM_TICK_TIMEBASE / PWM_TICK_HZ);
     SN_CT16B3->MCTRL = CT16_PWM_UNLOCK(SN_CT16B3->MCTRL | mskCT16_MRnRST_EN(0));
     pwm_tick_stopped = false;
 #ifdef AK820_DEV_HOOKS

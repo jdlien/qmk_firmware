@@ -29,6 +29,7 @@ static uintptr_t test_frame_lo, test_frame_hi;
 #endif
 #define RECORD_MAGIC 0x4A445722u
 #define FAULT_MAGIC  0x4A445746u
+#define RST_SW (1u << 0)
 #define RST_WDT (1u << 1)
 #define RST_POWER ((1u << 2) | (1u << 4))
 static bool ready;
@@ -68,8 +69,15 @@ uint8_t watchdog_record_boot(uint8_t rstst) {
      * byte is never read as a count. */
     bool count_ok = terminal ? (raw >> 16) == 0 : raw <= 255;
     uint32_t count = (warm && count_ok) ? (raw & 0xFFu) : 0;
-    bool valid = warm && count_ok && (rstst & RST_WDT) && path_ok(path) &&
-                 (uint8_t)path != WDT_SITE_NONE;
+    /* A software reset keeps one record: a terminal site written just before
+     * it (watchdog_record.h, 68 and 69). A flash's exit and every other
+     * software reset leave RECORD_MAGIC or another site, so they still read
+     * invalid, and the reset count is not raised (F-032). */
+    uint8_t site = (uint8_t)path;
+    bool sw_terminal = terminal && (rstst & RST_SW) &&
+                       (site == WDT_SITE_DS_CLOCK || site == WDT_SITE_TICK_RESET);
+    bool valid = warm && count_ok && ((rstst & RST_WDT) || sw_terminal) && path_ok(path) &&
+                 site != WDT_SITE_NONE;
     count = (rstst & RST_WDT) ? (count < 255 ? count + 1 : 255) : 0;
     memset(boot_record, 0, sizeof(boot_record));
     boot_record[0] = (valid && terminal) ? 2 : 1;
@@ -161,4 +169,15 @@ void watchdog_record_fault_frame(uintptr_t frame_addr) {
 
 void watchdog_record_stop(uint8_t site, uint8_t exception, uint32_t pc) {
     commit_terminal(site, exception, pc);
+}
+
+/* Bootmagic jumps to the bootloader before watchdog_record_boot() has read
+ * the record, and its exit is a software reset: a site-68/69 record kept
+ * across that round trip would read as the exit's own failure (codex,
+ * wake-fixes review). So it goes, ready or not, with commit_terminal's
+ * sacrificial write after it. */
+void watchdog_record_forget(void) {
+    ready = false;
+    retained.magic = 0;
+    write_drain = 0;
 }

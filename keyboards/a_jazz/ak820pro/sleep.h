@@ -51,7 +51,8 @@ enum { SLEEP_WAKE_NONE = 0, SLEEP_WAKE_KEY, SLEEP_WAKE_BACKSTOP, SLEEP_WAKE_STRA
 #define SLEEP_V_USB_SOF   0x04u   /* a host's frames came after the wake */
 #define SLEEP_V_REATTACH  0x08u   /* the USB re-attach ran */
 #define SLEEP_V_USB_20S   0x10u   /* a host's frames within 20 s of the wake */
-#define SLEEP_V_PLL_CEIL  0x20u   /* the PLL's lock loops hit their ceiling (a reset follows) */
+#define SLEEP_V_PLL_CEIL  0x20u   /* the PLL's lock loops hit their ceiling: never read, as a reset
+                                   * follows; the watchdog record's WDT_SITE_DS_CLOCK says it */
 #define SLEEP_V_SLEPT     0x40u   /* the last attempt slept (else a key was already down) */
 #define SLEEP_V_BOUND     0x80u   /* the recovery hit its 10 s bound: what was left was ended */
 

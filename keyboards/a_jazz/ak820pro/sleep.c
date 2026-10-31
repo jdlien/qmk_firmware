@@ -64,12 +64,25 @@ static bool usb_bus_live(void) {
 }
 
 /* PMU Sleep and Deep-sleep turn the USB transceiver off (manual p. 245,
- * USB_CFG.PHY_EN, bit 30); setting it back was enough on every bench wake.
- * Returns whether it was off. */
-#define USB_CFG_PHY_EN (1u << 30)
-static bool usb_phy_onI(void) {
-    if (SN_USB->CFG & USB_CFG_PHY_EN) return false;
-    SN_USB->CFG |= USB_CFG_PHY_EN;
+ * USB_CFG.PHY_EN, bit 30). The USB driver writes PHY_EN and ESD_EN (bit 27)
+ * together, clearing both when the bus suspends (a cable pulled) and setting
+ * both at a resume. So a sleep takes the pair as the driver left it and puts
+ * back only what it had: setting PHY_EN alone, as before, left a cable-out
+ * wake with the transceiver on and ESD off, a state no driver path makes
+ * (F-045, the audit 10-31; seen on black's census). The dev light sleep does
+ * the same around each WFI, in the idle hook (chconf.h). Restoring returns
+ * whether a bit was off. */
+#define USB_CFG_PHY_EN  (1u << 30)
+#define USB_CFG_ESD_EN  (1u << 27)
+#define USB_CFG_PHY_ESD (USB_CFG_PHY_EN | USB_CFG_ESD_EN)
+static uint32_t usb_phy_takeI(void) {
+    return SN_USB->CFG & USB_CFG_PHY_ESD;
+}
+
+static bool usb_phy_restoreI(uint32_t taken) {
+    uint32_t off = taken & ~SN_USB->CFG;
+    if (!off) return false;
+    SN_USB->CFG |= off;
     return true;
 }
 
@@ -117,14 +130,10 @@ static void light_task(void) {
     if ((m & SLEEP_LS_TICK) && (display_backlight_effective() > 0 || indicators_any_lit()))
         m &= (uint8_t)~SLEEP_LS_TICK;
     if ((m ^ ls_applied) & SLEEP_LS_TICK) pwm_tick_run(!(m & SLEEP_LS_TICK));
-    /* Leaving PMU Sleep, or the plain-WFI probe (manual p. 79 documents
-     * mode 0 only as "disable": whether a WFI there touches USB is what bit 2
-     * finds out; codex): the transceiver bit back, a no-op if it is on. */
-    if ((ls_applied & (SLEEP_LS_PMU | SLEEP_LS_WFI)) & ~m) {
-        chSysLock();
-        usb_phy_onI();
-        chSysUnlock();
-    }
+    /* What PMU Sleep or the plain-WFI probe takes of the transceiver's pair
+     * (manual p. 79 documents mode 0 only as "disable": whether a WFI there
+     * touches USB is what bit 2 finds out; codex) the idle hook puts back
+     * after each WFI, as the driver had it then (chconf.h). */
     sn32f2xx_set_scan_only((m & SLEEP_LS_SCAN) != 0);
     ak820_wfi       = (m & (SLEEP_LS_WFI | SLEEP_LS_PMU)) != 0;
     ak820_pmu_sleep = (m & SLEEP_LS_PMU) != 0;
@@ -423,6 +432,19 @@ bool sleep_wake_ring_fill(uint8_t slot, uint8_t *out) {
 }
 #endif
 
+/* A clock that did not come back, at the sleep's entry or its wake: the
+ * board resets, as it always did, but first leaves a terminal record that the
+ * next boot keeps under SWRSTF (F-032, the audit 10-31; a plain software
+ * reset reads like a flash's exit and lost the evidence). The PC word: 0xD5C0
+ * in the top half, then which wait (DS_CLOCK_*), then CSST's low byte. */
+#define DS_CLOCK_IHRC 1u   /* the switch to the IHRC at the entry */
+#define DS_CLOCK_PLL  2u   /* the PLL's lock at the wake */
+#define DS_CLOCK_BACK 3u   /* the switch back to the PLL */
+__attribute__((noreturn)) static void ds_clock_failI(uint32_t which) {
+    watchdog_record_stop(WDT_SITE_DS_CLOCK, 0, 0xD5C00000u | (which << 8) | (SN_SYS0->CSST & 0xFFu));
+    NVIC_SystemReset();
+}
+
 /* The sleep: false if it unwound before the teardown (a host's frame, the
  * radio busy), true otherwise, whether it slept (ds_flags) or a source was
  * already active. It wakes after `cap_s` counted seconds, counting from
@@ -455,6 +477,7 @@ static bool deep_sleep(uint32_t cap_s, bool no_feed, uint32_t preset_s) {
     /* Outputs off: the LED matrix, the 20 kHz tick with the pins it drives. */
     sn32f2xx_sleep_enterI();
     pwm_tick_stopI();
+    uint32_t usb_phy = usb_phy_takeI();   /* the transceiver's pair as the driver left it */
     /* UART2's receiver off across the clock change and the sleep (TX stays
      * enabled, so its line idles high); the ADC off (~100 uA, p. 96). */
     uint32_t uart_ctrl = SN_UART2->CTRL;
@@ -525,7 +548,7 @@ static bool deep_sleep(uint32_t cap_s, bool no_feed, uint32_t preset_s) {
          * PLL, p. 64), then the flash to its slow mode for <= 24 MHz. */
         SN_SYS0->CLKCFG = 0x0;
         for (uint32_t k = 0; (SN_SYS0->CLKCFG & 0x70u) != 0x0u; k++)
-            if (k >= CLK_WAIT_LOOPS) NVIC_SystemReset();
+            if (k >= CLK_WAIT_LOOPS) ds_clock_failI(DS_CLOCK_IHRC);
         SN_SYS0->PLLCTRL = pllctrl & ~(1u << 15);   /* PLLEN */
         SN_FLASH->LPCTRL = 0x5AFA0000u;
         slept = true;
@@ -574,10 +597,10 @@ static bool deep_sleep(uint32_t cap_s, bool no_feed, uint32_t preset_s) {
         }
         ds_pll_loops = loops > 0xFFFFu ? 0xFFFFu : (uint16_t)loops;
         pll_ceiling  = loops >= DS_PLL_LOOPS;
-        if (pll_ceiling) NVIC_SystemReset();   /* the UART, USB and timers all assume 48 MHz */
+        if (pll_ceiling) ds_clock_failI(DS_CLOCK_PLL);   /* the UART, USB and timers all assume 48 MHz */
         SN_SYS0->CLKCFG = clkcfg;
         for (uint32_t k = 0; (SN_SYS0->CLKCFG & 0x70u) != (clkcfg << 4); k++)
-            if (k >= CLK_WAIT_LOOPS) NVIC_SystemReset();
+            if (k >= CLK_WAIT_LOOPS) ds_clock_failI(DS_CLOCK_BACK);
     }
     /* The wake pins quiet again; the temporary vectors off BEFORE the old
      * enables go back (writing ISER cannot disable one; codex). P1 too. */
@@ -605,7 +628,7 @@ static bool deep_sleep(uint32_t cap_s, bool no_feed, uint32_t preset_s) {
     SCB->ICSR = SCB_ICSR_PENDSTSET_Msk;
     sn32f2xx_sleep_exitI();
     pwm_tick_startI();
-    bool     phy_off = usb_phy_onI();
+    bool     phy_off = usb_phy_restoreI(usb_phy);
     uint32_t counted = secs - preset_s;
     rtc_account_sleepI(counted);   /* both software clocks, before any second is served */
     if (slept) rtc_wake_beginI(counted);

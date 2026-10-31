@@ -37,14 +37,19 @@
         extern volatile uint32_t ak820_wfi_count;                           \
         /* Masked: a preemption between the mode and the WFI would leave   \
          * the mode to the leave hook; a pending interrupt still ends the  \
-         * WFI, and is taken at the unmask. */                              \
+         * WFI, and is taken at the unmask. USB_CFG's PHY_EN and ESD_EN    \
+         * (bits 30, 27) as the driver has them are put back after each    \
+         * WFI under the same mask, since PMU Sleep takes PHY_EN (sleep.c, \
+         * F-045; a copy kept across WFIs went stale: codex). */           \
         __disable_irq();                                                    \
         if (ak820_wfi) {                                                    \
+            uint32_t usb_phy = SN_USB->CFG & ((1u << 30) | (1u << 27));     \
             SN_PMU->CTRL = ak820_pmu_sleep ? 4u : 0u;                       \
             ak820_wfi_count++;                                              \
             __DSB();                                                        \
             __WFI();                                                        \
             SN_PMU->CTRL = 0;                                               \
+            if (usb_phy & ~SN_USB->CFG) SN_USB->CFG |= usb_phy;             \
         }                                                                   \
         __enable_irq();                                                     \
     } while (0)
