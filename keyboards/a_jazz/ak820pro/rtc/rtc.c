@@ -1419,6 +1419,17 @@ uint8_t rtc_set_time_ms(const rtc_time_t *t, uint16_t ms, uint8_t flags, int16_t
     clock_gen++;
     reload_pending = true;              /* ISR restores P_nom at the next match */
     rtc_lld_set_period(&RTCD1, reg);    /* resets SECCNT: next SECIF in R ms */
+    /* A match of the old phase inside this lock (the 10-31 audit, F-025):
+     * SECIF stays latched through the SECCNTV write, and at the unlock its
+     * handler would move the fresh calendar a second on and the reload would
+     * cut the first period short, leaving the board up to ~1 s ahead. Taken
+     * here as the deep sleep's take_second() takes one: counted, the
+     * calendar left as set, the reload still pending for the next match. */
+    if (SN_RTC->RIS & mskRTC_SECIF) {
+        SN_RTC->IC = mskRTC_SECIC;
+        NVIC_ClearPendingIRQ(RTC_IRQn);
+        rtc_seconds_count++;
+    }
     interval_cycles = 0;                /* the interval now running is not a known length */
     win_valid = false;
     chSysUnlock();
