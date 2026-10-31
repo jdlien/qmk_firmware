@@ -225,6 +225,7 @@ static uint8_t    ps_recover_tries = 0;
 static uint16_t   deferred_passes = 0;    /* passes skipped because a blit was busy */
 static bool       pcf_backoff = false;    /* 3 consecutive failures: one attempt/min */
 static bool       pcf_maybe_stopped = false; /* recovery pending: loud health flag (Phase 3) */
+static bool       pcf_boot_stopped = false;  /* the PCF was STOPped at boot (F-005): page 1's flag 0x20 */
 static uint32_t   pcf_backoff_until = 0;  /* rtc_seconds_count */
 
 /* Tick-ISR service latency: SECCNT at callback entry (cycles since the match
@@ -820,7 +821,7 @@ void rtc_status_fill_page1(const rtc_stamp_t *s, uint8_t *out)
     put16(&out[7], (uint16_t)P_nom);                         /* [18..19] nominal */
     out[9]  = (host_synced ? 0x01 : 0) | (slew_state != SLEW_IDLE ? 0x02 : 0) |
               (acq_state_done() ? 0x04 : 0) | ((pcf_backoff || pcf_maybe_stopped) ? 0x08 : 0) |
-              (stale_count ? 0x10 : 0);       /* [20] flags */
+              (stale_count ? 0x10 : 0) | (pcf_boot_stopped ? 0x20 : 0);   /* [20] flags */
     put16(&out[10], (uint16_t)last_host_offset_ms);          /* [21..22] */
     put16(&out[12], (uint16_t)sof_bias_ppm);                 /* [23..24] in use */
     out[14] = ref_state;                                     /* [25] */
@@ -1189,6 +1190,8 @@ static void rtc_clock_discipline(void)
  */
 
 
+static void pcf_boot_release_stop(void);
+
 void rtc_init(void)
 {
     i2cStart(&I2CD1, &i2ccfg);
@@ -1216,6 +1219,7 @@ void rtc_init(void)
     rtc_lld_set_period(&RTCD1, P_nom);   /* init: the one direct steady write */
 
     rtcSetCallback(&RTCD1, rtc_second_cb);
+    pcf_boot_release_stop();   /* before the seed: a stopped PCF holds a frozen time */
     rtc_seed_from_pcf();
 }
 
@@ -1484,6 +1488,31 @@ static int8_t   pcf_release_err_ms = 0;   /* achieved release - T_rel, last run 
 static uint16_t pcf_runs_ok = 0, pcf_restarts = 0;
 
 static bool ps_state_idle(void) { return ps_state == PS_IDLE; }
+
+/* A reset inside a phase-correct write's STOP window leaves the PCF stopped:
+ * it runs off the pack and keeps STOP through the reset, and nothing else
+ * reads Control_status_1 (the 10-31 audit, F-005). Its calendar then never
+ * moves, the seed takes the frozen time, and the 60 s discipline snapped the
+ * clock back to it every minute until a host sync. Released at boot (rtc_init,
+ * synchronous, the watchdog not yet armed), before the seed: the PCF runs
+ * again, behind by the time it was stopped, so it is stale (no reference for
+ * the discipline or the acquisition) and is not written back unasked (the
+ * board's time came from it, so it is no truth either) until a host sets the
+ * time. A release that fails is left to the run-time recovery, as a run's. */
+static void pcf_boot_release_stop(void)
+{
+    uint8_t ctl;
+    rtc_bus_guard();
+    if (!pcf_reg_read_raw(0x00, &ctl) || !(ctl & PCF_CTL_STOP)) return;
+    pcf_boot_stopped = true;
+    pcf_sync_host_skipped(&pcfs);
+    rtc_bus_guard();
+    if (pcf_reg_write_raw(0x00, (uint8_t)(ctl & ~PCF_CTL_STOP))) return;
+    ps_ctl = ctl;
+    stop_asserted = true;
+    ps_state = PS_RECOVER;
+    pcf_maybe_stopped = true;
+}
 
 /* Choose S (the next whole second per the board clock) and T_rel. */
 static bool ps_plan(void)
@@ -2343,6 +2372,19 @@ void rtc_task(void)
      * sync's step, a burst's last read); the check stays due for the next. */
     if (rtc_pass_used_bus()) return;
     if (rtc_check_seconds < RTC_CHECK_INTERVAL_S) {
+        return;
+    }
+    /* A failed boot seed is retried here, in place of the discipline's own
+     * read (the 10-31 audit, F-006): nothing but a host set rtc_valid after
+     * it, so one failed read at boot left 00:00 until a host sync, which on
+     * BT with no sender can be days. The acquisition waits on rtc_valid and
+     * starts once it takes. */
+    if (!rtc_valid) {
+        chSysLock();
+        rtc_check_seconds = 0;
+        chSysUnlock();
+        rtc_seed_from_pcf();
+        if (rtc_valid) clock_gen++;
         return;
     }
     if (ref_state == REF_SOF) {

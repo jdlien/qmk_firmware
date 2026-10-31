@@ -24,7 +24,9 @@ typedef struct {
 
 /* Bring up the clock: start I2C, enable the SN32 1 Hz counter, and take a first
  * seed from the PCF8563. Call once from keyboard_post_init_kb (thread context).
- * If the PCF isn't readable/set yet, rtc_task() keeps retrying. */
+ * If the PCF isn't readable/set yet, rtc_task() retries the seed every 60
+ * counted seconds (RTC_CHECK_INTERVAL_S). A PCF left STOPped by a reset is
+ * released first and marked stale. */
 void rtc_init(void);
 
 /* Read the current wall time. Returns false until the clock has been seeded from
@@ -51,8 +53,8 @@ void rtc_frame_trim_stats(uint16_t *trims, uint16_t *period);
 /* Live SN32 divider period (trimmed register value). */
 uint32_t rtc_get_period(void);
 
-/* Per-housekeeping tick: retries the initial seed until it takes and runs the
- * auto-calibration pass when one is due. Cheap no-op otherwise. Call every
+/* Per-housekeeping tick: retries the initial seed until it takes (every 60
+ * counted seconds) and runs the auto-calibration pass when one is due. Cheap no-op otherwise. Call every
  * housekeeping pass from thread context. */
 void rtc_task(void);
 /* Deep sleep (plans/DEEP-SLEEP-BUILD-PLAN.md, sections 1 and 4):
