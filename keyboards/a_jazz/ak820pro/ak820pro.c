@@ -376,6 +376,7 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
         if (dom) menu_edit_external(dom);
     }
 
+    consumer_mod_note_key(keycode, record);
     if (!process_modified_consumer(keycode, record)) return false;
 
 #ifdef USB_WAKEUP_ON_KEYPRESS

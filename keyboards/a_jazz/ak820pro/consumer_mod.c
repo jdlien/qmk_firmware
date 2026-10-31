@@ -27,9 +27,25 @@
  * from one gesture is a host sampling a transient state, not a mapping error. */
 /* Modifiers currently held for a modified-consumer burst, and when the last
  * event landed. Real mods rather than weak ones: weak mods are cleared by the
- * action layer on ordinary keypresses, which would silently drop them mid-spin. */
+ * action layer on ordinary keypresses, which would silently drop them mid-spin.
+ *
+ * Real mods are a plain bitmask, not a count, so the burst must never release
+ * a bit a modifier key is physically holding (the 10-31 audit, F-004: a held
+ * Shift went up 150 ms after a detent, and the next letters came out
+ * lowercase), and must put back a bit a key released mid-spin (a Shift tapped
+ * between detents sent the rest of the spin as Alt+Volume, which opens the
+ * Sound settings). mcons_phys follows the modifier keys themselves; mods from
+ * MT(), OSM() or LM() keys are not seen, and JD's keymap has none. */
 static uint8_t  mcons_mods = 0;
+static uint8_t  mcons_phys = 0;   /* modifier keys physically down */
 static uint16_t mcons_last = 0;
+
+void consumer_mod_note_key(uint16_t keycode, keyrecord_t *record) {
+    if (!IS_MODIFIER_KEYCODE(keycode)) return;
+    uint8_t bit = MOD_BIT(keycode);
+    if (record->event.pressed) mcons_phys |= bit;
+    else                       mcons_phys &= (uint8_t)~bit;
+}
 
 bool process_modified_consumer(uint16_t keycode, keyrecord_t *record) {
     if (!IS_QK_MODS(keycode)) return true;
@@ -41,15 +57,20 @@ bool process_modified_consumer(uint16_t keycode, keyrecord_t *record) {
     uint8_t mods = extract_mod_bits(keycode);
 
     if (record->event.pressed) {
-        /* Only pay the ordering cost when the modifiers are not already up. On a
-         * spin every click after the first takes this branch and costs nothing,
-         * which is what makes fast turning usable. */
         if (mcons_mods != mods) {
-            if (mcons_mods) unregister_mods(mcons_mods);
-            register_mods(mods);
+            /* A different set: drop the old one's bits, but not one a key holds. */
+            uint8_t drop = mcons_mods & (uint8_t)~mods & (uint8_t)~mcons_phys;
+            if (drop) unregister_mods(drop);
+            mcons_mods = mods;
+        }
+        /* Only pay the ordering cost when a modifier is not already up: the
+         * first click, or a bit a key's release took mid-spin. On a spin every
+         * other click costs nothing, which is what makes fast turning usable. */
+        uint8_t missing = mods & (uint8_t)~get_mods();
+        if (missing) {
+            register_mods(missing);
             send_keyboard_report();              /* flush the mods FIRST */
             wait_ms(MODIFIED_CONSUMER_GAP_MS);   /* let the host poll and apply them */
-            mcons_mods = mods;
         }
         mcons_last = timer_read();
         register_code(base);                     /* now the consumer usage */
@@ -64,7 +85,8 @@ bool process_modified_consumer(uint16_t keycode, keyrecord_t *record) {
  * so the release costs nothing on the encoder path itself. */
 void modified_consumer_task(void) {
     if (mcons_mods && timer_elapsed(mcons_last) >= MODIFIED_CONSUMER_HOLD_MS) {
-        unregister_mods(mcons_mods);
+        uint8_t drop = mcons_mods & (uint8_t)~mcons_phys;   /* a key still holds the rest */
+        if (drop) unregister_mods(drop);
         send_keyboard_report();
         mcons_mods = 0;
     }

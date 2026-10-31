@@ -12,5 +12,9 @@
 /* Call early in process_record_kb; returns false when fully handled. */
 bool process_modified_consumer(uint16_t keycode, keyrecord_t *record);
 
+/* Every key event, before process_modified_consumer(): which modifier keys
+ * are physically down, so a burst never releases one of theirs. */
+void consumer_mod_note_key(uint16_t keycode, keyrecord_t *record);
+
 /* 10 Hz housekeeping: drop held modifiers once the spin stops. */
 void modified_consumer_task(void);
