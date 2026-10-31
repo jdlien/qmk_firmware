@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /* Moved verbatim from ak820pro.c in the phase-3 module split. */
 #include "consumer_mod.h"
+#include "keycode_config.h"   /* keycode_config(), for the modifier tracker */
 
 /* Sequence a MODIFIED CONSUMER keycode (e.g. LSA(KC_VOLU) on the knob) so the
  * host actually sees the modifiers before the media usage.
@@ -34,13 +35,16 @@
  * Shift went up 150 ms after a detent, and the next letters came out
  * lowercase), and must put back a bit a key released mid-spin (a Shift tapped
  * between detents sent the rest of the spin as Alt+Volume, which opens the
- * Sound settings). mcons_phys follows the modifier keys themselves; mods from
- * MT(), OSM() or LM() keys are not seen, and JD's keymap has none. */
+ * Sound settings). mcons_phys follows the modifier keys themselves, after
+ * keycode_config() as QMK's action path applies it (an Alt/GUI swap holds
+ * GUI); mods from MT(), OSM() or LM() keys are not seen, and JD's keymap has
+ * none. */
 static uint8_t  mcons_mods = 0;
 static uint8_t  mcons_phys = 0;   /* modifier keys physically down */
 static uint16_t mcons_last = 0;
 
 void consumer_mod_note_key(uint16_t keycode, keyrecord_t *record) {
+    keycode = keycode_config(keycode);   /* what register_code() will be given */
     if (!IS_MODIFIER_KEYCODE(keycode)) return;
     uint8_t bit = MOD_BIT(keycode);
     if (record->event.pressed) mcons_phys |= bit;
@@ -57,18 +61,23 @@ bool process_modified_consumer(uint16_t keycode, keyrecord_t *record) {
     uint8_t mods = extract_mod_bits(keycode);
 
     if (record->event.pressed) {
-        if (mcons_mods != mods) {
-            /* A different set: drop the old one's bits, but not one a key holds. */
+        bool start = mcons_mods != mods;
+        if (start) {
+            /* A new burst or a different set: drop the old one's bits, but not
+             * one a key holds. */
             uint8_t drop = mcons_mods & (uint8_t)~mods & (uint8_t)~mcons_phys;
             if (drop) unregister_mods(drop);
             mcons_mods = mods;
         }
-        /* Only pay the ordering cost when a modifier is not already up: the
-         * first click, or a bit a key's release took mid-spin. On a spin every
-         * other click costs nothing, which is what makes fast turning usable. */
+        /* A bit a key's release took mid-spin goes back. */
         uint8_t missing = mods & (uint8_t)~get_mods();
-        if (missing) {
-            register_mods(missing);
+        if (missing) register_mods(missing);
+        /* Only pay the ordering cost at a burst's start or a bit put back. At
+         * the start even when the keys already hold every bit: a modifier just
+         * pressed may still be queued on the keyboard endpoint (codex on F-004:
+         * Option held, Shift pressed just before the detent). On a spin every
+         * other click costs nothing, which is what makes fast turning usable. */
+        if (start || missing) {
             send_keyboard_report();              /* flush the mods FIRST */
             wait_ms(MODIFIED_CONSUMER_GAP_MS);   /* let the host poll and apply them */
         }
