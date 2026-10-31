@@ -46,6 +46,12 @@ void ch582_rx_resync(void);
  * marked stale, the lock-LED receiver's frame dropped, the periodic battery
  * poll held until ch582_battery_poll_release() (which sends one at once). */
 void ch582_sleep_wake(void);
+/* A deep sleep since the module's last link state: conn_state may be stale
+ * (the 10-31 audit, F-023). */
+bool ch582_link_state_stale(void);
+/* A link attempt under CH582_LINK_AWAKE_MS (60 s) old: sleep.c holds off a
+ * deep sleep, so its 5B 32 lands awake (F-023). */
+bool ch582_linking_recent(void);
 void ch582_battery_poll_release(void);
 /* Queue fresh all-released keyboard (A1) and consumer (A3) frames, whatever
  * QMK last sent. False if a full queue dropped either. For the same jump. */

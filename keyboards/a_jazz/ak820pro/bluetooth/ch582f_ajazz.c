@@ -186,6 +186,17 @@ static volatile ch582_conn_state_t conn_state = CH582_CONN_IDLE;
  * every CH582_CONNECT_RETRY_MS and so never accumulates. 32-bit so a long stall
  * in LINKING cannot wrap back under the window. */
 static volatile uint32_t linking_since = 0;
+/* A deep sleep has passed since the module's last link state (a 5B 31-36 or
+ * the 5A promotion): one sent while the MCU slept was lost with its receiver
+ * off, and nothing repeats it, so conn_state may be stale (the 10-31 audit,
+ * F-023). The band then names no remedy that would tear down a link. */
+static volatile bool link_state_stale = false;
+/* A link attempt this young holds off a deep sleep (sleep.c, DSB_LINKING), so
+ * a re-link's 5B 32 lands awake (F-023); past it the attempt has most likely
+ * been abandoned (5B 36 within seconds, docs/wireless.md). */
+#ifndef CH582_LINK_AWAKE_MS
+#    define CH582_LINK_AWAKE_MS 60000u
+#endif
 /* Battery percentage (0-100) from 5C frames; 0xFF until the module first reports. */
 static volatile uint8_t battery_level = 0xFF;
 /* Host keyboard LED bitmap from 5A frames (USB LED bits; bit1 = caps lock). */
@@ -1303,8 +1314,11 @@ static void ch582_tx_pop(void) {
  * and again whenever it goes out on the wire, first send or retransmit, since
  * old-link LED traffic can arrive while it waits behind other frames (codex,
  * flash 2h verify 2). */
+static inline bool tx_is_link_change(const ch582_tx_frame_t *f) {
+    return f->len >= 3 && f->data[0] == 0xA6 && f->data[1] != CH582_BATTERY_REQ_PARAM;
+}
 static inline void tx_link_change_check(const ch582_tx_frame_t *f) {
-    if (f->len >= 3 && f->data[0] == 0xA6 && f->data[1] != CH582_BATTERY_REQ_PARAM) LOCKCHAN_LINK_LOST();
+    if (tx_is_link_change(f)) LOCKCHAN_LINK_LOST();
 }
 
 /* Advance the queue: send the head frame, time out and retransmit, or give up.
@@ -1389,6 +1403,10 @@ static void ch582_tx_pump(void) {
  * before a gap in the line (sleep.c's deep sleep, its receiver off) must not
  * pair with bytes after it into a phantom frame. */
 static volatile bool rx_resync_req = false;
+/* And after this long with no byte, a window that still holds bytes starts
+ * over (F-019, ch582_task()): 5 ms, against ~87 us between a frame's bytes.
+ * The 16-bit tick wraps at 0.35 s; the check runs every pass. */
+#define RX_QUIET_TICKS ((uint16_t)TIME_MS2I(5))
 
 void ch582_rx_resync(void) {
     rx_resync_req = true;
@@ -1413,7 +1431,16 @@ void ch582_sleep_wake(void) {
     rx_resync_req     = true;
     battery_stale     = true;
     battery_poll_held = true;
+    link_state_stale  = true;
     LOCKCHAN_LINK_LOST();
+}
+
+bool ch582_link_state_stale(void) {
+    return link_state_stale;
+}
+
+bool ch582_linking_recent(void) {
+    return conn_state == CH582_CONN_LINKING && !usb_mode && timer_elapsed32(linking_since) < CH582_LINK_AWAKE_MS;
 }
 
 void ch582_battery_poll_release(void) {
@@ -1527,11 +1554,18 @@ void ch582_send_command(uint8_t cmd, const uint8_t *params, uint8_t param_len) {
     if ((cmd == 0xA1 || cmd == 0xA3) && used >= CH582_TXQ_LEN - 4) {
         /* Overwrite the LAST queued frame of this type, never an earlier one:
          * frames behind an overwritten earlier slot would deliver OLDER state
-         * after the newest and the host would end wrong. */
+         * after the newest and the host would end wrong. And never one before
+         * a select or pair queued since: that frame is the old host's, and the
+         * new state would go out on the old link, leaving the old host a key
+         * down and the new one without the press (the 10-31 audit, F-013).
+         * With nothing of this type after the select, it appends. */
         ch582_tx_frame_t *last = NULL;
         uint8_t i = tx_in_flight ? tx_next(tx_head) : tx_head;
         for (; i != tx_tail; i = tx_next(i)) {
-            if (tx_q[i].data[0] == cmd) last = &tx_q[i];
+            if (tx_q[i].data[0] == cmd)
+                last = &tx_q[i];
+            else if (tx_is_link_change(&tx_q[i]))
+                last = NULL;
         }
         if (last) {
             uint16_t s = cmd;
@@ -1583,6 +1617,7 @@ static void ch582_send_ack(void) {
 void ch582_set_profile(ch582_profile_t profile) {
     uint8_t param        = (uint8_t)profile;
     bool    was_pairing  = (conn_state == CH582_CONN_PAIRING);
+    uint8_t advertising  = requested_profile;   /* the slot a pairing advertises: the one selected for it */
 
     pa.kind             = PA_NONE;  /* a new selection supersedes any pending action */
     pair_confirmed      = false;
@@ -1613,8 +1648,12 @@ void ch582_set_profile(ch582_profile_t profile) {
      * The bounce slot may itself be bonded, so this can briefly attempt a link
      * to the wrong device. It is bounded -- the real select follows 700 ms later
      * and, being a DIFFERENT slot from the bounce, is honoured normally. Only
-     * reachable when cancelling pairing, never on an ordinary slot change. */
-    if (was_pairing && param >= CH582_PROFILE_BT_1 && param <= CH582_PROFILE_BT_3) {
+     * reachable when cancelling pairing, never on an ordinary slot change, and
+     * only from the advertising slot's own key: another slot is a different
+     * slot already, honoured at once, and the bounce would send the module
+     * through a third slot's host for 700 ms, which could link and take the
+     * keys typed meanwhile (the 10-31 audit, F-022). */
+    if (was_pairing && param == advertising && param >= CH582_PROFILE_BT_1 && param <= CH582_PROFILE_BT_3) {
         uint8_t other = (param == CH582_PROFILE_BT_1)
                             ? (uint8_t)CH582_PROFILE_BT_2
                             : (uint8_t)CH582_PROFILE_BT_1;
@@ -1808,6 +1847,12 @@ void ch582_task(void) {
      *                   independent (streams even while disconnected) -> never use
      *                   it as a "connected" signal. */
     static uint8_t b2 = 0, b1 = 0, b0 = 0;
+    /* The tick the window last took a byte. A frame's bytes come back to back
+     * (~87 us apart), so a window still holding bytes after RX_QUIET_TICKS of
+     * quiet is a frame that lost one (a UART overrun, ~1-2 an hour), and must
+     * not complete with the next frame's first byte: it ate that frame, a
+     * 5B 33 or an ACK (the 10-31 audit, F-019). */
+    static uint16_t rx_last_tk = 0;
     /* In every build: a deep sleep's wake starts the window over (codex,
      * deep-sleep review 24: draining the UART alone left the history stale). */
     if (rx_resync_req) {
@@ -2002,6 +2047,7 @@ void ch582_task(void) {
         } else
 #endif
         if (RX_TAKE(&c) == 0) {
+            if ((b0 | b1 | b2) && (uint16_t)((uint16_t)chVTGetSystemTimeX() - rx_last_tk) >= RX_QUIET_TICKS) b2 = b1 = b0 = 0;
 #ifdef AK820_DEV_HOOKS
             /* The queue is empty. After RAW81_SILENCE_TICKS with no byte the
              * line was silent that long: a quarantine ends (the window starts
@@ -2030,6 +2076,7 @@ void ch582_task(void) {
             rxtap_note(c);
 #endif
         }
+        rx_last_tk = (uint16_t)chVTGetSystemTimeX();
 #ifdef AK820_DEV_HOOKS
         /* The 81 collector (raw81.c), before the window sees the byte. A tick,
          * not a millisecond read: see RAW81_SILENCE_TICKS. */
@@ -2083,9 +2130,14 @@ void ch582_task(void) {
 #endif
                     if (is_module_connected && (d & ~0x1F) == 0) {
                         host_leds = d;
-                    } else if ((d & ~0x1F) == 0 && conn_state == CH582_CONN_LINKING &&
+                    } else if ((d & ~0x1F) == 0 &&
+                               (conn_state == CH582_CONN_LINKING || conn_state == CH582_CONN_REJECTED) &&
                                timer_elapsed32(linking_since) >= CH582_5A_PROMOTE_MS) {
                         /* Recovery for a missed `5B 32` -- see CH582_5A_PROMOTE_MS.
+                         * From REJECTED too (the 10-31 audit, F-023): a link that
+                         * came up while the MCU slept left the board showing
+                         * "Link failed" for good, since 5B 36 persists and the
+                         * re-link's 5B 32 was lost.
                          * Adopt the link, but deliberately NOT this frame's LED bits:
                          * the reason 5A is distrusted here at all is that a forged
                          * frame can pass the weak checksum, and lighting Caps off the
@@ -2103,9 +2155,11 @@ void ch582_task(void) {
                         is_pairing          = false;
                         conn_state          = CH582_CONN_CONNECTED;
                         connected_slot      = profile_to_slot(requested_profile);
+                        link_state_stale    = false;
                     }
                     break;
                 case 0x5B: /* connection state code (NOT a slot number) */
+                    if (d >= 0x31 && d <= 0x36) link_state_stale = false;   /* a state, current again */
                     switch (d) {
                         case 0x32: /* link established - the only "connected" signal */
                             /* A PA_BOUNCE survives: this 5B 32 may be the BOUNCE

@@ -2755,8 +2755,12 @@ static void conn_status_update(void) {
              *
              * The advice survives even if the 0x36 reading is wrong: re-pairing
              * the slot is a sane remedy for any stuck wireless state, which is
-             * more than can be said for the label. */
-            if (display_blink(CONN_STATUS_ALT_MS)) {
+             * more than can be said for the label.
+             *
+             * Not after a deep sleep, until the module names a state again
+             * (the 10-31 audit, F-023): a link that came up while the MCU
+             * slept leaves REJECTED stale, and the remedy would tear it down. */
+            if (ch582_link_state_stale() || display_blink(CONN_STATUS_ALT_MS)) {
                 want = "Link failed";
             } else {
                 /* Stock keymap: Fn+Q/W/E select BT slots 1-3, Fn+R the dongle. */
