@@ -35,7 +35,8 @@
  *   wear-leveling cache there, nonzero, a phantom width on every such slot
  *   and +1.3 mA at dark (history/rowisr-stage1-20261101/). Fixed 11-01 in
  *   update_pwm_channels(): a NO_LED column's channel at zero, no mux row for
- *   it. The one change to the machinery at stage 1, measured as such;
+ *   it (the audit's F-033 fix, the same the mainline gets). The one
+ *   change to the machinery at stage 1, measured as such;
  * - pwmEnableChannel()/pwmDisableChannel() from the callback are not I-class
  *   (they unlock interrupts on their way out), as before;
  * - the column release one channel at a time before the mux row's deselect
@@ -308,12 +309,12 @@ static void update_pwm_channels(PWMDriver *pwmp) {
          * build that was a zero-filled literal, in stage 1's first build the
          * wear-leveling cache (the keymap's bytes), a phantom width on every
          * such slot and +1.3 mA at dark with nothing to show for it
-         * (history/rowisr-stage1-20261101/, 11-01). The software-PWM path
-         * always had this check. */
-        if (led_index >= SN32F2XX_LED_COUNT) {
-            pwmEnableChannel(COL_PWM_DRV(current_key_col), COL_PWM_CH(current_key_col), 0);
-            continue;
-        }
+         * (history/rowisr-stage1-20261101/, 11-01); the base build's bytes
+         * were the raw-HID IN queue's slot 0, so its dark frame carried a
+         * phantom too, the last reply's (the audit's F-033). The software-PWM
+         * path always had this check; the fix is the audit's, the same the
+         * mainline gets. */
+        if (led_index >= SN32F2XX_LED_COUNT) continue;   /* the audit's F-033 fix, as the mainline's: the column stays released (disable_output ran this slot) */
         /* Check if we need to enable RGB output */
         if (led_state[led_index].b > 0) enable_pwm_output |= true;
         if (led_state[led_index].g > 0) enable_pwm_output |= true;
