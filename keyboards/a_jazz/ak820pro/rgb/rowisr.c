@@ -28,10 +28,14 @@
  *
  * Known and deliberately kept at stage 1, for stage 2 (so the move can be
  * measured against the old driver, not a changed one):
- * - the hardware-PWM path reads led_state[led_index] without the NO_LED check
+ * - the hardware-PWM path read led_state[led_index] without the NO_LED check
  *   that only the software-PWM path had: nine matrix positions have no LED
- *   and their 255 index reads past the array, harmlessly (the plan, "What is
- *   known"). Stage 2's driver produces explicit zeros;
+ *   and their 255 index read three bytes past the array. The plan called it
+ *   harmless; stage 1's first build showed it is not: the read landed on the
+ *   wear-leveling cache there, nonzero, a phantom width on every such slot
+ *   and +1.3 mA at dark (history/rowisr-stage1-20261101/). Fixed 11-01 in
+ *   update_pwm_channels(): a NO_LED column's channel at zero, no mux row for
+ *   it. The one change to the machinery at stage 1, measured as such;
  * - pwmEnableChannel()/pwmDisableChannel() from the callback are not I-class
  *   (they unlock interrupts on their way out), as before;
  * - the column release one channel at a time before the mux row's deselect
@@ -297,6 +301,19 @@ static void update_pwm_channels(PWMDriver *pwmp) {
     bool enable_pwm_output = false;
     for (uint8_t current_key_col = 0; current_key_col < SN32F2XX_RGB_MATRIX_COLS; current_key_col++) {
         uint8_t led_index = g_led_config.matrix_co[current_key_row][current_key_col];
+        /* A position with no LED (NO_LED, 255: key (0,14) and eight positions
+         * that are no key either): its column's channel at zero, and no mux
+         * row for it. The old hardware-PWM path read led_state[255], three
+         * bytes past the array, and drove whatever it found: in the base
+         * build that was a zero-filled literal, in stage 1's first build the
+         * wear-leveling cache (the keymap's bytes), a phantom width on every
+         * such slot and +1.3 mA at dark with nothing to show for it
+         * (history/rowisr-stage1-20261101/, 11-01). The software-PWM path
+         * always had this check. */
+        if (led_index >= SN32F2XX_LED_COUNT) {
+            pwmEnableChannel(COL_PWM_DRV(current_key_col), COL_PWM_CH(current_key_col), 0);
+            continue;
+        }
         /* Check if we need to enable RGB output */
         if (led_state[led_index].b > 0) enable_pwm_output |= true;
         if (led_state[led_index].g > 0) enable_pwm_output |= true;
