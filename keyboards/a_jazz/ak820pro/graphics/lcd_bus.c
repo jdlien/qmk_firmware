@@ -675,10 +675,19 @@ bool flash_busy(void) {
  * (blit_lost, the existing repair) once the chip reads idle. */
 static bool flash_wip    = false;
 static bool blit_in_wip  = false;
+/* The chip reads idle: a blit made while it was busy becomes a loss, whichever
+ * of the two paths sees the idle first (codex on F-014's fix: a blit seeing it
+ * cleared the latch and dropped the earlier blit's mark), and blits read the
+ * chip again. */
+static void flash_wip_settle(void) {
+    if (blit_in_wip) blit_lost = true;
+    flash_wip   = false;
+    blit_in_wip = false;
+}
 static void flash_wip_note_blit(void) {
     if (!flash_wip) return;
     if (flash_busy()) blit_in_wip = true;
-    else              flash_wip = false;   /* idle: a blit now reads the chip */
+    else              flash_wip_settle();
 }
 
 static void flash_wren(void) {
@@ -1432,11 +1441,7 @@ bool lcd_blit_wait(void) {
 bool lcd_blit_lost_take(void) {
     /* F-014: blits made while the chip was busy are repainted once it reads
      * idle; the repair finds them through this. */
-    if (flash_wip && blit_in_wip && !flash_busy()) {
-        flash_wip   = false;
-        blit_in_wip = false;
-        blit_lost   = true;
-    }
+    if (flash_wip && blit_in_wip && !flash_busy()) flash_wip_settle();
     bool lost = blit_lost;
     blit_lost = false;
     return lost;
