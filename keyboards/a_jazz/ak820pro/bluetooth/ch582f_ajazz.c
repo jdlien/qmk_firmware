@@ -197,6 +197,14 @@ static volatile bool link_state_stale = false;
 #ifndef CH582_LINK_AWAKE_MS
 #    define CH582_LINK_AWAKE_MS 60000u
 #endif
+/* The hold's start: every select of the board's own (a user's action), but an
+ * attempt of the module's own (a 5B 33/34 into LINKING) only once between
+ * wakes, so a module cycling 33, 36, 33 cannot keep the board awake for good;
+ * the capture saw it give up after one round, but nothing measured it over
+ * hours. linking_since stays the promotion's own clock. */
+static volatile uint32_t link_hold_since = 0;
+static volatile bool     link_hold_on    = false;
+static volatile bool     link_hold_armed = true;
 /* Battery percentage (0-100) from 5C frames; 0xFF until the module first reports. */
 static volatile uint8_t battery_level = 0xFF;
 /* Host keyboard LED bitmap from 5A frames (USB LED bits; bit1 = caps lock). */
@@ -1432,6 +1440,7 @@ void ch582_sleep_wake(void) {
     battery_stale     = true;
     battery_poll_held = true;
     link_state_stale  = true;
+    link_hold_armed   = true;
     LOCKCHAN_LINK_LOST();
 }
 
@@ -1440,7 +1449,13 @@ bool ch582_link_state_stale(void) {
 }
 
 bool ch582_linking_recent(void) {
-    return conn_state == CH582_CONN_LINKING && !usb_mode && timer_elapsed32(linking_since) < CH582_LINK_AWAKE_MS;
+    return conn_state == CH582_CONN_LINKING && !usb_mode && link_hold_on &&
+           timer_elapsed32(link_hold_since) < CH582_LINK_AWAKE_MS;
+}
+
+static void link_hold_start(void) {
+    link_hold_since = timer_read32();
+    link_hold_on    = true;
 }
 
 void ch582_battery_poll_release(void) {
@@ -1630,6 +1645,7 @@ void ch582_set_profile(ch582_profile_t profile) {
     LOCKCHAN_LINK_LOST();
     conn_state          = CH582_CONN_LINKING;   /* attempting until 5B says otherwise */
     linking_since       = timer_read32();
+    link_hold_start();
     last_attempt_time   = timer_read();
 
     /* CANCEL-PAIRING BOUNCE.
@@ -1908,6 +1924,7 @@ void ch582_task(void) {
                 is_pairing          = false;
                 conn_state          = CH582_CONN_LINKING;
                 linking_since       = timer_read32();
+                link_hold_start();
                 connected_slot      = 0;
             }
             break;
@@ -2210,7 +2227,13 @@ void ch582_task(void) {
                             if (pa.kind != PA_BOUNCE) select_acked = true;
                             is_module_connected = false;
                             is_pairing          = false;
-                            if (conn_state != CH582_CONN_LINKING) linking_since = timer_read32();
+                            if (conn_state != CH582_CONN_LINKING) {
+                                linking_since = timer_read32();
+                                if (link_hold_armed) {   /* the module's own attempt: once between wakes */
+                                    link_hold_armed = false;
+                                    link_hold_start();
+                                }
+                            }
                             conn_state          = CH582_CONN_LINKING;
                             connected_slot      = 0;
                             host_leds           = 0; /* no link -> drop stale LED state */
