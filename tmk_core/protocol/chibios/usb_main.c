@@ -514,9 +514,17 @@ void send_raw_hid(uint8_t *data, uint8_t length) {
     send_report(USB_ENDPOINT_IN_RAW, data, length);
 }
 
+/* ak820pro: RAW_HID_TASK_MAX_REPORTS caps the reports handled a call, so a
+ * host that keeps the OUT queue full while it takes each reply slowly cannot
+ * hold the main loop here past the board's watchdog; the rest wait queued for
+ * the next pass. Unset (every other board), the drain is unbounded as before. */
 void raw_hid_task(void) {
     uint8_t buffer[RAW_EPSIZE];
+#ifdef RAW_HID_TASK_MAX_REPORTS
+    for (uint8_t n = 0; n < RAW_HID_TASK_MAX_REPORTS && receive_report(USB_ENDPOINT_OUT_RAW, buffer, sizeof(buffer)); n++) {
+#else
     while (receive_report(USB_ENDPOINT_OUT_RAW, buffer, sizeof(buffer))) {
+#endif
         raw_hid_receive(buffer, sizeof(buffer));
     }
 }

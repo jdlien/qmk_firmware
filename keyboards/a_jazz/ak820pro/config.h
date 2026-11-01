@@ -284,6 +284,14 @@
 // asserts the macros end where the block starts.
 #define DYNAMIC_KEYMAP_MACRO_EEPROM_SIZE 18
 
+// Raw HID reports handled a main-loop pass (tmk_core's usb_main.c, the 10-31
+// audit's F-001 as codex reviewed it): each one's reply may wait up to 100 ms
+// for the IN endpoint, so a host streaming OUT reports while it takes a reply
+// every 50 ms held raw_hid_task() past the watchdog; four is at most ~400 ms a
+// pass. At ~335 passes a second, still above the 1 ms interrupt endpoint's
+// 1,000 reports a second.
+#define RAW_HID_TASK_MAX_REPORTS 4
+
 // Debounce eeconfig flushes from RGB adjustment. Without this QMK writes MCU
 // flash on every single step (~8/s while a key is held), which is both needless
 // wear and a wide window for the LCD-DMA collision documented in ak820pro.c.
