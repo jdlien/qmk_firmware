@@ -60,6 +60,13 @@ wear_leveling_status_t wear_leveling_consolidate(void);
 uint32_t wear_leveling_log_used(void);
 
 /**
+ * ak820pro (the 10-31 audit's review): the count of wear_leveling_write()s
+ * that failed since the boot, wrapping at 256. The EEPROM driver drops each
+ * write's status; a caller compares this before and after its writes.
+ */
+uint8_t wear_leveling_failures(void);
+
+/**
  * Reads logical data from the cache.
  *
  * @param address[in] the logical address to read data

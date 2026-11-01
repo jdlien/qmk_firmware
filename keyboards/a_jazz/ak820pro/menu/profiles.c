@@ -294,10 +294,23 @@ static bool format(bool *consolidated) {
 
 /* Never inside a deep sleep's recovery (a menu can be open in its first
  * passes: sleep.c's wake releases the display first), nor while a restore
- * is open. */
+ * is open, nor before the boot's check has read the owner byte: until then
+ * SD_SETTLED is the switch's reading, which may not be the side the settings
+ * are, and a Load, a Save or an apply would go by it (codex, the 10-31
+ * audit's review). */
 static uint8_t writable(void) {
     if (tx_state & TX_FAILED) return PROF_WRITE_FAILED;
-    return env_recovering() || prof_restore_open() ? PROF_BUSY : PROF_OK;
+    return env_recovering() || prof_restore_open() || (side & SD_BOOT) ? PROF_BUSY : PROF_OK;
+}
+
+/* kb_eeconfig's and the RGB config's writes now; a failure latches as a
+ * profile write's (wr_at()), so no settled owner is published over it and
+ * the cache, which holds the bytes, isn't trusted until a reboot (codex,
+ * the 10-31 audit's review). */
+static bool flush_settings(void) {
+    if (env_settings_flush()) return true;
+    tx_state |= TX_FAILED;
+    return false;
 }
 
 bool prof_write_failed(void) { return (tx_state & TX_FAILED) != 0u; }
@@ -621,7 +634,7 @@ static void flip(uint8_t x) {
                     st = PROF_WRITE_FAILED;
                 } else if (s < PROF_USER) {
                     st = taken ? prof_apply(rec, false) : prof_load(s);
-                    env_settings_flush();
+                    if (!flush_settings()) st = PROF_WRITE_FAILED;
                 }
             }
         }
@@ -654,7 +667,7 @@ static void boot_recover(uint8_t y) {
         if (s < PROF_USER) {
             cancel_previews();
             st = prof_load(s);
-            env_settings_flush();
+            if (!flush_settings()) st = PROF_WRITE_FAILED;
         }
         if (!prof_write_failed()) (void)owner_set((uint8_t)(OW_SETTLED | y));
         if (s < PROF_USER) env_prof_switched(s, st);
@@ -698,7 +711,7 @@ void prof_switch(bool mac) {
 
 void prof_tick(void) {
     if (prof_restore_open() && --tx_left == 0u) tx_close();   /* aborted: the block stays unformatted */
-    if ((side & SD_BOOT) && writable() != PROF_BUSY) {
+    if ((side & SD_BOOT) && !env_recovering() && !prof_restore_open()) {   /* not writable(): it refuses SD_BOOT */
         side &= (uint8_t)~SD_BOOT;
         boot_check();
     }
@@ -734,10 +747,16 @@ static uint8_t page_len(uint8_t p) {
 }
 
 /* The restore's commit: every page received; each record empty or valid; the
- * active byte normalized, each side's; the magic last, in its own write; the
- * owner byte the side the switch is on, until sub 8 says the live settings
- * restored after are the other side's. */
-static uint8_t commit(void) {
+ * active byte normalized, each side's; the owner byte, the side the live
+ * settings are (src: the host applies and flushes the backup's before this,
+ * with the block still unpublished); the magic last, in its own write. A cut
+ * before the magic leaves no profiles, so nothing is a side's; after it, the
+ * owner names the live settings' side whatever comes later. On the switch's
+ * other side the flip to it runs then, as a live flip, so each side keeps
+ * its own (codex, the 10-31 audit's review: the host's sub 8 after the
+ * commit left a window where a cut filed one side's settings as the
+ * other's). */
+static uint8_t commit(uint8_t src) {
     bool    c = false;
     uint8_t rec[PROF_REC];
     if ((tx_state & TX_PAGES) != PROF_PAGES) return PROF_INCOMPLETE;
@@ -750,10 +769,11 @@ static uint8_t commit(void) {
             return PROF_INVALID;
         }
     }
-    return wr8(PROF_OFF_ACTIVE, a, &c) && wr8(PROF_OFF_MAGIC, PROF_MAGIC_V4, &c) &&
-                   owner_set((uint8_t)(OW_SETTLED | cur_side()))
-               ? PROF_OK
-               : PROF_WRITE_FAILED;
+    if (!wr8(PROF_OFF_ACTIVE, a, &c) || !owner_set((uint8_t)(OW_SETTLED | src)) || !wr8(PROF_OFF_MAGIC, PROF_MAGIC_V4, &c))
+        return PROF_WRITE_FAILED;
+    side = (uint8_t)((side & ~(SD_SETTLED | SD_TICKS)) | (src ? SD_SETTLED : 0u));
+    if (((side & SD_MAC) != 0u) != (src != 0u)) side |= (uint8_t)(SD_REST * SD_TICK);   /* the flip to the switch's side */
+    return PROF_OK;
 }
 
 /* --- Reset settings (10-27) ------------------------------------------------- */
@@ -761,7 +781,7 @@ static uint8_t commit(void) {
 uint8_t prof_reset(void) {
     /* Not writable()'s answer: under the latch it says WRITE_FAILED before
      * it looks at a recovery (codex, 10-27). */
-    if (env_recovering() || prof_restore_open()) return PROF_BUSY;
+    if (env_recovering() || prof_restore_open() || (side & SD_BOOT)) return PROF_BUSY;
     uint8_t        st;
     env_defaults_t d;
     uint8_t        rec[PROF_REC];
@@ -803,7 +823,12 @@ uint8_t prof_reset(void) {
  *                                             masked (the host never writes it). In order (P5d): page p
  *                                             only once 0 to p - 1 are in (PROF_BAD before), a page again
  *                                             as often as it likes
- *   3  commit:        [5] token            -> [6] status (commit(), above); the transaction closes either way
+ *   3  commit:        [5] token, [7] the live settings' side + 1 (1 Windows, 2 the Mac; 0 the switch's)
+ *                                          -> [6] status (commit(), above); the transaction closes either way.
+ *                                             A restore applies and flushes its live record (4, 5, 6) before
+ *                                             this, and names its side here, so the owner byte is right from
+ *                                             the magic on; on the switch's other side the flip to it follows
+ *                                             (the 10-31 audit's review). The builds before ignore [7]
  *   4  the live record                     -> [4..30] it (fields PF_LIVE), [31] status. 10-28: PR_BVIEW's bit 2
  *                                             the face, set Small, the crc taken over it
  *   5  apply one:     [4..30] a record     -> [31] status (PROF_OK_EFFECT_SKIPPED: an effect this build lacks).
@@ -817,13 +842,12 @@ uint8_t prof_reset(void) {
  *   7  the geometry (P5d)                  -> [4] slots, [5] a record's bytes, [6] pages, [7] a page's bytes,
  *                                             [8] the magic, [9] the side the profiles go by (10-27: 1
  *                                             Windows, 2 the Mac, 0 before the switch's first reading; the
- *                                             builds before, 0). P5a's and P5b's builds answer it unhandled:
- *                                             the host takes them for four slots, five pages, magic 0xA1
- *   8  the live settings' side: [4] 0 Windows, 1 the Mac -> [5] status (the 10-31 audit's review): a
- *                                             backup taken on the other side of the switch, restored with its
- *                                             live record, is that side's settings; on the switch's other side
- *                                             it runs as a flip to it, so each side keeps its own. The builds
- *                                             before answer it unhandled
+ *                                             builds before, 0), [10] bit 7 set (the commit takes [7]), bit 0
+ *                                             a flip or the boot's check still to run, bit 1 the write latch
+ *                                             (the 10-31 audit's review: a host confirms a commit's flip by
+ *                                             it; the builds before, 0). P5a's and P5b's builds answer it
+ *                                             unhandled: the host takes them for four slots, five pages,
+ *                                             magic 0xA1
  * 4, 5 and 6 cancel an open preview first. Dev builds: 0x40 save the live
  * settings to slot [4] -> [5] status, [6] 1 when the wear-leveling layer
  * consolidated; 0x41 delete slot [4] -> [5] status; 0x42 the switch read as
@@ -851,7 +875,7 @@ bool prof_hid(uint8_t *d) {
                 d[6] = PROF_WRITE_FAILED;
                 return true;
             }
-            if (env_recovering()) {
+            if (env_recovering() || (side & SD_BOOT)) {
                 d[6] = PROF_BUSY;
                 return true;
             }
@@ -895,7 +919,9 @@ bool prof_hid(uint8_t *d) {
                 d[6] = PROF_BUSY;
                 return true;
             }
-            d[6] = commit();
+            /* [7]: the live settings' side + 1, 0 the switch's (a host from
+             * before, or one that restores no live record). */
+            d[6] = commit(d[7] == 1u + PROF_SIDE_MAC ? PROF_SIDE_MAC : d[7] == 1u + PROF_SIDE_WIN ? PROF_SIDE_WIN : cur_side());
             tx_close();
             tx_state |= TX_CHANGED;
             return true;
@@ -913,7 +939,7 @@ bool prof_hid(uint8_t *d) {
                 d[31] = PROF_FORMAT;
             } else if (!prof_rec_valid(r)) {
                 d[31] = PROF_INVALID;
-            } else if (env_recovering()) {
+            } else if (env_recovering() || (side & SD_BOOT)) {
                 d[31] = PROF_BUSY;
             } else {
                 cancel_previews();   /* the Font page's preview too: "Cancelled", the restore's face shows */
@@ -928,7 +954,7 @@ bool prof_hid(uint8_t *d) {
                 d[4] = PROF_BUSY;
                 return true;
             }
-            env_settings_flush();
+            (void)flush_settings();
             if ((side & SD_PEND) && writable() == PROF_OK) write_active();   /* the choice durable too */
             /* WRITE_FAILED while the latch holds: this write's failure, or any
              * profile write's since the boot, a deferred one included, whose
@@ -944,22 +970,7 @@ bool prof_hid(uint8_t *d) {
             d[7] = PROF_PAGE;
             d[8] = PROF_MAGIC_V4;
             d[9] = (side & SD_KNOWN) ? (uint8_t)(1u + cur_side()) : 0u;
-            return true;
-        case 8:
-            memset(&d[5], 0, 27);
-            if (p > PROF_SIDE_MAC || !(side & SD_KNOWN)) {
-                d[5] = PROF_BAD;
-            } else if (!prof_formatted()) {
-                d[5] = PROF_OK;   /* no profiles: nothing is a side's */
-            } else if ((side & SD_BOOT) || writable() != PROF_OK) {
-                d[5] = (side & SD_BOOT) ? PROF_BUSY : writable();
-            } else if (!owner_set((uint8_t)(OW_SETTLED | p))) {
-                d[5] = PROF_WRITE_FAILED;
-            } else {
-                side = (uint8_t)((side & ~(SD_SETTLED | SD_TICKS)) | (p ? SD_SETTLED : 0u));
-                if (((side & SD_MAC) != 0u) != (p != 0u)) side |= (uint8_t)(SD_REST * SD_TICK);   /* the flip to the switch's side */
-                d[5] = PROF_OK;
-            }
+            d[10] = (uint8_t)(0x80u | ((side & (SD_TICKS | SD_BOOT)) ? 1u : 0u) | (prof_write_failed() ? 2u : 0u));
             return true;
 #if defined(AK820_DEV_HOOKS) || defined(MENU_HOST_TEST)
         case 0x40:

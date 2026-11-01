@@ -91,7 +91,7 @@ enum { ENV_WR_FAILED = 0, ENV_WR_OK = 1, ENV_WR_CONSOLIDATED = 2 };
 void     env_prof_read(uint16_t addr, void *dst, uint8_t n);
 uint8_t  env_prof_write(uint16_t addr, const void *src, uint8_t n);
 bool     env_recovering(void);
-void     env_settings_flush(void);
+bool     env_settings_flush(void);   /* false when one of its writes failed (the 10-31 audit's review) */
 /* P5b: the profiles' active slot is written once kb_eeconfig's settle has
  * passed and its write is done: touch restarts the settle, pending is its
  * write still to come (a deep sleep's DSB_FLASH). */
