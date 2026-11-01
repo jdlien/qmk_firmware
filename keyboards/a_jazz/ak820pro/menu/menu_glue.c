@@ -270,14 +270,15 @@ bool env_wt_dimmed(void) { return power_forced_stage() == (uint8_t)POWER_STAGE_D
 bool env_wt_dim_applied(void) { return env_wt_dimmed() && power_val_cap() <= 64u; }   /* power.c's DIM_VAL */
 uint8_t env_wt_frames(void) { return sn32f2xx_led_commits(); }
 #endif
-/* False when a write failed: the EEPROM driver drops wear_leveling_write()'s
- * status, so its failure count is read around the flushes (codex, the 10-31
- * audit's review: a flip published its settled owner over a failed one). */
+/* False when any write to the store has failed since the boot, these or an
+ * earlier one: the EEPROM driver drops wear_leveling_write()'s status, and a
+ * deferred write that failed left its bytes in the cache, so this flush
+ * skipped them as unchanged (codex, the 10-31 audit's review, both rounds: a
+ * flip, then a restore, published a settled owner over a failed write). */
 bool env_settings_flush(void) {
-    uint8_t f = wear_leveling_failures();
     kb_eeconfig_flush();
     eeconfig_force_flush_rgb_matrix();
-    return wear_leveling_failures() == f;
+    return wear_leveling_failures() == 0u;
 }
 void env_settings_touch(void) { kb_eeconfig_touch(); }
 bool env_settings_pending(void) { return kb_eeconfig_write_pending(); }

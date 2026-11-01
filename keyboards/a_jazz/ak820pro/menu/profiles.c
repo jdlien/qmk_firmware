@@ -843,7 +843,8 @@ uint8_t prof_reset(void) {
  *                                             [8] the magic, [9] the side the profiles go by (10-27: 1
  *                                             Windows, 2 the Mac, 0 before the switch's first reading; the
  *                                             builds before, 0), [10] bit 7 set (the commit takes [7]), bit 0
- *                                             a flip or the boot's check still to run, bit 1 the write latch
+ *                                             a flip or the boot's check still to run, bit 1 the write latch,
+ *                                             bit 2 the switch read on the Mac, where [9] is the side settled
  *                                             (the 10-31 audit's review: a host confirms a commit's flip by
  *                                             it; the builds before, 0). P5a's and P5b's builds answer it
  *                                             unhandled: the host takes them for four slots, five pages,
@@ -970,7 +971,8 @@ bool prof_hid(uint8_t *d) {
             d[7] = PROF_PAGE;
             d[8] = PROF_MAGIC_V4;
             d[9] = (side & SD_KNOWN) ? (uint8_t)(1u + cur_side()) : 0u;
-            d[10] = (uint8_t)(0x80u | ((side & (SD_TICKS | SD_BOOT)) ? 1u : 0u) | (prof_write_failed() ? 2u : 0u));
+            d[10] = (uint8_t)(0x80u | ((side & (SD_TICKS | SD_BOOT)) ? 1u : 0u) | (prof_write_failed() ? 2u : 0u) |
+                              ((side & SD_MAC) ? 4u : 0u));
             return true;
 #if defined(AK820_DEV_HOOKS) || defined(MENU_HOST_TEST)
         case 0x40:

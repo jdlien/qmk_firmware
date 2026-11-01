@@ -351,6 +351,21 @@ static wear_leveling_status_t wear_leveling_consolidate_force(void) {
 }
 
 /**
+ * ak820pro (the 10-31 audit's review): writes and consolidations that failed
+ * since the boot (wear_leveling.h), saturating, so once one has failed it
+ * stays nonzero: the cache may then hold bytes the flash does not, and a
+ * later write of the same bytes is skipped as unchanged, so only a reboot,
+ * which reloads the cache, clears it.
+ */
+static uint8_t wl_failures;
+static void    wl_failed(void) {
+    if (wl_failures < 0xFFu) wl_failures++;
+}
+uint8_t wear_leveling_failures(void) {
+    return wl_failures;
+}
+
+/**
  * ak820pro: a consolidation on demand (wear_leveling.h), unlocked and locked
  * as wear_leveling_write() does it: the backing store's unlock is where a
  * board drains what must finish before a program (the EFL's pre-write hook).
@@ -359,12 +374,14 @@ wear_leveling_status_t wear_leveling_consolidate(void) {
     backing_store_lock_status_t lock_status = wear_leveling_unlock();
     if (lock_status == STATUS_FAILURE) {
         wear_leveling_lock();
+        wl_failed();
         return WEAR_LEVELING_FAILED;
     }
     wear_leveling_status_t status = wear_leveling_consolidate_force();
     if (lock_status == STATUS_SUCCESS && wear_leveling_lock() == STATUS_FAILURE) {
         status = WEAR_LEVELING_FAILED;
     }
+    if (status == WEAR_LEVELING_FAILED) wl_failed();
     return status;
 }
 
@@ -374,17 +391,6 @@ wear_leveling_status_t wear_leveling_consolidate(void) {
 uint32_t wear_leveling_log_used(void) {
     const uint32_t start = (WEAR_LEVELING_LOGICAL_SIZE) + 8; // +8 due to the FNV1a_64 of the consolidated area
     return wear_leveling.write_address > start ? wear_leveling.write_address - start : 0;
-}
-
-/**
- * ak820pro (the 10-31 audit's review): writes that failed since the boot
- * (wear_leveling.h). The EEPROM driver drops wear_leveling_write()'s status,
- * so a caller of eeprom_update_*() learns of a failure only by comparing this
- * before and after.
- */
-static uint8_t wl_failures;
-uint8_t        wear_leveling_failures(void) {
-    return wl_failures;
 }
 
 /**
@@ -771,7 +777,7 @@ wear_leveling_status_t wear_leveling_write(const uint32_t address, const void *v
     backing_store_lock_status_t lock_status = wear_leveling_unlock();
     if (lock_status == STATUS_FAILURE) {
         wear_leveling_lock();
-        wl_failures++;
+        wl_failed();
         return WEAR_LEVELING_FAILED;
     }
 
@@ -800,7 +806,7 @@ wear_leveling_status_t wear_leveling_write(const uint32_t address, const void *v
         }
     }
 
-    if (status == WEAR_LEVELING_FAILED) wl_failures++;   /* ak820pro: wear_leveling_failures() */
+    if (status == WEAR_LEVELING_FAILED) wl_failed();   /* ak820pro: wear_leveling_failures() */
     return status;
 }
 

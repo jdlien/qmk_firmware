@@ -61,8 +61,9 @@ uint32_t wear_leveling_log_used(void);
 
 /**
  * ak820pro (the 10-31 audit's review): the count of wear_leveling_write()s
- * that failed since the boot, wrapping at 256. The EEPROM driver drops each
- * write's status; a caller compares this before and after its writes.
+ * and wear_leveling_consolidate()s that failed since the boot, saturating at
+ * 255: nonzero, the cache may hold bytes the flash does not until a reboot.
+ * The EEPROM driver drops each write's status.
  */
 uint8_t wear_leveling_failures(void);
 
