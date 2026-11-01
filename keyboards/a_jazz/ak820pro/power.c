@@ -34,7 +34,7 @@
 #include "battery.h"
 #include "kb_eeconfig.h"
 #include "graphics/display.h"
-#include "drivers/led/sn32f2xx.h"
+#include "rgb/rowisr.h"
 
 #define NEVER UINT32_MAX
 

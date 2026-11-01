@@ -34,6 +34,7 @@
 #include "menu/menu_edit.h" /* P1b's edit transaction: its writers' hooks (C6) */
 #include "menu/profiles.h"  /* P5a: a restore's timeout */
 #include "overrun_diag.h"  /* dev: the UART overruns' context */
+#include "rgb/rowisr_diag.h" /* dev: a row hold-off's backstop (op 28) */
 
 void early_hardware_init_post(void) {
     // Configure SPI0 pins for the LCD panel. SEL0 is left UNMUXED: our bare-metal bus
@@ -611,6 +612,7 @@ void housekeeping_task_kb(void) {
     flash_channel_pass_end();   // the flash channel's one chip operation a pass (F-001)
     health_loop_tick();    // worst-gap max-hold; one timer read per pass
     menu_pass_begin();     // C10's pass timing, at the same boundary
+    rowisr_diag_housekeeping();   // dev: a row hold-off the tick failed to end (empty otherwise)
 #ifdef LOOPGAP_INSTRUMENT
     loop_gap_task();
 #endif

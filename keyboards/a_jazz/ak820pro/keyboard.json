@@ -35,7 +35,7 @@
     },
     "dip_switch": {"pins": [ "B1", "B12", "B13"]},
     "rgb_matrix": {
-        "driver": "sn32f2xx",
+        "driver": "custom",
         "animations": {
             "solid_color": true,
             "breathing": false,

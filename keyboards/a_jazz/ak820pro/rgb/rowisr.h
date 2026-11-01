@@ -1,0 +1,153 @@
+/* The AK820 Pro's RGB matrix driver and key matrix, board-local
+ * (plans/ROW-ISR-PLAN.md, D1; stage 1, 11-01).
+ *
+ * Until stage 1 the driver was QMK's drivers/led/sn32f2xx.c carrying this
+ * repository's local commits, selected by keyboard.json's "sn32f2xx", and the
+ * key matrix was quantum/matrix.c's row helpers called from that driver's
+ * row ISR. Both are board code now, rgb/rowisr.c, selected by "custom" and
+ * CUSTOM_MATRIX = lite (rules.mk). The exported names are kept as they were,
+ * so every caller in the board (battery.c, power.c, sleep.c, rtc/rtc.c,
+ * flash_tidy.c, hid_protocol.c, health.c, menu/) reads as before; renaming
+ * is a later cleanup, not part of the rewrite. drivers/led/sn32f2xx.c is no
+ * longer compiled for this board and stays in the branch for the other SN32
+ * boards and UPSTREAM-CONTRIBUTIONS.md.
+ */
+#pragma once
+
+#include <stdint.h>
+#include <stdbool.h>
+#include "matrix.h"   /* matrix_row_t */
+
+/* The configuration the old driver took from config.h and its own defaults,
+ * fixed to this board: 6 key rows x 3 colours = 18 mux rows (active high,
+ * plain GPIO), 15 columns (hardware PWM, active low, shared with the key
+ * matrix), and a CT16B0/B1/B2 column map (config.h, SN32F2XX_PWM_COL_MAP). */
+#define SN32F2XX_RGB_MATRIX_ROW_CHANNELS 3
+#define SN32F2XX_RGB_MATRIX_ROWS         MATRIX_ROWS
+#define SN32F2XX_RGB_MATRIX_COLS         MATRIX_COLS
+#define SN32F2XX_RGB_MATRIX_ROWS_HW      (SN32F2XX_RGB_MATRIX_ROWS * SN32F2XX_RGB_MATRIX_ROW_CHANNELS)
+#ifdef RGB_MATRIX_ENABLE
+#    define SN32F2XX_LED_COUNT RGB_MATRIX_LED_COUNT
+#endif
+#ifndef SN32F2XX_LED_OUTPUT_LUMINOSITY_R
+#    define SN32F2XX_LED_OUTPUT_LUMINOSITY_R 1
+#endif
+#ifndef SN32F2XX_LED_OUTPUT_LUMINOSITY_G
+#    define SN32F2XX_LED_OUTPUT_LUMINOSITY_G 1
+#endif
+#ifndef SN32F2XX_LED_OUTPUT_LUMINOSITY_B
+#    define SN32F2XX_LED_OUTPUT_LUMINOSITY_B 1
+#endif
+
+/* rgb_matrix's driver entry points (rgb_matrix_driver, defined in rowisr.c).
+ * Since stage 1 sn32f2xx_init() touches no hardware: the timers, the pins
+ * and the row ISR start in matrix_init_custom(), before rgb_matrix exists. */
+void sn32f2xx_init(void);
+void sn32f2xx_flush(void);
+void sn32f2xx_set_color(int index, uint8_t r, uint8_t g, uint8_t b);
+void sn32f2xx_set_color_all(uint8_t r, uint8_t g, uint8_t b);
+
+/* Sum of every LED channel's requested PWM value, 0 .. LED_COUNT * 3 * 255.
+ * Proportional to the matrix's average drive, so a board can estimate its
+ * current draw from it. Main-thread only, like sn32f2xx_set_color(). */
+uint32_t sn32f2xx_led_load(void);
+
+/* The drive actually shown, time-weighted: the sum of every channel's value in
+ * the COMMITTED frame (what the row ISR drives), times the ms it was shown,
+ * accumulated since the last call, which closes the interval at `now_ms` and
+ * starts the next. Divided by the elapsed ms it is the mean drive over the
+ * interval, whatever the effect's frame pattern. `lit_ms`, if not NULL, gets
+ * the ms of the interval in which any channel was lit; `rgb_ms`, if not NULL,
+ * the same sum x ms per colour (red, green, blue), whose total is returned.
+ * Main-thread only. */
+uint64_t sn32f2xx_led_drive_take(uint32_t now_ms, uint32_t *lit_ms, uint64_t rgb_ms[3]);
+
+/* True when every channel of the COMMITTED frame is zero. A scale or a colour
+ * set this pass reaches that frame only at the next flush, so a board that
+ * stops the row ISR (a deep sleep) waits for this: asleep the ISR keeps its
+ * frame, and at the restart it drives that frame again until a render
+ * replaces it. Main-thread only. */
+bool sn32f2xx_led_committed_dark(void);
+
+/* sn32f2xx_flush()'s calls, wrapping: one at the end of each of rgb_matrix's
+ * renders, whether the frame changed or not (a steady Solid changes nothing).
+ * A caller that changed what renders waits for it to move twice: the render
+ * under way may have begun before the change, the next one began after it;
+ * and a pass blocked meanwhile (a consolidation) flushes nothing.
+ * Main-thread only. */
+uint8_t sn32f2xx_led_commits(void);
+
+/* What the row ISR does while an internal-flash program runs (EFLD1.state ==
+ * FLASH_PGM). true (the default): the scan runs straight through, as between
+ * programs; interrupts are masked only for each line's 10-20 us window, so a
+ * row is at most that late. false: every mux row de-selected, the board dark
+ * for the program's length (the 09-01 guard). A dev build's write test
+ * switches it at run time to compare the two by eye (plans/BACKLOG.md, "The
+ * LED blink at an internal-flash write"). What scanning leaves is the erase,
+ * which neither changes: the CPU, the ISR with it, stalls for each page
+ * (docs/sn32f299.md, section 10). */
+extern volatile bool sn32f2xx_pgm_scan;
+
+/* Scale every LED's output by scale/256 (255 = unscaled) below the rgb_matrix
+ * config: dim or darken the matrix without touching the user's brightness.
+ * Takes effect as the next frame renders. Main-thread only. */
+void sn32f2xx_set_power_scale(uint8_t scale);
+
+/* The quiesce before the bootloader (D7): one idempotent teardown on every
+ * jump route (watchdog.c's bootloader_jump: Bootmagic, Fn+Esc, the raw-HID
+ * jump): the row interrupt off and its pending flag cleared, every column
+ * channel off, every mux row low, the three timers stopped, then every LED
+ * pin high-impedance, so no slot can be left driving and the bootloader
+ * stays dark. Safe before the hardware is up. Thread context.
+ * sn32f2xx_blank() is the old name for the same thing. */
+void sn32f2xx_quiesce(void);
+void sn32f2xx_blank(void);
+
+/* True if matrix_init_custom()'s prime gave up before every key row had
+ * been sampled (50 ms): Bootmagic then scanned an empty matrix. Dev op 28
+ * reports it. */
+bool sn32f2xx_prime_timed_out(void);
+
+/* Scan-only, for a board's light sleep (dev builds, SN32F2XX_SLEEP_HOOKS):
+ * while on, the row ISR drives no LED and scans one key row per call at a
+ * longer period (SN32F2XX_SCAN_ONLY_TICKS), each key sampled every ~3.9 ms
+ * against the field's ~4.6. The ISR applies it at its next call, and the LED
+ * field resumes where it was when it ends. Only for a dark matrix: the
+ * caller's job. */
+void sn32f2xx_set_scan_only(bool on);
+bool sn32f2xx_scan_only_active(void);
+
+/* Deep sleep, for a board's, with interrupts locked (I-class): every LED
+ * output off and the row ISR stopped, the key columns left as inputs with
+ * pull-ups; and back. */
+void sn32f2xx_sleep_enterI(void);
+void sn32f2xx_sleep_exitI(void);
+
+/* The row interrupt's NVIC line, for the callers that hold it off: the clock
+ * chip's transaction (rtc/rtc.c) and the dev hold-off (rowisr_diag.c). The
+ * vector moves from CT16B1's to CT16B4's at stage 2 (D2), so nothing outside
+ * this driver names it. Holds NEST: the first hold disables the line and
+ * remembers whether it was enabled, the last release puts that back, so two
+ * holders overlapping never re-enable the line inside the other's hold.
+ * Both return the depth after the call (hold: 1 means the sole holder;
+ * release: 0 means the line is back as found). NVIC writes with their
+ * barriers; the caller holds the system lock or runs I-class. */
+uint8_t sn32f2xx_row_irq_hold(void);
+uint8_t sn32f2xx_row_irq_release(void);
+uint8_t sn32f2xx_row_irq_depth(void);
+uint8_t sn32f2xx_row_irq_number(void);   /* the IRQn, for a diagnostic's reply */
+
+#ifdef AK820_DEV_HOOKS
+/* Dev op 28 sub 4: while true the callback does its LED work and skips the
+ * key scan, so health page 4's callback metric with and without it
+ * attributes the scan's cost (stage 0b). The matrix is unsampled meanwhile. */
+extern volatile bool sn32f2xx_scan_skip;
+#endif
+
+/* Health hooks (health.c defines them; weak no-ops here). The ISR pair brackets
+ * the callback's body; input_note_row_scan() runs in the ISR on every key-row
+ * sample; input_note_consume() in the main loop before the locked copy. */
+void sn32f2xx_isr_enter_hook(void);
+void sn32f2xx_isr_exit_hook(void);
+void input_note_row_scan(uint8_t row);
+void input_note_consume(const matrix_row_t *raw, const matrix_row_t *fresh, uint8_t rows);

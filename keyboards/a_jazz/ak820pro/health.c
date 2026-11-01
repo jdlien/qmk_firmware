@@ -10,6 +10,7 @@
 #include "bluetooth/ch582f_ajazz.h"
 #include "loop_acct.h"     /* D1: the per-task attribution of each pass */
 #include "flash_stats.h"   /* C1: which writer each flash session belongs to */
+#include "rgb/rowisr.h"   /* the row ISR hooks' prototypes */
 
 /* Worst main-loop gap since boot, max-hold. Measured unconditionally: one
  * timer read and a compare per pass. The first 10 s are ignored -- boot

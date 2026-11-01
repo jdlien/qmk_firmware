@@ -26,7 +26,8 @@
 #include "overrun_diag.h"             /* HC_DEVHOOK ops 20-22 */
 #include "menu/menu_edit.h"           /* P1b: VIA and ops 4/5 as the edit's writers (C6) */
 #include "menu/profiles.h"            /* P5a: HC_PROFILES */
-#include "drivers/led/sn32f2xx.h"     /* scan-only, in sub 3's reply */
+#include "rgb/rowisr.h"     /* scan-only, in sub 3's reply */
+#include "rgb/rowisr_diag.h"          /* HC_DEVHOOK op 28: the row ISR rewrite's bench diagnostics */
 #include "menu/menu_glue.h"           /* HC_DEVHOOK op 27 */
 
 // Apply a 7-byte time payload to the RTC:
@@ -1366,6 +1367,9 @@ static void health_command(uint8_t *data, uint8_t length) {
                     break;
                 case 27:   /* the configuration menu (plans/CONFIG-MENU-BUILD-PLAN.md, "Op 27") */
                     if (length < 32 || !menu_op27(data)) data[0] = RTC_UNHANDLED;
+                    break;
+                case 28:   /* the row ISR rewrite's bench diagnostics (rgb/rowisr_diag.h) */
+                    if (length < 32 || !rowisr_diag_op28(data)) data[0] = RTC_UNHANDLED;
                     break;
                 default: data[0] = RTC_UNHANDLED; break;
             }

@@ -76,6 +76,16 @@ VPATH += menu
 # Board-local RGB effects (rgb_matrix_kb.inc): RAINFALL and DRIFT
 RGB_MATRIX_CUSTOM_KB = yes
 
+# The RGB matrix driver and the key matrix, board-local since stage 1 of the
+# row ISR rewrite (plans/ROW-ISR-PLAN.md, D1; 11-01): keyboard.json's "custom"
+# driver and CUSTOM_MATRIX = lite replace drivers/led/sn32f2xx.c and
+# quantum/matrix.c for this board. rgb/rowisr.c holds both; rowisr_diag.c
+# the bench's dev op 28 (empty in other builds).
+CUSTOM_MATRIX = lite
+SRC += rgb/rowisr.c
+SRC += rgb/rowisr_diag.c
+VPATH += rgb
+
 # Debounce: per-key deferred. NOT the QMK default (sym_defer_g), NOT eager.
 #
 # sym_defer_g's real defect is that its timer is GLOBAL: any key changing

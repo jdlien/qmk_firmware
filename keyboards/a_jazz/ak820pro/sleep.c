@@ -19,7 +19,7 @@
 #include "bluetooth/ch582f_ajazz.h"
 #include "watchdog.h"
 #include "health.h"
-#include "drivers/led/sn32f2xx.h"
+#include "rgb/rowisr.h"
 #include "overrun_diag.h"   /* dev: a UART overrun's context */
 
 /* The encoder driver's decoder state, read only (drivers/encoder/

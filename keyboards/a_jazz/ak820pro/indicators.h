@@ -48,5 +48,12 @@ void    indicators_load_saved(void);
 void pwm_tick_run(bool on);
 void pwm_tick_stopI(void);
 void pwm_tick_startI(void);
+bool pwm_tick_running(void);
+#ifdef AK820_DEV_HOOKS
+/* The bench's marker on Caps Lock's pin (rgb/rowisr_diag.c): on drives it
+ * high and pauses the tick's writes to it; off drives it low and lets the
+ * tick rewrite every pin. I-class or locked. */
+void indicators_marker(bool on);
+#endif
 /* Any indicator wants its LED lit (Caps, Win lock, charging). */
 bool indicators_any_lit(void);

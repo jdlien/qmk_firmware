@@ -10,7 +10,7 @@
 #include "battery.h"
 #include "sleep.h"
 #include "graphics/display.h"
-#include "drivers/led/sn32f2xx.h"
+#include "rgb/rowisr.h"
 
 /* The log follows the consolidated copy and its 8-byte hash (wear_leveling.c). */
 #define LOG_BYTES  ((WEAR_LEVELING_BACKING_SIZE) - (WEAR_LEVELING_LOGICAL_SIZE) - 8u)

@@ -21,6 +21,7 @@
 #include "bluetooth/ch582f_ajazz.h"
 #include "bt_ui.h"
 #include "rgb_effects.h"
+#include "rgb/rowisr.h"   /* sn32f2xx_pgm_scan, sn32f2xx_led_commits (the dev Write test); the custom driver's header is not pulled in by rgb_matrix.h */
 #include "indicators.h"
 #include "indicator_levels.h"
 #include "sleep.h"

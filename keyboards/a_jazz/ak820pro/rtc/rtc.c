@@ -16,7 +16,7 @@
 #include "../ak820pro.h"
 #include "../sleep.h"              /* the deep sleep's pass budget */
 #include "../overrun_diag.h"       /* dev: each transaction's kind and spans */
-#include "drivers/led/sn32f2xx.h"  /* the committed frame's dark: the PCF write's start */
+#include "rgb/rowisr.h"  /* the committed frame's dark: the PCF write's start */
 
 #include <time.h>
 
@@ -287,7 +287,9 @@ static void i2c_note(msg_t r, uint32_t sc0, uint32_t c0) {
  * disabled. NVIC_DisableIRQ has its barriers; never ChibiOS's vector
  * helpers, which clear the pending state. Dev builds can keep the old lock
  * (or the per-byte release) for the A/B. */
-static uint32_t i2c_row_irq_on;
+/* The row line's enable state is the driver's business since stage 1 of the
+ * row ISR rewrite (rgb/rowisr.h): holds nest there, so a dev hold-off
+ * overlapping this transaction cannot re-enable the line inside it. */
 
 void ak820_i2c_xfer_begin(void)
 {
@@ -296,8 +298,7 @@ void ak820_i2c_xfer_begin(void)
     od_mask_end();   /* the opening stretch, closed before the unlock: a partial
                       * span, excluding the NVIC writes and HAL's own state update */
 #endif
-    i2c_row_irq_on = NVIC->ISER[0] & (1u << CT16B1_IRQn);
-    NVIC_DisableIRQ(CT16B1_IRQn);
+    sn32f2xx_row_irq_hold();   /* the row ISR's line, wherever its vector is (rgb/rowisr.h) */
     chSysUnlock();
 }
 
@@ -307,7 +308,7 @@ void ak820_i2c_xfer_end(void)
     if (od_lock_mode() != OD_LOCK_UNLOCKED) return;
 #endif
     chSysLock();
-    if (i2c_row_irq_on) NVIC_EnableIRQ(CT16B1_IRQn);
+    sn32f2xx_row_irq_release();
 #ifdef AK820_DEV_HOOKS
     od_mask_begin();   /* the closing stretch, from after the row IRQ's restore */
 #endif

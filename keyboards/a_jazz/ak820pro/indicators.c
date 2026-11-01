@@ -8,6 +8,7 @@
 #include "bluetooth/ch582f_ajazz.h"   /* the module's battery level */
 #include "battery.h"                  /* battery_ran_from_pack */
 #include "overrun_diag.h"             /* dev: the interrupt-service-gap monitor rides this tick */
+#include "rgb/rowisr_diag.h"          /* dev: a row hold-off's countdown rides it too (op 28) */
 #include "kb_eeconfig.h"              /* the saved levels (P2a) */
 #include "watchdog_record.h"          /* the tick's counter reset that does not complete */
 #include <hal.h>
@@ -108,6 +109,21 @@ static volatile uint8_t  ind_force = 0;
  * its bit changes, or all three after a restart (ind_pins_to_write). */
 static uint16_t ind_acc_locks, ind_acc_chg;
 static uint8_t  ind_last_out = IND_OUT_UNKNOWN;
+#ifdef AK820_DEV_HOOKS
+/* The bench's marker (rgb/rowisr_diag.c): Caps Lock's pin held high for a
+ * measured hold, this tick's writes to it paused meanwhile. The release
+ * forgets the last output, so the next tick writes every pin and the LED
+ * comes back as its state says. I-class or locked, as the caller is. */
+static volatile bool ind_marker = false;
+void indicators_marker(bool on) {
+    ind_marker = on;
+    gpio_write_pin(LED_CAPS_LOCK_PIN, on);
+    if (!on) ind_last_out = IND_OUT_UNKNOWN;
+}
+#    define IND_MARKER_HELD() ind_marker
+#else
+#    define IND_MARKER_HELD() false
+#endif
 
 static void indicators_tick(void) {
     const uint8_t out = ind_tick_out(ind_caps, ind_winlock, ind_charging, ind_force, &ind_acc_locks, &ind_acc_chg,
@@ -115,7 +131,7 @@ static void indicators_tick(void) {
     const uint8_t ch  = ind_pins_to_write(out, ind_last_out);
     if (!ch) return;
     ind_last_out = out;
-    if (ch & 1u) gpio_write_pin(LED_CAPS_LOCK_PIN, (out & 1u) != 0u);
+    if ((ch & 1u) && !IND_MARKER_HELD()) gpio_write_pin(LED_CAPS_LOCK_PIN, (out & 1u) != 0u);
     if (ch & 2u) gpio_write_pin(LED_WINLOCK_PIN, (out & 2u) != 0u);
     if (ch & 4u) gpio_write_pin(LED_CHARGING_PIN, (out & 4u) != 0u);
 }
@@ -155,6 +171,7 @@ static void pwm_tick_cb(GPTDriver *gptp) {
     (void)gptp;
 #ifdef AK820_DEV_HOOKS
     od_tick();   /* first, so the gap is this entry's */
+    rowisr_diag_tick();   /* a row hold-off's countdown and release (op 28) */
 #endif
     display_backlight_tick();
     indicators_tick();
@@ -202,6 +219,7 @@ static void pwm_tick_pins_offI(void) {
 
 void pwm_tick_stopI(void) {
     if (pwm_tick_stopped) return;
+    rowisr_diag_cancelI();   /* dev: a row hold-off or scan skip timed by this tick ends now, the line released, the marker dropped (op 28) */
     gptStopTimerI(&GPTD4);
     /* The LLD's stop leaves a latched match (its IC write is a
      * read-modify-write of a write-only register; codex): clear it here and
@@ -258,6 +276,10 @@ void pwm_tick_run(bool on) {
     chSysLock();
     if (on) pwm_tick_startI(); else pwm_tick_stopI();
     chSysUnlock();
+}
+
+bool pwm_tick_running(void) {
+    return !pwm_tick_stopped;
 }
 
 bool indicators_any_lit(void) {

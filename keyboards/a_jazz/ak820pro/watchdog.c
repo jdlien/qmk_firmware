@@ -33,6 +33,7 @@
 #include <hal.h>
 #include "watchdog.h"
 #include "watchdog_record.h"
+#include "rgb/rowisr.h"   /* sn32f2xx_quiesce(): the LEDs off before the bootloader (D7) */
 
 #if HAL_USE_WDG
 
@@ -125,6 +126,7 @@ bool    watchdog_running(void)       { return wdg_running && !degraded_mode; }
  * Whether it survives is unverified on this part -- stopping it first is
  * correct either way. Magic/address must stay in sync with sn32_dfu.c. */
 void bootloader_jump(void) {
+    sn32f2xx_quiesce();   /* every route (Bootmagic, Fn+Esc, the raw-HID jump): the row ISR off, the timers stopped, every LED pin high-impedance, so the bootloader stays dark */
     watchdog_stop();
     *(volatile uint32_t *)(WDT_RAM_TOP - 4u) = 0xDEADBEEFu;
     wait_us(1);
