@@ -246,6 +246,10 @@ static void flash_command(uint8_t *data, uint8_t length) {
 
     switch (cmd) {
         case FC_INFO: {
+            /* The chip ignores JEDEC ID (0x9F) mid-program or mid-erase too,
+             * and the id would be floating bytes (codex on F-044's fix); both
+             * info clients re-send on FS_BUSY. */
+            if (flash_busy()) { data[3] = FS_BUSY; return; }
             uint32_t id = flash_jedec_id();
             data[3] = FS_OK;
             data[4] = (uint8_t)(id >> 16); data[5] = (uint8_t)(id >> 8); data[6] = (uint8_t)id;
