@@ -182,9 +182,18 @@ static uint8_t rd8(uint8_t off) {
     rd(off, &b, 1);
     return b;
 }
+/* The latch, with a failure anywhere in the store since the boot latched into
+ * it (env_store_failed(): a consolidation's, a VIA write's): the cache may hold
+ * bytes the flash does not, so no owner or magic is published and no flip
+ * settles over it until a reboot (codex's third verify of the 10-31 audit:
+ * one between a restore's flush and its commit escaped). */
+static bool latched(void) {
+    if (!(tx_state & TX_FAILED) && env_store_failed()) tx_state |= TX_FAILED;
+    return (tx_state & TX_FAILED) != 0u;
+}
 /* One write of exactly those bytes: false when it failed. */
 static bool wr_at(uint16_t addr, const void *src, uint8_t n, bool *consolidated) {
-    if (tx_state & TX_FAILED) return false;
+    if (latched()) return false;
     uint8_t s = env_prof_write(addr, src, n);
     if (s == ENV_WR_CONSOLIDATED) *consolidated = true;
     if (s == ENV_WR_FAILED) tx_state |= TX_FAILED;
@@ -299,7 +308,7 @@ static bool format(bool *consolidated) {
  * are, and a Load, a Save or an apply would go by it (codex, the 10-31
  * audit's review). */
 static uint8_t writable(void) {
-    if (tx_state & TX_FAILED) return PROF_WRITE_FAILED;
+    if (latched()) return PROF_WRITE_FAILED;
     return env_recovering() || prof_restore_open() || (side & SD_BOOT) ? PROF_BUSY : PROF_OK;
 }
 
@@ -313,7 +322,7 @@ static bool flush_settings(void) {
     return false;
 }
 
-bool prof_write_failed(void) { return (tx_state & TX_FAILED) != 0u; }
+bool prof_write_failed(void) { return latched(); }
 
 /* --- The effect's stable id (rgb_effects.c, append-only) ---------------------- */
 
@@ -872,7 +881,7 @@ bool prof_hid(uint8_t *d) {
             tx_close();
             side &= (uint8_t)~SD_PEND;   /* the restore's active byte wins */
             tx_state |= TX_CHANGED;
-            if (tx_state & TX_FAILED) {
+            if (latched()) {
                 d[6] = PROF_WRITE_FAILED;
                 return true;
             }

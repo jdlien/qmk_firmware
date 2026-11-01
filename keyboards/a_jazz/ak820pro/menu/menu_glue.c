@@ -278,8 +278,9 @@ uint8_t env_wt_frames(void) { return sn32f2xx_led_commits(); }
 bool env_settings_flush(void) {
     kb_eeconfig_flush();
     eeconfig_force_flush_rgb_matrix();
-    return wear_leveling_failures() == 0u;
+    return !env_store_failed();
 }
+bool env_store_failed(void) { return wear_leveling_failures() != 0u; }
 void env_settings_touch(void) { kb_eeconfig_touch(); }
 bool env_settings_pending(void) { return kb_eeconfig_write_pending(); }
 bool        env_effect_two_tone(uint8_t mode) {
