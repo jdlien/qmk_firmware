@@ -2022,8 +2022,9 @@ void ch582_task(void) {
         eventflags_t f = uart_err_poll();
 #ifdef AK820_DEV_HOOKS
         /* An error latches in raw81 until the line is silent, and aborts a
-         * collection under way; so does a collection past its lifetime. */
-        raw81_poll(&r81, f != 0, (uint16_t)chVTGetSystemTimeX(), RAW81_LIFETIME_TICKS);
+         * collection under way; a collection past its lifetime goes at an
+         * empty read, below (F-031). */
+        raw81_poll(&r81, f != 0);
 #else
         (void)f;
 #endif
@@ -2072,7 +2073,7 @@ void ch582_task(void) {
              * too, so it cannot hold the pump's judgment forever (R4-1, R5-1). */
             drained         = true;
             uint16_t now_tk = (uint16_t)chVTGetSystemTimeX();
-            if (raw81_empty(&r81, now_tk, RAW81_SILENCE_TICKS)) {
+            if (raw81_empty(&r81, now_tk, RAW81_SILENCE_TICKS, RAW81_LIFETIME_TICKS)) {
                 b2 = b1 = b0 = 0;
             } else if ((b0 == 0x61 || (b1 == 0x61 && b0 == 0x0D)) && r81.state != RAW81_COLLECT &&
                        (uint16_t)(now_tk - r81.last_tick) >= RAW81_SILENCE_TICKS) {

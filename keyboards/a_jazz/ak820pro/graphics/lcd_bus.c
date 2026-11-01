@@ -1305,6 +1305,10 @@ bool lcd_blit_wait(void) {
      * this to drain the DMA, and rtc_bus_guard() marks I2C and does the same.
      * An unconditional store here made every flash stall report as "blit",
      * which sent the first phase-1 measurement chasing the wrong subsystem. */
+    /* Nothing in flight, nothing to wait for and no mark: a pass that only
+     * looked would read as a blit stall (the 10-31 audit, F-039), as
+     * bus_quiesce() already knows. */
+    if (blit_done) return true;
     if (loop_stall_mark == LOOP_MARK_NONE) loop_stall_mark = LOOP_MARK_BLIT;
     /* PHASE 1 -- did the transfer start? Progress is CURCNT, not DMACNT:
      * DMACNT holds the programmed length throughout (measured 2026-09-23).

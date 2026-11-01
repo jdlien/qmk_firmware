@@ -136,7 +136,8 @@ static uint8_t  loop_gap_max_mark = LOOP_MARK_NONE;
 static uint8_t  last_mark = LOOP_MARK_NONE;
 
 void health_loop_tick(void) {
-    static uint32_t last = 0;
+    static uint32_t last    = 0;
+    static bool     settled = false;   /* latched: the 49.7-day wrap is no boot (the 10-31 audit, F-040) */
     uint32_t now = timer_read32();
     watchdog_record_uptime(now); /* reuse this timer read; no per-scope timers */
 
@@ -147,10 +148,13 @@ void health_loop_tick(void) {
     loop_stall_mark = LOOP_MARK_NONE;
     flash_stats_pass();
 
-    if (now < HEALTH_SETTLE_MS) {
-        last = now;
-        loop_acct_discard();   /* boot's scope time is not the first counted pass's */
-        return;
+    if (!settled) {
+        if (now < HEALTH_SETTLE_MS) {
+            last = now;
+            loop_acct_discard();   /* boot's scope time is not the first counted pass's */
+            return;
+        }
+        settled = true;
     }
     uint32_t gap = now - last;
     last = now;

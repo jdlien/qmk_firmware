@@ -1277,7 +1277,7 @@ static void health_command(uint8_t *data, uint8_t length) {
                         /* The long clock across a stall of [5] x 100 ms (at
                          * most 5 s). Reply: 4, the ticks it moved (u32), the
                          * ticks a second (u32). */
-                        uint16_t ms = (uint16_t)(data[5] * 100u);
+                        uint16_t ms = (uint16_t)((data[5] > 50u ? 50u : data[5]) * 100u);   /* clamped: 25.5 s outran the watchdog (the audit's loose ends) */
                         uint32_t d  = ch582_raw81_stall(ms), hz = CH_CFG_ST_FREQUENCY;
                         memset(&data[4], 0, 28);
                         data[4] = 4;

@@ -1202,6 +1202,7 @@ void draw_clock(void) {
          * display_set_playback() sets on every ownership change. */
         draw_playback();
         clock_force_repaint = false;
+        clock_relayout      = false;   /* every way the readout ends forces a repaint, in the mode then (F-037) */
         return;
     }
     bool cleared = clock_force_repaint;
@@ -2641,6 +2642,12 @@ static void conn_status_update(void) {
         changed   = true;
     }
     if (changed) band_gen[BAND_LINK]++;   /* even while hidden: first painted later */
+    /* The pair bar shares conn_status_buf with the formatted link messages, and
+     * a state change during the hold is used up under it: when the hold ends,
+     * a link message formatted into the buffer has the same pointer, so it is
+     * repainted on this alone (the 10-31 audit, F-036: the bar stayed up to
+     * 1.5 s). */
+    bool was_pair = conn_status_kind == BAND_PAIR;
 
     const char *want = NULL;
 
@@ -2786,7 +2793,7 @@ static void conn_status_update(void) {
 
     /* Pointer compare covers the literals; `changed` covers the formatted
      * buffer, whose pointer is stable while its contents are not. */
-    if (want != conn_status_str || (changed && want == conn_status_buf)) {
+    if (want != conn_status_str || ((changed || was_pair) && want == conn_status_buf)) {
         conn_status_str = want;
         text_dirty      = true;   /* overlay appeared, changed, or was released */
     }

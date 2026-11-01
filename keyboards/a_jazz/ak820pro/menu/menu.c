@@ -195,6 +195,14 @@ _Static_assert(sizeof batt_rows == BATT_NOTE_ROW0 && BATT_NOTE_ROW0 + 3u == ROWS
  * on battery, and a note under it says why the hours don't show yet. Read
  * live: the rows' signatures follow the text (row_sig), so a change repaints
  * them without anything stored. */
+static bool batt_hours_ready(const env_batt_t *b);
+/* The readout's class: the hours ready, the level unknown ("--"), the level
+ * 0 on battery ("Low"). The Battery page repaints its rows whole when it
+ * changes: "3%" and "--" hash to one signature (the 10-31 audit, F-038), and
+ * the hours' readiness alone missed that. */
+static uint8_t batt_class(const env_batt_t *b) {
+    return (uint8_t)((batt_hours_ready(b) ? 1u : 0u) | (b->pct > 100u ? 2u : 0u) | (b->pct == 0u && b->on_battery ? 4u : 0u));
+}
 static bool batt_hours_ready(const env_batt_t *b) {
     return b->on_battery && b->avg_minutes >= 60u && b->left_min != 0xFFFFu;
 }
@@ -387,7 +395,7 @@ static union {
         uint8_t    st;     /* CK_* */
     } clk;
     char name[PROF_NAME];   /* P5c: Rename's name, NUL-padded, its length strnlen()'s */
-    uint8_t batt_ready;     /* Both: batt_hours_ready() last seen, for menu_tick() */
+    uint8_t batt_class;     /* batt_class() last seen, for menu_tick() */
     struct {                /* 10-27, dev: the write test's */
         uint8_t  left;      /* Ten writes: still to come */
         uint8_t  dim;       /* Dim + cleanup: 1 waiting for the cap, 2 for its frames on the LEDs */
@@ -2271,6 +2279,9 @@ void menu_open(uint32_t now) {
 }
 
 void menu_return_from_diag(uint32_t now) {
+#ifdef MENU_WTEST
+    menu_wtest_closed();   /* the write test's dim never outlives the page that set it, Fn+D's round trip included (F-043) */
+#endif
     depth        = 0;
     last_idle    = 0;
     flash_id     = 0;
@@ -2527,7 +2538,7 @@ static menu_result_t activate(uint32_t now) {
                  * signature the new text's hashes to (codex, Both's fix). */
                 env_batt_t b;
                 env_batt_facts(&b);
-                pg.batt_ready = batt_hours_ready(&b) ? 1u : 0u;
+                pg.batt_class = batt_class(&b);
                 ms_invalidate_rows(S_ROW0 + 1u, ROWS - 1u);
             }
             push(node, saved_row(node));
@@ -3014,16 +3025,16 @@ void menu_tick(uint32_t now, uint32_t idle_ms) {
             ms_invalidate_rows(S_ROW0 + 1u, CLOCK_EXAMPLES);
         }
     }
-    /* The Battery page: the hours turning ready, or not, repaint its rows
-     * whole, as the Clock's jump does. The signatures are hashes, and Both's
-     * "80% --" and "80% 57h" collide (codex, Both's review), where nothing
-     * else would change for up to an hour. */
+    /* The Battery page: the readout's class changing (batt_class()) repaints
+     * its rows whole, as the Clock's jump does. The signatures are hashes, and
+     * Both's "80% --" and "80% 57h" collide (codex, Both's review), where
+     * nothing else would change for up to an hour. */
     if (cur()->node == N_BATT) {
         env_batt_t b;
         env_batt_facts(&b);
-        uint8_t ready = batt_hours_ready(&b) ? 1u : 0u;
-        if (ready != pg.batt_ready) {
-            pg.batt_ready = ready;
+        uint8_t k = batt_class(&b);
+        if (k != pg.batt_class) {
+            pg.batt_class = k;
             ms_invalidate_rows(S_ROW0 + 1u, ROWS - 1u);
         }
     }

@@ -188,7 +188,9 @@ void menu_ops_task(uint32_t now) {
      * P5e: a profile's preview is no edit: the 60 s (codex: it held the
      * menu, and a deep sleep, for three minutes). */
     bool     editing = me_active() && me_field() != ME_PROFILE && me_field() != ME_FONT;   /* 10-28: the Font page's, the 60 s too */
-    uint32_t limit   = (editing || (menu_kind == MK_MENU && menu_long_wait())) ? MI_BACKSTOP_MS : MI_IDLE_MS;
+    /* The Pairing page's while it shows: Fn+D's debug page over it keeps the 60 s (F-042). */
+    uint32_t limit   = (editing || (menu_kind == MK_MENU && po_owner() == PANEL_MENU && menu_long_wait())) ? MI_BACKSTOP_MS
+                                                                                                         : MI_IDLE_MS;
     if ((int32_t)(now - mi_last_input()) >= (int32_t)limit) (void)env_po_event(PO_EV_CLOSE);
 }
 

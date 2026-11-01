@@ -77,6 +77,7 @@ typedef struct {
     uint8_t       len;
     uint16_t      start_tick;  /* when the collection began, in the caller's 16-bit ticks */
     uint16_t      last_tick;   /* the last byte, in the caller's 16-bit ticks */
+    uint16_t      empty_tick;  /* the collection's last empty read: its age is judged there (F-031) */
     /* the session: none after a reset or a link change */
     bool          have_session;
     uint8_t       session;
@@ -100,20 +101,26 @@ void raw81_reset(raw81_rx_t *rx);
 void raw81_link_lost(raw81_rx_t *rx);
 
 /* At a drain's start: latch a UART error (any state) and abort a collection
- * that saw one or outlived lifetime_ticks. Ticks, not ms: the caller's
- * millisecond clock is a software 64-bit divide on the M0, and this runs every
- * pass; the 16-bit tick's wrap (~0.35 s) is far past any lifetime here. */
-void raw81_poll(raw81_rx_t *rx, bool uart_err, uint16_t now_tick, uint16_t lifetime_ticks);
+ * that saw one. Not its lifetime, which the queue's empty reads judge: the
+ * module's bytes may be waiting in the queue behind a long pass of the
+ * board's own, and a frame aborted here lost them to the quarantine (the
+ * 10-31 audit, F-031). */
+void raw81_poll(raw81_rx_t *rx, bool uart_err);
 /* One byte from the module, before the window sees it. */
 raw81_feed_t raw81_byte(raw81_rx_t *rx, uint8_t c, uint16_t now_tick);
 /* After the window processed a byte raw81_byte() returned TO_WINDOW for:
  * a boundary only right after a frame or ACK it completed. */
 void raw81_window_done(raw81_rx_t *rx, bool matched);
-/* The input queue is empty: true when that ended a quarantine (the caller
- * clears the window), after silence_ticks of no bytes. */
-bool raw81_empty(raw81_rx_t *rx, uint16_t now_tick, uint16_t silence_ticks);
-/* 34 bytes are in: check the taint, the lifetime, the sum, the envelope, the
- * session, the freshness and the allow-list. */
+/* The input queue is empty: a collection lifetime_ticks old by now is
+ * aborted (the module stalled mid-frame: nothing of it was waiting); true
+ * when this ended a quarantine (the caller clears the window), after
+ * silence_ticks of no bytes. Ticks, not ms: the caller's millisecond clock is
+ * a software 64-bit divide on the M0, and this runs every pass; the 16-bit
+ * tick's wrap (~0.35 s) is far past any lifetime here. */
+bool raw81_empty(raw81_rx_t *rx, uint16_t now_tick, uint16_t silence_ticks, uint16_t lifetime_ticks);
+/* 34 bytes are in: check the taint, the lifetime (its age at the collection's
+ * last empty read), the sum, the envelope, the session, the freshness and the
+ * allow-list. */
 /* now_long and idle_long are the caller's elapsed-time count, used only for
  * the session's idle: another session waits until idle_long has passed since
  * the last admission. */

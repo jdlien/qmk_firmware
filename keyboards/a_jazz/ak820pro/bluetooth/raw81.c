@@ -77,11 +77,9 @@ static void abort_to(raw81_rx_t *rx, uint32_t *why) {
     rx->boundary = false;
 }
 
-void raw81_poll(raw81_rx_t *rx, bool uart_err, uint16_t now_tick, uint16_t lifetime_ticks) {
+void raw81_poll(raw81_rx_t *rx, bool uart_err) {
     if (uart_err) rx->tainted = true;   /* remembered until the line is silent */
-    if (rx->state != RAW81_COLLECT) return;
-    if (uart_err) abort_to(rx, &rx->taint);
-    else if ((uint16_t)(now_tick - rx->start_tick) >= lifetime_ticks) abort_to(rx, &rx->lifetime);
+    if (rx->state == RAW81_COLLECT && uart_err) abort_to(rx, &rx->taint);
 }
 
 raw81_feed_t raw81_byte(raw81_rx_t *rx, uint8_t c, uint16_t now_tick) {
@@ -101,6 +99,7 @@ raw81_feed_t raw81_byte(raw81_rx_t *rx, uint8_t c, uint16_t now_tick) {
         rx->buf[0]   = c;
         rx->len      = 1;
         rx->start_tick = now_tick;
+        rx->empty_tick = now_tick;
         if (rx->tainted) abort_to(rx, &rx->taint);   /* a burst already known corrupt */
         else rx->state = RAW81_COLLECT;
         return RAW81_STARTED;
@@ -112,10 +111,17 @@ void raw81_window_done(raw81_rx_t *rx, bool matched) {
     rx->boundary = matched;
 }
 
-bool raw81_empty(raw81_rx_t *rx, uint16_t now_tick, uint16_t silence_ticks) {
-    /* A collection is judged only by its lifetime, never by silence. A stale
-     * stamp (older than the tick's wrap) only under-measures the silence. */
-    if (rx->state == RAW81_COLLECT) return false;
+bool raw81_empty(raw81_rx_t *rx, uint16_t now_tick, uint16_t silence_ticks, uint16_t lifetime_ticks) {
+    /* A collection is judged only by its lifetime, never by silence, and here,
+     * with nothing of it waiting (F-031). A stale stamp (older than the tick's
+     * wrap) only under-measures the silence. */
+    if (rx->state == RAW81_COLLECT) {
+        if ((uint16_t)(now_tick - rx->start_tick) < lifetime_ticks) {
+            rx->empty_tick = now_tick;
+            return false;
+        }
+        abort_to(rx, &rx->lifetime);   /* then the silence, as any quarantine's */
+    }
     if ((uint16_t)(now_tick - rx->last_tick) < silence_ticks) return false;
     bool ended    = rx->state == RAW81_QUARANTINE;
     rx->state     = RAW81_IDLE;
@@ -131,7 +137,10 @@ raw81_verdict_t raw81_commit(raw81_rx_t *rx, bool uart_err, uint16_t now_tick, u
         abort_to(rx, &rx->taint);
         return RAW81_V_TAINT;
     }
-    if ((uint16_t)(now_tick - rx->start_tick) >= lifetime_ticks) {
+    /* Its age at its last empty read: bytes drained since were waiting in the
+     * queue, so a long pass of the board's own is no age of the frame's (F-031). */
+    (void)now_tick;
+    if ((uint16_t)(rx->empty_tick - rx->start_tick) >= lifetime_ticks) {
         abort_to(rx, &rx->lifetime);
         return RAW81_V_LIFETIME;
     }

@@ -34,9 +34,11 @@
 #define RTC_PERIOD_SANE_MAX   40000u
 
 /* Pure, for the host tests: save `cand` now? `stored` is the EEPROM's value;
- * `last_save_ms` is the uptime of this boot's last save, 0 for none (the gap
- * then counts from boot). A cand outside the sane window (0: none) never is. */
-bool rtc_persist_due(uint32_t now_ms, uint16_t stored, uint16_t cand, uint32_t last_save_ms);
+ * `now_ms` the uptime, 64-bit so the 49.7-day wrap of QMK's timer is no new
+ * boot (the 10-31 audit, F-040); `last_save_ms` the uptime of this boot's
+ * last save, 0 for none (the gap then counts from boot). A cand outside the
+ * sane window (0: none) never is. */
+bool rtc_persist_due(uint64_t now_ms, uint16_t stored, uint16_t cand, uint64_t last_save_ms);
 
 /* A correction path accepted `period` (FLASH_RTC_PATH_SOF or _PCF). Counted as
  * a proposal (HC_FLASHW); kept as the candidate if sane. Never writes. */

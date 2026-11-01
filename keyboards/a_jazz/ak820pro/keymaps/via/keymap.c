@@ -70,6 +70,13 @@ bool dip_switch_update_user(uint8_t index, bool active) {
     if (index == 0) {
         if (active) {
             set_single_persistent_default_layer(WINBASE);
+            /* The Mac side clears the GUI lock in RAM only: Windows takes the
+             * saved one back, so RAM and the EEPROM agree, and a reboot or the
+             * next Fn+Left GUI does what the lock showed (the 10-31 audit,
+             * F-029). */
+            keymap_config_t saved;
+            eeconfig_read_keymap(&saved);
+            keymap_config.no_gui = saved.no_gui;
         } else {
             set_single_persistent_default_layer(MACBASE);
             keymap_config.no_gui = false;

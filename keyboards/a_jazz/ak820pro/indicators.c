@@ -338,8 +338,11 @@ bool battery_is_absent(void) {
      * that is there cannot call it missing; no estimate yet (0xFF) is also no
      * verdict. */
     if (battery_5c_rounded() != 0) return false;
-    /* Boot: give the charger time to assert before calling it missing. */
-    return timer_read32() >= CELL_GRACE_MS;
+    /* Boot: give the charger time to assert before calling it missing.
+     * Latched, so the 49.7-day wrap is no boot (the 10-31 audit, F-040). */
+    static bool graced = false;
+    if (!graced) graced = timer_read32() >= CELL_GRACE_MS;
+    return graced;
 }
 
 /* Lock states for the LCD indicator band. Caps and Scroll are host-reported (and

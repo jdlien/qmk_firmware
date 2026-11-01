@@ -310,12 +310,14 @@ static bool     lg_c5_saturated = false;
 /* The estimate counts c5_ring[0 .. c5_count-1] through c5_hist, so the ring,
  * its write position and the counts restart together: resuming at the old
  * c5_pos would evict forgotten reports' counts that are no longer there. */
+static uint8_t below_run;   /* the ratchet's run (defined below): an estimate forgotten ends it */
 static void c5_forget(void) {
     c5_count    = 0;
     c5_pos      = 0;
     memset(c5_hist, 0, sizeof(c5_hist));
     c5_est      = C5_EST_NONE;
     c5_zero_run = 0;
+    below_run   = 0;   /* the 10-31 audit, F-021: a run from before a sleep's wake held its old target */
 }
 
 static bool c5_fresh(void) {
@@ -1141,7 +1143,7 @@ static void level_report(uint16_t m) {
         if (below_run == 0 || target > below_best) below_best = target;
         if (++below_run < STEP_DOWN_MEDIANS) return;
         below_run = 0;
-        level_toward(below_best);
+        if (below_best < level) level_toward(below_best);   /* down only: level_toward() moves both ways (F-021) */
         count_rebase();
         return;
     }

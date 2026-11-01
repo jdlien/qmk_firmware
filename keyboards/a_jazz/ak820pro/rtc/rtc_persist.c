@@ -8,10 +8,11 @@
 
 static uint16_t cand;            /* the latest accepted period, 0 for none this boot */
 static uint8_t  cand_path;
-static uint32_t last_save_ms;    /* this boot's last save, 0 for none */
+static uint64_t last_save_ms;    /* this boot's last save, 0 for none */
 static uint32_t last_check_ms;
+static uint64_t up_ms;           /* the uptime, from the timer's steps (awake: QMK's timer stops asleep) */
 
-bool rtc_persist_due(uint32_t now_ms, uint16_t stored, uint16_t c, uint32_t last_ms) {
+bool rtc_persist_due(uint64_t now_ms, uint16_t stored, uint16_t c, uint64_t last_ms) {
     if (c < RTC_PERIOD_SANE_MIN || c > RTC_PERIOD_SANE_MAX) return false;
     if (now_ms < RTC_PERSIST_FIRST_MS) return false;
     if (stored < RTC_PERIOD_SANE_MIN || stored > RTC_PERIOD_SANE_MAX) return true;   /* nothing stored */
@@ -31,9 +32,10 @@ void rtc_persist_propose(uint16_t period, uint8_t path) {
 void rtc_persist_task(void) {
     uint32_t now = timer_read32();
     if (now - last_check_ms < RTC_PERSIST_CHECK_MS) return;
+    up_ms += now - last_check_ms;
     last_check_ms = now;
-    if (!rtc_persist_due(now, kb_eeconfig_get_rtc_period(), cand, last_save_ms)) return;
+    if (!rtc_persist_due(up_ms, kb_eeconfig_get_rtc_period(), cand, last_save_ms)) return;
     kb_eeconfig_set_rtc_period(cand);   /* coalesced and deferred by kb_eeconfig */
     flash_stats_rtc_store(cand, cand_path);
-    last_save_ms = now;
+    last_save_ms = up_ms;
 }
