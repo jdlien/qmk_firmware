@@ -236,9 +236,10 @@ static uint8_t key_row = 0;
  * moves it to INVALID (nothing silences every interrupt that long; such a
  * reading may be a wrap's remainder); deep sleep, degraded mode and the dev
  * lock mode hold it INVALID while they last (exclusions); every transition to
- * INVALID bumps the loss generation; INVALID becomes VALID only by a re-prime
- * while no exclusion is active. Each observation is a critical section of a
- * few instructions. */
+ * INVALID bumps the loss generation, and so does every later discard of
+ * time while INVALID (a re-prime refused for its own gap); INVALID becomes
+ * VALID only by a re-prime whose gap passes the guard, while no exclusion
+ * is active. Each observation is a critical section of a few instructions. */
 /* The frame counter's freshness (below, "The USB frame counter"): FRMNO's
  * last seen value and the extension's time then, tracked by both observers
  * while the extension runs; staled wherever the extension discards time
@@ -282,8 +283,14 @@ static inline void time_observeI(void) {
             if (gap >= EPOCH_INVALID_GAP) {   /* ... but a guarded observation itself: an unguarded residue (a long silence's wrap
                                                * remainder) must not enter the extension, where it could age the frames' recovery
                                                * out as if 8 ms had passed without a frame (the fifth verify review's 1); more
-                                               * time is discarded here, so the frames' baseline is taken anew, and the next
-                                               * observation, a short gap on, re-primes */
+                                               * time is discarded here, so the generation moves (a baseline a consumer adopted
+                                               * while INVALID must not stay continuous across it: the sixth verify review's 1;
+                                               * the handler counts at most one loss per entry, so a sleep stays one loss and a
+                                               * second silence counts as the second it is), the frames' baseline is taken anew,
+                                               * and the next observation, a short gap on, re-primes */
+                time_gen++;
+                time_last_gap = gap;
+                time_guard_rejects++;
                 frm_staleI();
                 return;
             }
