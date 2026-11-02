@@ -141,10 +141,11 @@ void rowisr_diag_tick(void) {   /* ISR context, priority 2: above the row interr
  * Armed here, fired by the housekeeping task once its delay has passed, so
  * this op's reply has reached the host first: under the system lock (PRIMASK
  * on this core: every interrupt), the marker on the Win Lock LED's pin C15
- * raised by one store, a spin on CT16B5's TC with its wraps counted (polled
- * every few cycles, far inside the 349.5 ms wrap), the marker lowered by one
- * store, the lock released; the bookkeeping lies outside the mask (the
- * review's P2 5). The length the spin measured, in CT16B5 ticks, the TC at
+ * raised (a load of the pin, a branch and a store after the mask), a spin on
+ * CT16B5's TC with its wraps counted (polled every few cycles, far inside
+ * the 349.5 ms wrap), the marker lowered by one store, the lock released;
+ * the state checks and the bookkeeping lie outside the mask (the review's
+ * P2 5; the disassembly checked). The length the spin measured, in CT16B5 ticks, the TC at
  * each edge and the extension's reading before and 200 us after (its time,
  * generation and validity, through rowisr_time_read) are the report (sub 8);
  * the marker's edges on the witness are the timing. 1,000..8,000,000 us
@@ -185,14 +186,19 @@ static void silence_run(void) {   /* the housekeeping task: thread context */
     uint32_t ext0, gen0;
     uint8_t  valid0;
     rowisr_time_read(&ext0, &gen0, &valid0);
-    chSysLock();
-    if (lock_state_gui() || (indicator_forced() & 1u) || gpio_read_pin(LED_WINLOCK_PIN)) {   /* no rising edge to mark */
+    if (lock_state_gui() || (indicator_forced() & 1u)) {   /* lit or previewed since the arm: no clean rising edge to mark */
         sil_us = 0;
         sil_lost++;
-        chSysUnlock();
         return;
     }
-    gpio_write_pin_high(LED_WINLOCK_PIN);   /* the marker's rising edge: one store after the mask */
+    chSysLock();
+    if (gpio_read_pin(LED_WINLOCK_PIN)) {   /* the pin itself, under the mask (the tick could have raised it since the check above) */
+        chSysUnlock();
+        sil_us = 0;
+        sil_lost++;
+        return;
+    }
+    gpio_write_pin_high(LED_WINLOCK_PIN);   /* the marker's rising edge: a load, a branch and a store after the mask */
     uint16_t tc0  = (uint16_t)ct_rd(5, CT_TC);
     uint16_t last = tc0;
     uint32_t acc  = 0;
