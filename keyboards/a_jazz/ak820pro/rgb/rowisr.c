@@ -237,9 +237,12 @@ static uint8_t key_row = 0;
  * reading may be a wrap's remainder); deep sleep, degraded mode and the dev
  * lock mode hold it INVALID while they last (exclusions); every transition to
  * INVALID bumps the loss generation, and so does every later discard of
- * time while INVALID (a re-prime refused for its own gap); INVALID becomes
- * VALID only by a re-prime whose gap passes the guard, while no exclusion
- * is active. Each observation is a critical section of a few instructions. */
+ * time while INVALID (a re-prime refused for its own gap, an exclusion's
+ * entry while already INVALID, an exclusion's end): wherever time is
+ * discarded the generation moves, so no consumer baseline stays continuous
+ * across it; INVALID becomes VALID only by a re-prime whose gap passes the
+ * guard, while no exclusion is active. Each observation is a critical
+ * section of a few instructions. */
 /* The frame counter's freshness (below, "The USB frame counter"): FRMNO's
  * last seen value and the extension's time then, tracked by both observers
  * while the extension runs; staled wherever the extension discards time
@@ -317,11 +320,11 @@ static inline void time_observeI(void) {
  * because they counted the silence, stay trusted (the second verify
  * review's new P1: staling them made the next interval a false rejection). */
 static inline void time_invalidateI(bool stale_frames) {
-    if (time_valid) {
-        time_valid = 0;
-        time_gen++;
-        if (stale_frames) frm_staleI();
-    }
+    time_valid = 0;   /* unconditionally: an exclusion entered while already INVALID discards more time, so the generation
+                       * moves again, and a baseline a consumer adopted meanwhile cannot stay continuous across it (the
+                       * seventh verify review's 1); the handler counts at most one loss per entry, whatever the count of bumps */
+    time_gen++;
+    if (stale_frames) frm_staleI();
 }
 
 /* FRMNO tracked by both observers, so a row-only hold the tick keeps VALID
@@ -354,7 +357,12 @@ void rowisr_time_exclude(uint8_t bit, bool on) {   /* thread context: degraded m
     } else {
         uint8_t was = time_excl;
         time_excl &= (uint8_t)~bit;
-        if (was != 0 && time_excl == 0) frm_staleI();   /* an exclusion really ended: the re-prime that follows adds only the gap since the last stamp, the excluded time is discarded here (not on clearing a clear mask: the fourth verify review's 4) */
+        if (was != 0 && time_excl == 0) {   /* an exclusion really ended (not a clear mask cleared again: the fourth verify review's 4): the re-prime that
+                                             * follows adds only the gap since the last stamp, so the excluded time is discarded here: the generation moves
+                                             * and the frames' baseline is taken anew */
+            time_gen++;
+            frm_staleI();
+        }
     }
     chSysUnlock();
 }
@@ -377,7 +385,10 @@ static inline void time_excludeI(uint8_t bit, bool on) {
     } else {
         uint8_t was = time_excl;
         time_excl &= (uint8_t)~bit;
-        if (was != 0 && time_excl == 0) frm_staleI();
+        if (was != 0 && time_excl == 0) {
+            time_gen++;
+            frm_staleI();
+        }
     }
 }
 
