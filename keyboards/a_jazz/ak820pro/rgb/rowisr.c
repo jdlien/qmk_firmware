@@ -278,7 +278,15 @@ static inline void time_observeI(void) {
     uint16_t gap = (uint16_t)(tc - time_stamp);
     time_stamp   = tc;
     if (!time_valid) {
-        if (time_excl == 0) {   /* the re-prime: the stamp and the high word afresh */
+        if (time_excl == 0) {   /* the re-prime: the stamp and the high word afresh ... */
+            if (gap >= EPOCH_INVALID_GAP) {   /* ... but a guarded observation itself: an unguarded residue (a long silence's wrap
+                                               * remainder) must not enter the extension, where it could age the frames' recovery
+                                               * out as if 8 ms had passed without a frame (the fifth verify review's 1); more
+                                               * time is discarded here, so the frames' baseline is taken anew, and the next
+                                               * observation, a short gap on, re-primes */
+                frm_staleI();
+                return;
+            }
             time_ext  += gap;
             time_valid = 1;
         }
@@ -382,12 +390,16 @@ static inline void time_excludeI(uint8_t bit, bool on) {
  * wherever it discards time, the guard's rejected gap and an exclusion's
  * end, never by the handler's own rejection (the bench's data cut leaves the driver
  * ACTIVE with the frames stopped, sleep.c; the hardware's own suspend needs
- * 3 ms of idle bus). An
- * interval is judged when it began trusted; it is rejected when it ends
- * untrusted or a bus event was serviced inside it (a generation the USB
- * handler bumps through usb_event_kb() at every reset, suspend and wakeup it
- * raises), never healthy, since SOFs stop at a suspend; otherwise its two
- * spans must agree. A rejected interval is INVALID with one loss, as the
+ * 3 ms of idle bus). After a stale the frames are in RECOVERY until one is
+ * seen moving, 8 ms of guarded time at most. An interval is judged when it
+ * began with the frames expected, fresh or in a recovery (its start FRMNO is
+ * real either way), and ends fresh with the bus up; it is rejected when the
+ * bus is down at its end, a bus event was serviced inside it (a generation
+ * the USB handler bumps through usb_event_kb() at every reset, suspend and
+ * wakeup it raises) or the frames were moving at its start and not within
+ * 4 ms of its end, never healthy, since SOFs stop at a suspend; it is
+ * excluded without a loss of its own when both its ends lie in a recovery
+ * with no frame yet; otherwise its two spans must agree. A rejected interval is INVALID with one loss, as the
  * guard's: the extension invalidated, the generation bumped and adopted by
  * the committed baseline (only when no other observer invalidated first:
  * that observer's loss is then the one), so the next observation re-primes
@@ -842,7 +854,7 @@ static void rowisr_slot(void) {
             }
             valid1 = false;   /* an invalid service below; the next observation re-primes */
         } else if (unjudged) {
-            sat8(&rec.usb_unjudged);
+            if (rec.usb_unjudged < 127u) rec.usb_unjudged++;   /* seven bits on the wire: bit 7 is the recovery flag */
             valid1 = false;   /* excluded: an invalid service below, no loss, nothing adopted; the baseline moves on */
         }
     }
