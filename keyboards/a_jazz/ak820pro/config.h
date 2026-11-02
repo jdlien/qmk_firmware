@@ -21,10 +21,10 @@
 #ifdef AK820_DEV_HOOKS
 #    define SN32F2XX_SLEEP_HOOKS   // scan-only, for light sleep's sizing bits (dev builds)
 #endif
-#define SN32F2XX_PWM_COL_MAP { \
-    {&PWMD1, 4}, {&PWMD1, 5}, {&PWMD1, 8}, {&PWMD2, 1}, {&PWMD2, 2}, {&PWMD2, 3}, \
-    {&PWMD1, 6}, {&PWMD1, 7}, {&PWMD1, 9}, {&PWMD0, 1}, {&PWMD0, 0}, {&PWMD1, 10}, \
-    {&PWMD0, 3}, {&PWMD0, 2}, {&PWMD1, 11} }
+/* The column -> (timer, channel) map, in COL_PINS order, is rgb/rowisr.c's
+ * col_mr[] since stage 2 (the plan's D2: a const table of match-register
+ * addresses with their key words; ChibiOS's PWM driver is no longer built):
+ *   B1/4 B1/5 B1/8 B2/1 B2/2 B2/3 B1/6 B1/7 B1/9 B0/1 B0/0 B1/10 B0/3 B0/2 B1/11 */
 #define SN32F2XX_PWM_PFPA_CT16B0 0x3332
 #define SN32F2XX_PWM_PFPA_CT16B1 0x0F00
 #define SN32F2XX_PWM_PFPA_CT16B2 0x0000

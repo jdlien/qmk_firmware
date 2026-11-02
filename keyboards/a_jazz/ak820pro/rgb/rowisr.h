@@ -39,6 +39,24 @@
 #    define SN32F2XX_LED_OUTPUT_LUMINOSITY_B 1
 #endif
 
+/* The epoch clock (D3 step 1): the 32-bit extension of CT16B5 that the row
+ * handler reconstructs its slots from, kept VALID by two observers, the
+ * 20 kHz tick (indicators.c calls rowisr_time_observe() every 50 us) and the
+ * handler itself; INVALID across an exclusion, which the owner of each mode
+ * declares: deep sleep (the driver's own sleep hooks), degraded mode
+ * (watchdog.c, read at init) and the dev lock mode (overrun_diag.c). */
+#define ROWISR_EXCL_SLEEP    0x01u
+#define ROWISR_EXCL_DEGRADED 0x02u
+#define ROWISR_EXCL_LOCK     0x04u
+void rowisr_time_observe(void);                 /* I-class: from the 20 kHz tick */
+void rowisr_time_exclude(uint8_t bit, bool on); /* thread context */
+
+/* The handler's record (D10): health page 7 (HC_GET7) and op 28 sub 5.
+ * Reset with the health counters. */
+void rowisr_record_reset(void);
+void rowisr_record_fill(uint8_t *out28);        /* page 7's 28 bytes */
+void rowisr_record_rows(uint8_t *out28);        /* op 28 sub 5: the omissions per mux row and the rest */
+
 /* rgb_matrix's driver entry points (rgb_matrix_driver, defined in rowisr.c).
  * Since stage 1 sn32f2xx_init() touches no hardware: the timers, the pins
  * and the row ISR start in matrix_init_custom(), before rgb_matrix exists. */
@@ -125,8 +143,8 @@ void sn32f2xx_sleep_exitI(void);
 
 /* The row interrupt's NVIC line, for the callers that hold it off: the clock
  * chip's transaction (rtc/rtc.c) and the dev hold-off (rowisr_diag.c). The
- * vector moves from CT16B1's to CT16B4's at stage 2 (D2), so nothing outside
- * this driver names it. Holds NEST: the first hold disables the line and
+ * vector is CT16B4's since stage 2 (D2), and nothing outside this driver
+ * names it. Holds NEST: the first hold disables the line and
  * remembers whether it was enabled, the last release puts that back, so two
  * holders overlapping never re-enable the line inside the other's hold.
  * Both return the depth after the call (hold: 1 means the sole holder;

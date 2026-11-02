@@ -9,6 +9,7 @@
 #include "battery.h"                  /* battery_ran_from_pack */
 #include "overrun_diag.h"             /* dev: the interrupt-service-gap monitor rides this tick */
 #include "rgb/rowisr_diag.h"          /* dev: a row hold-off's countdown rides it too (op 28) */
+#include "rgb/rowisr.h"               /* the epoch clock's second observer (D3 step 1) */
 #include "kb_eeconfig.h"              /* the saved levels (P2a) */
 #include "watchdog_record.h"          /* the tick's counter reset that does not complete */
 #include <hal.h>
@@ -173,6 +174,7 @@ static void pwm_tick_cb(GPTDriver *gptp) {
     od_tick();   /* first, so the gap is this entry's */
     rowisr_diag_tick();   /* a row hold-off's countdown and release (op 28) */
 #endif
+    rowisr_time_observe();   /* the epoch clock's observation: VALID through a row-only hold (D3) */
     display_backlight_tick();
     indicators_tick();
 }

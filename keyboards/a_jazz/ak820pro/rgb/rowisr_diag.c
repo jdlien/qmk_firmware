@@ -221,6 +221,10 @@ bool rowisr_diag_op28(uint8_t *data) {
             return true;
         }
 #endif
+        case 5:   /* the record's remainder: the omissions per mux row (rowisr.h) */
+            memset(&data[4], 0, 28);
+            rowisr_record_rows(&data[4]);
+            return true;
         default:
             return false;
     }

@@ -497,6 +497,7 @@ enum {
     HC_GET4        = 0x07,
     HC_GET5        = 0x08, /* retained watchdog operation; watchdog_record.h */
     HC_GET6        = 0x09, /* crash-hunt vitals, protocol >= 7; health.h */
+    HC_GET7        = 0x11, /* the row handler's record, protocol >= 9; health.h (a command on this channel: the flash channel's id is another namespace) */
     HC_CONN        = 0x02,
     /* Battery log (battery.c), one entry per period (15 min from v6, 10
      * before): [.., ..,
@@ -753,7 +754,7 @@ static void devhook_lcd_state(uint8_t *out) {
  * `used` alone keeps it in the object file but not in the link. */
 const volatile uint8_t ak820_raw_bootloader = 1;
 #endif
-#define HEALTH_PROTO_VERSION 8   /* 8: HC_FLASHW, HC_ACCT, HC_LINK (Phase 1b) */
+#define HEALTH_PROTO_VERSION 9   /* 8: HC_FLASHW, HC_ACCT, HC_LINK (Phase 1b); 9: HC_GET7, the row handler's record (the row ISR rewrite, stage 2) */
 
 #ifdef WDT_TEST_HOOKS
 extern volatile uint8_t wdt_test_fault_in_handler;   /* fault.c */
@@ -813,6 +814,14 @@ static void health_command(uint8_t *data, uint8_t length) {
             if (length >= 32) {
                 data[3] = HEALTH_PROTO_VERSION;
                 watchdog_record_fill(&data[4]);
+            } else {
+                data[0] = RTC_UNHANDLED;
+            }
+            break;
+        case HC_GET7:
+            if (length >= 32) {
+                data[3] = HEALTH_PROTO_VERSION;
+                health_fill7(&data[4]);
             } else {
                 data[0] = RTC_UNHANDLED;
             }

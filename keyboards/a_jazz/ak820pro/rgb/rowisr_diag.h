@@ -62,6 +62,12 @@
  *          skip does not touch scan-only's branch (light sleep's sizing
  *          bit). Reply as sub 2's.
  *
+ *   sub 5  the handler's record, the rest of it (stage 2, D10; page 7 has
+ *          the totals): [4..5] the longest run of omissions, [6] invocations
+ *          inside an epoch already serviced, [7] omissions by the arm
+ *          deadline, [8..25] omissions per mux row, 18 bytes saturating at
+ *          255. Reset with the health counters.
+ *
  * The replies carry no correlation field beyond the op byte, as every dev
  * op's do: one host process at a time, the bench's rule.
  */

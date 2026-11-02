@@ -31,12 +31,16 @@
 #undef SN32_ST_USE_TIMER
 #define SN32_ST_USE_TIMER SN32_TIM_CT16B5
 
+/* CT16B0/B1/B2 are the RGB columns' one-shot pulse timers and CT16B4 the
+ * slot scheduler, programmed by register in rgb/rowisr.c since the row ISR
+ * rewrite's stage 2 (plans/ROW-ISR-PLAN.md, D1, D2): ChibiOS's PWM driver is
+ * off for them, and HAL_USE_PWM is off (halconf.h). */
 #undef SN32_PWM_USE_CT16B0
-#define SN32_PWM_USE_CT16B0 TRUE
+#define SN32_PWM_USE_CT16B0 FALSE
 #undef SN32_PWM_USE_CT16B1
-#define SN32_PWM_USE_CT16B1 TRUE
+#define SN32_PWM_USE_CT16B1 FALSE
 #undef SN32_PWM_USE_CT16B2
-#define SN32_PWM_USE_CT16B2 TRUE
+#define SN32_PWM_USE_CT16B2 FALSE
 
 /* CT16B3 (GPTD4) drives the backlight/indicator PWM tick. B0/B1/B2 are RGB
  * hardware PWM and B5 is the OS-tick counter; B3 and B4 are the only free
@@ -88,9 +92,6 @@
 #undef SN32_GPT_CT16B3_IRQ_PRIORITY
 #define SN32_GPT_CT16B3_IRQ_PRIORITY 2
 
-#undef SN32_PWM_CT16B0_IRQ_PRIORITY
-#define SN32_PWM_CT16B0_IRQ_PRIORITY 3
-#undef SN32_PWM_CT16B1_IRQ_PRIORITY
-#define SN32_PWM_CT16B1_IRQ_PRIORITY 3
-#undef SN32_PWM_CT16B2_IRQ_PRIORITY
-#define SN32_PWM_CT16B2_IRQ_PRIORITY 3
+/* The row handler, CT16B4's vector, is enabled at priority 3 by rgb/rowisr.c
+ * (the old row ISR's SN32_PWM_CT16B1_IRQ_PRIORITY): below the 20 kHz tick's
+ * 2, above nothing. docs/leds.md, the interrupt priority table. */

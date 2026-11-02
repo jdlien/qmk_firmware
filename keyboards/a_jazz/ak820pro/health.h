@@ -128,6 +128,12 @@ void health_fill4(uint8_t *out28);
  *   u32 blits_issued
  * Counters are since boot and saturate; HC_RESET leaves them. */
 void health_fill6(uint8_t *out28);
+/* Page 7 (HC_GET7, protocol 9): the row handler's record since the health
+ * reset (plans/ROW-ISR-PLAN.md, D10; rgb/rowisr.c), in the scheduler's
+ * 48 MHz ticks: u32 slots elapsed, u32 serviced, u32 pulses emitted, u32
+ * omitted, u32 elapsed sum, u16 latency max, u16 elapsed max, u16 elapsed
+ * min, u8 epoch losses, u8 services with an INVALID interval. */
+void health_fill7(uint8_t *out28);
 
 /* Live readouts for the on-board display (graphics/display.c debug page).
  * Main-loop context only; ISR-written sources are snapshotted under a short

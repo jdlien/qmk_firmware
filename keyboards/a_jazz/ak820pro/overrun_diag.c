@@ -5,6 +5,7 @@
 
 #include "quantum.h"
 #include "overrun_diag.h"
+#include "rgb/rowisr.h"   /* the epoch clock's exclusion for the lock mode (D3 step 1) */
 #include "rtc/rtc.h"   /* rtc_seconds_since_boot */
 #include "loop_acct.h" /* ACCT_UNACCOUNTED, the observed context's sentinel */
 
@@ -175,6 +176,7 @@ uint8_t od_lock_mode(void) { return od_i2c_lock_mode; }
 bool od_set_lock_mode(uint8_t mode) {
     if (mode > OD_LOCK_UNLOCKED) return false;
     od_i2c_lock_mode = mode;
+    rowisr_time_exclude(ROWISR_EXCL_LOCK, mode == OD_LOCK_TRANSACTION);   /* the system lock through a transaction: INVALID while it lasts */
     return true;
 }
 

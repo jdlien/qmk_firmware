@@ -186,6 +186,7 @@ uint8_t health_reset_generation(void) { return reset_generation; }
 void health_reset(void) {
     /* Watchdog counters are boot facts and are NOT cleared -- see health.h. */
     reset_generation++;
+    rowisr_record_reset();   /* the row handler's record (page 7) resets with the rest */
     chSysLock();
     loop_gap_max = 0; loop_gap_max_mark = LOOP_MARK_NONE;
     count_ge_10ms = 0; count_ge_25ms = 0; passes = 0;
@@ -383,6 +384,11 @@ void health_fill4(uint8_t *out28) {
     PUT32(0);                                     /* 28: reserved */
 #undef PUT16
 #undef PUT32
+}
+
+/* ---- page 7: the row handler's record (plans/ROW-ISR-PLAN.md, D10) ------- */
+void health_fill7(uint8_t *out28) {
+    rowisr_record_fill(out28);
 }
 
 /* ---- page 6: crash-hunt vitals (plans/CRASH-HUNT-PLAN.md, B2-B4) ---------- */

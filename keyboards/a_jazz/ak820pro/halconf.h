@@ -8,9 +8,10 @@
 #define HAL_USE_SERIAL TRUE
 #define HAL_USE_RTC TRUE
 
-// RGB matrix: hardware PWM across the SN32 CT16B0/B1/B2 timers.
-// See drivers/led/sn32f2xx.c F290 block + hardware_pwm.diff.
-#define HAL_USE_PWM TRUE
+// RGB matrix: the columns' pulse timers (CT16B0/B1/B2) and the slot scheduler
+// (CT16B4) are programmed by register in rgb/rowisr.c since the row ISR
+// rewrite's stage 2; ChibiOS's PWM driver is not built for this board.
+#define HAL_USE_PWM FALSE
 
 // External PCF8563 RTC on P0.14/P0.15 via the ChibiOS software (bit-banged) I2C
 // fallback LLD (USE_HAL_I2C_FALLBACK=yes in rules.mk). Requires the i2c_fallback.diff patch
