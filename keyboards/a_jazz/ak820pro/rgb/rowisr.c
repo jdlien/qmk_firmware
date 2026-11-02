@@ -240,8 +240,10 @@ static uint8_t key_row = 0;
  * while no exclusion is active. Each observation is a critical section of a
  * few instructions. */
 /* The frame counter's freshness (below, "The USB frame counter"): FRMNO's
- * last seen value and the extension's time then, tracked by both observers;
- * staled by every invalidation, since the extension discards time there. */
+ * last seen value and the extension's time then, tracked by both observers
+ * while the extension runs; staled wherever the extension discards time
+ * (the guard's rejected gap, an exclusion's end), never by the handler's
+ * own rejection, which discards nothing. */
 #define USB_FRMNO_MASK    0x7FFu          /* the LLD's usbhw.h (mskFRAME_NO, mskBUS_*), not on this file's include path */
 #define USB_FRM_FRESH     750u            /* 4 ms of CT16B5 ticks: FRMNO must have moved this recently to be trusted */
 static uint16_t frm_seen     = 0xFFFFu;
@@ -308,6 +310,7 @@ static inline void time_invalidateI(bool stale_frames) {
  * keeps the frames fresh too (a hold across a 2.048 s frame wrap could
  * otherwise return to an equal FRMNO; the verify review). I-class. */
 static inline void frm_trackI(void) {
+    if (time_excl) return;   /* excluded: the extension is frozen, so a stamp now would read as no age at all (the third verify review's 1) */
     uint16_t frm = (uint16_t)(SN32_USB->FRMNO & USB_FRMNO_MASK);
     if (frm != frm_seen) {
         frm_seen     = frm;
@@ -329,6 +332,7 @@ void rowisr_time_exclude(uint8_t bit, bool on) {   /* thread context: degraded m
         time_invalidateI(true);
     } else {
         time_excl &= (uint8_t)~bit;
+        if (time_excl == 0) frm_staleI();   /* the re-prime that follows adds only the gap since the last stamp: the excluded time is discarded here */
     }
     chSysUnlock();
 }
@@ -350,6 +354,7 @@ static inline void time_excludeI(uint8_t bit, bool on) {
         time_invalidateI(true);
     } else {
         time_excl &= (uint8_t)~bit;
+        if (time_excl == 0) frm_staleI();
     }
 }
 
@@ -365,8 +370,9 @@ static inline void time_excludeI(uint8_t bit, bool on) {
  * its transceiver on (USB_CFG.PHY_EN: the LLD clears it at a suspend, and
  * one of its paths returns to ACTIVE without it), no bus-event flag is
  * pending, and FRMNO was seen moving within the last 4 ms of the extension's
- * time, tracked by both observers and staled by every invalidation, since
- * the extension discards time there (the bench's data cut leaves the driver
+ * time, tracked by both observers while the extension runs and staled
+ * wherever it discards time, the guard's rejected gap and an exclusion's
+ * end, never by the handler's own rejection (the bench's data cut leaves the driver
  * ACTIVE with the frames stopped, sleep.c; the hardware's own suspend needs
  * 3 ms of idle bus). An
  * interval is judged when it began trusted; it is rejected when it ends
@@ -721,9 +727,10 @@ static inline void sched_set_period(uint32_t ticks) {   /* I-class; MR9 = ticks 
  * arm nothing (the record's reader masks this handler). */
 static inline void service_commit(const snap_t *s1, bool valid1, uint32_t boundaries) {
     last_snap = *s1;
-    if (adopt_pending) {   /* the frame counter rejected this interval and bumped the generation itself: the baseline takes it, so the next interval is fresh ... */
+    if (adopt_pending) {   /* the frame counter rejected this interval and bumped the generation itself: the baseline takes it, so the next
+                            * interval starts fresh and is judged as any other (the frames were not staled by the rejection, so it cannot be a
+                            * second verdict on the same silence; left unjudged it could hide a second one: the third verify review's 3) */
         last_snap.gen = adopt_gen;
-        last_snap.usb = 0;   /* ... and is not judged: one interval unjudged after a rejection, never a second verdict on the same silence (the second verify review) */
         adopt_pending = false;
     }
     have_last = true;

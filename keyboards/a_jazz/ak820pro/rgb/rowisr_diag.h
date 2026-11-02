@@ -103,9 +103,10 @@
  *          silence, a few instructions from its end (the plan's endpoint
  *          contract; the masked part is one function and its disassembly
  *          is the count: nine instructions with three loads before the
- *          rising store, about 14 cycles, 0.3 us at 48 MHz; one store
- *          before the unmask), so a probe on that LED sees the silence to
- *          under half a microsecond. The 20 kHz
+ *          rising store, about 14 cycles, 0.3 us at 48 MHz, up to twice
+ *          that with the flash's wait states; one store before the
+ *          unmask), so a probe on that LED sees the silence to under a
+ *          microsecond. The 20 kHz
  *          tick, the row handler and the USB handler all stop meanwhile.
  *          What the record shows afterwards is the verdict on the
  *          OBSERVATION GAP, the silence plus the observers' offsets at each
