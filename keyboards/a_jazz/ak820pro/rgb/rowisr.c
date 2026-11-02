@@ -357,10 +357,12 @@ void rowisr_time_exclude(uint8_t bit, bool on) {   /* thread context: degraded m
     } else {
         uint8_t was = time_excl;
         time_excl &= (uint8_t)~bit;
-        if (was != 0 && time_excl == 0) {   /* an exclusion really ended (not a clear mask cleared again: the fourth verify review's 4): the re-prime that
-                                             * follows adds only the gap since the last stamp, so the excluded time is discarded here: the generation moves
-                                             * and the frames' baseline is taken anew */
+        if (was != 0 && time_excl == 0) {   /* an exclusion really ended (not a clear mask cleared again: the fourth verify review's 4): the excluded
+                                             * time is discarded here, so the generation moves, the frames' baseline is taken anew, and the stamp is
+                                             * rebased to now, so the re-prime that follows adds only the time since the release, none from before it
+                                             * (the eighth verify review's 1: pre-release time could age the recovery out before its first frame) */
             time_gen++;
+            time_stamp = sys_tc();
             frm_staleI();
         }
     }
@@ -387,6 +389,7 @@ static inline void time_excludeI(uint8_t bit, bool on) {
         time_excl &= (uint8_t)~bit;
         if (was != 0 && time_excl == 0) {
             time_gen++;
+            time_stamp = sys_tc();
             frm_staleI();
         }
     }
