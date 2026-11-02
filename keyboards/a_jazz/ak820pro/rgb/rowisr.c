@@ -246,8 +246,10 @@ static uint8_t key_row = 0;
  * own rejection, which discards nothing. */
 #define USB_FRMNO_MASK    0x7FFu          /* the LLD's usbhw.h (mskFRAME_NO, mskBUS_*), not on this file's include path */
 #define USB_FRM_FRESH     750u            /* 4 ms of CT16B5 ticks: FRMNO must have moved this recently to be trusted */
+#define USB_FRM_PENDING   1500u           /* 8 ms more: a stale's recovery ends without a frame (no host), pending no longer */
 static uint16_t frm_seen     = 0xFFFFu;
 static uint32_t frm_seen_ext = 0;
+static uint8_t  frm_pending  = 0;         /* a stale happened and no frame has moved since: the recovery (the fourth verify review's 1) */
 
 static volatile uint32_t time_ext   = 0;
 static volatile uint16_t time_stamp = 0;
@@ -262,6 +264,7 @@ static volatile uint16_t time_guard_rejects = 0;   /* the guard's rejections, wr
 static inline void frm_staleI(void) {
     frm_seen     = (uint16_t)(SN32_USB->FRMNO & USB_FRMNO_MASK);
     frm_seen_ext = time_ext - USB_FRM_FRESH;
+    frm_pending  = 1;
 }
 static volatile uint8_t  time_excl  = 0;   /* ROWISR_EXCL_* bits */
 
@@ -315,6 +318,9 @@ static inline void frm_trackI(void) {
     if (frm != frm_seen) {
         frm_seen     = frm;
         frm_seen_ext = time_ext;
+        frm_pending  = 0;
+    } else if (frm_pending && (time_ext - frm_seen_ext) >= USB_FRM_FRESH + USB_FRM_PENDING) {
+        frm_pending = 0;   /* 8 ms after the stale and no frame: the bus has no host; the recovery ends, the frames untrusted */
     }
 }
 
@@ -331,8 +337,9 @@ void rowisr_time_exclude(uint8_t bit, bool on) {   /* thread context: degraded m
         time_excl |= bit;
         time_invalidateI(true);
     } else {
+        uint8_t was = time_excl;
         time_excl &= (uint8_t)~bit;
-        if (time_excl == 0) frm_staleI();   /* the re-prime that follows adds only the gap since the last stamp: the excluded time is discarded here */
+        if (was != 0 && time_excl == 0) frm_staleI();   /* an exclusion really ended: the re-prime that follows adds only the gap since the last stamp, the excluded time is discarded here (not on clearing a clear mask: the fourth verify review's 4) */
     }
     chSysUnlock();
 }
@@ -353,8 +360,9 @@ static inline void time_excludeI(uint8_t bit, bool on) {
         time_excl |= bit;
         time_invalidateI(true);
     } else {
+        uint8_t was = time_excl;
         time_excl &= (uint8_t)~bit;
-        if (time_excl == 0) frm_staleI();
+        if (was != 0 && time_excl == 0) frm_staleI();
     }
 }
 
@@ -414,7 +422,9 @@ typedef struct {
     uint16_t frm;      /* FRMNO at the observation (step 1's snapshot) */
     uint16_t ugen;     /* the bus-event generation (step 1's) */
     uint8_t  valid;
-    uint8_t  usb;      /* FRMNO trusted at this end (step 1's) */
+    uint8_t  bus;      /* the bus up at this end: the driver ACTIVE, the transceiver on, no bus-event flag pending (step 1's) */
+    uint8_t  fresh;    /* a frame seen moving within the last 4 ms (step 1's) */
+    uint8_t  pending;  /* a stale's recovery: no frame seen since it, for 8 ms at most (step 1's) */
 } snap_t;
 
 static inline void take_timeI(snap_t *s) {
@@ -423,18 +433,21 @@ static inline void take_timeI(snap_t *s) {
     s->tc    = (uint16_t)CT_REG(T_SCHED, CT_TC);
     s->gen   = time_gen;
     s->valid = time_valid;
-    s->frm   = 0;
-    s->ugen  = 0;
-    s->usb   = 0;
+    s->frm     = 0;
+    s->ugen    = 0;
+    s->bus     = 0;
+    s->fresh   = 0;
+    s->pending = 0;
 }
 
 static inline void take_snapI(snap_t *s) {
     take_timeI(s);
     frm_trackI();
-    s->frm  = frm_seen;
-    s->ugen = usb_gen;
-    s->usb  = (USBD1.state == USB_ACTIVE && (SN32_USB->CFG & USB_CFG_PHY_EN) != 0 &&
-               (SN32_USB->INSTS & USB_BUS_EVENTS) == 0 && (time_ext - frm_seen_ext) < USB_FRM_FRESH) ? 1u : 0u;
+    s->frm     = frm_seen;
+    s->ugen    = usb_gen;
+    s->bus     = (USBD1.state == USB_ACTIVE && (SN32_USB->CFG & USB_CFG_PHY_EN) != 0 && (SN32_USB->INSTS & USB_BUS_EVENTS) == 0) ? 1u : 0u;
+    s->fresh   = (time_ext - frm_seen_ext) < USB_FRM_FRESH ? 1u : 0u;
+    s->pending = frm_pending;
 }
 
 /* The slot boundaries crossed from a to b: round((dt - dphase) / slot), dt the
@@ -493,7 +506,8 @@ static struct {
     uint16_t usb_worst_ms;     /* the worst modular distance among the intervals it accepted, ms */
     uint16_t usb_last_dt_ms, usb_last_df;   /* the last rejected interval's two spans: the extension's and the frame counter's, ms */
     uint8_t  usb_rejects;      /* intervals the frame counter rejected: the spans disagree, saturating */
-    uint8_t  usb_events;       /* intervals rejected for a bus event inside them, serviced or pending, saturating */
+    uint8_t  usb_events;       /* intervals rejected for a bus event inside them, serviced or pending, or the frames stopped, saturating */
+    uint8_t  usb_unjudged;     /* intervals excluded without a loss: both ends inside a stale's recovery, no frame yet, saturating */
 } rec;
 static uint32_t seen_gen = 0;        /* the loss generation the handler last saw (the losses, across re-primes) */
 static bool     hw_fault = false;    /* a timer's reset never completed at init: nothing started, the columns released */
@@ -551,12 +565,13 @@ void rowisr_record_usb(uint8_t *out28) {   /* op 28 sub 6: the frame counter's r
     chSysLock();
     uint32_t ck = rec.usb_checked, gen = time_gen;
     uint16_t wm = rec.usb_worst_ms, ldt = rec.usb_last_dt_ms, ldf = rec.usb_last_df, ug = usb_gen;
-    uint8_t  rj = rec.usb_rejects, ev = rec.usb_events, tv = time_valid, tx = time_excl;
+    uint8_t  rj = rec.usb_rejects, ev = rec.usb_events, uj = rec.usb_unjudged, tv = time_valid, tx = time_excl;
     uint16_t frm = (uint16_t)(SN32_USB->FRMNO & USB_FRMNO_MASK);
     uint8_t  st  = (uint8_t)USBD1.state;
     uint8_t  fresh = (time_ext - frm_seen_ext) < USB_FRM_FRESH ? 1u : 0u;
     uint8_t  live = (USBD1.state == USB_ACTIVE && (SN32_USB->CFG & USB_CFG_PHY_EN) != 0 &&
                      (SN32_USB->INSTS & USB_BUS_EVENTS) == 0 && fresh) ? 1u : 0u;
+    uint8_t  pend = frm_pending;
     uint16_t lgap = time_last_gap;
     chSysUnlock();
     uint8_t *p = out28;
@@ -566,7 +581,7 @@ void rowisr_record_usb(uint8_t *out28) {   /* op 28 sub 6: the frame counter's r
     PUT16(ldt); PUT16(ldf); PUT32(gen);           /* 16 */
     PUT16(ug); *p++ = st; *p++ = live;            /* 20 */
     PUT16(frm); *p++ = tv; *p++ = tx;             /* 24 */
-    PUT16(lgap); *p++ = fresh;                    /* 27 */
+    PUT16(lgap); *p++ = fresh; *p++ = (uint8_t)(uj | (pend ? 0x80u : 0u));   /* 28: the unjudged count, bit 7 the recovery pending now */
 #undef PUT16
 #undef PUT32
 }
@@ -772,14 +787,28 @@ static void rowisr_slot(void) {
             return;
         }
     }
-    if (valid1 && last_snap.usb) {   /* D3 case 5: the frame counter's verdict on an interval that began trusted */
-        bool     reject;
+    if (valid1 && last_snap.bus && (last_snap.fresh || last_snap.pending)) {
+        /* D3 case 5: the frame counter's verdict on an interval that began with
+         * the frames expected: trusted (fresh), or inside a stale's recovery
+         * (the start's FRMNO is real either way: the stale took it from the
+         * hardware). Not judged when the bus is down or the frames are known
+         * stopped at the start: the declared blind spot. */
+        bool     reject  = false, unjudged = false;
         uint32_t dext  = s1.ext - last_snap.ext;                      /* 5.33 us ticks; under an hour, so x2 fits */
         uint32_t dt_ms = (dext * 2u + 187u) / 375u;                   /* the extension's span, ms, rounded */
         uint32_t df    = (uint32_t)(s1.frm - last_snap.frm) & USB_FRMNO_MASK;   /* the frame counter's, modulo 2,048 */
-        if (!s1.usb || s1.ugen != last_snap.ugen) {   /* untrusted at the end, or a bus event serviced inside: never healthy */
+        if (!s1.bus || s1.ugen != last_snap.ugen) {   /* the bus down at the end, or a bus event serviced inside: never healthy */
             sat8(&rec.usb_events);
             reject = true;
+        } else if (!s1.fresh) {
+            if (last_snap.fresh) {   /* moving at the start, not within 4 ms of the end: the frames stopped inside, no flag raised */
+                sat8(&rec.usb_events);
+                reject = true;
+            } else {                 /* both ends inside the recovery with no frame yet (its first slots, or a bus that never
+                                      * sends one): unjudgeable, excluded without a loss of its own, the stale's loss covers it;
+                                      * a silence inside is excluded with it, never healthy (the fourth verify review's 1) */
+                unjudged = true;
+            }
         } else {
             uint32_t diff = (dt_ms - df) & USB_FRMNO_MASK;
             if (diff > 1024u) diff = 2048u - diff;                    /* the modular distance */
@@ -812,6 +841,9 @@ static void rowisr_slot(void) {
                 sat8(&rec.epoch_losses);
             }
             valid1 = false;   /* an invalid service below; the next observation re-primes */
+        } else if (unjudged) {
+            sat8(&rec.usb_unjudged);
+            valid1 = false;   /* excluded: an invalid service below, no loss, nothing adopted; the baseline moves on */
         }
     }
     if (!valid1 && have_last) sat8(&rec.invalid_services);
@@ -946,8 +978,8 @@ static void rowisr_slot(void) {
     take_snapI(&sx);
     chSysUnlockFromISR();
     bool dur_ok = s1.valid && sx.valid && sx.gen == s1.gen;
-    if (dur_ok && s1.usb) {   /* an aliasing interruption inside the handler is judged at the next entry; this span too, before its sample is taken (the verify review's 4) */
-        if (!sx.usb || sx.ugen != s1.ugen) {
+    if (dur_ok && s1.bus && (s1.fresh || s1.pending)) {   /* an aliasing interruption inside the handler is judged at the next entry; this span too, before its sample is taken (the verify review's 4) */
+        if (!sx.bus || !sx.fresh || sx.ugen != s1.ugen) {
             dur_ok = false;
         } else {
             uint32_t dt_ms = ((sx.ext - s1.ext) * 2u + 187u) / 375u;

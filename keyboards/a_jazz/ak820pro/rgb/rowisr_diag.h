@@ -90,7 +90,10 @@
  *          [24..25] FRMNO now, [26] the extension VALID now, [27] the
  *          exclusion bits in force, [28..29] the last observation gap the
  *          8 ms guard rejected, CT16B5 ticks, [30] FRMNO seen moving within
- *          the last 4 ms. The counters reset with the health counters.
+ *          the last 4 ms, [31] bits 0-6 the intervals excluded without a
+ *          loss (both ends inside a stale's recovery with no frame yet,
+ *          saturating at 127), bit 7 the recovery pending now. The counters
+ *          reset with the health counters.
  *   sub 7  a silence of every interrupt  [5..8] the length in us,
  *          1,000..8,000,000, little-endian; [9..10] a delay in ms before it,
  *          0 = 200 (so this reply reaches the host first)
@@ -108,8 +111,8 @@
  *          unmask), so a probe on that LED sees the silence to under a
  *          microsecond. The 20 kHz
  *          tick, the row handler and the USB handler all stop meanwhile.
- *          What the record shows afterwards is the verdict on the
- *          OBSERVATION GAP, the silence plus the observers' offsets at each
+ *          What the record (sub 6, page 7) shows afterwards is the verdict
+ *          on the OBSERVATION GAP, the silence plus the observers' offsets at each
  *          end (the tick's 50 us period plus its service latency, which
  *          higher-priority handlers lengthen and no nominal figure bounds;
  *          scan-only's 625 us slot plus the handler's: the plan, D3 case
