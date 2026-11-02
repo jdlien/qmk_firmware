@@ -148,7 +148,7 @@
 #    define RGB_MATRIX_MAXIMUM_BRIGHTNESS 255
 #endif
 
-static const pin_t led_row_pins[SN32F2XX_RGB_MATRIX_ROWS_HW] = SN32F2XX_RGB_MATRIX_ROW_PINS; /* the mux rows, B, G, R-of-next per key row (the plan, Q6) */
+static const pin_t led_row_pins[SN32F2XX_RGB_MATRIX_ROWS_HW] = SN32F2XX_RGB_MATRIX_ROW_PINS; /* the mux rows: R, B, G per key row, config.h's order (Q6, settled on white 11-01) */
 static const pin_t led_col_pins[SN32F2XX_RGB_MATRIX_COLS]    = MATRIX_COL_PINS;             /* shared with the key matrix */
 static const pin_t key_row_pins[MATRIX_ROWS]                 = MATRIX_ROW_PINS;
 
@@ -213,8 +213,16 @@ volatile bool sn32f2xx_scan_skip = false; /* rowisr.h: op 28 sub 4 */
 #endif
 
 /* The rotation: the mux row the handler lights next (0..17) and the key row
- * it scans (0..5); the key row advances when the mux row's colour index is 2
- * (B, G, then R of the next key row: the old driver's order, Q6). */
+ * it scans (0..5); the key row advances when the mux row's colour index is 0,
+ * the first pin of its group (R, B, G per key row: config.h's order, Q6).
+ * The old driver submitted B, G, then R of the NEXT key row, one slot ahead
+ * of the pins, and rendered right, so its widths evidently reached the LEDs
+ * a cycle after their write (the CT16's doing, not measured). The one-shot
+ * restart takes the widths written before it, so stage 2's first flash
+ * rendered every frame rotated through that lead: R from B, B from G, G
+ * from the row below's R (peach alphas and pink mods from a purple and blue
+ * theme, and magenta above each of the nine holes at a white frame; white,
+ * 11-01). */
 static uint8_t cur_row = 0;
 static uint8_t key_row = 0;
 
@@ -635,11 +643,12 @@ static void rowisr_slot(void) {
         return;
     }
 
-    /* The rotation: the next mux row; every third one a new key row. */
+    /* The rotation: the next mux row; every third one a new key row (the
+     * pins' order: see cur_row's comment). */
     if (++cur_row >= SN32F2XX_RGB_MATRIX_ROWS_HW) cur_row = 0;
-    uint8_t colour = cur_row % SN32F2XX_RGB_MATRIX_ROW_CHANNELS;   /* 0 B, 1 G, 2 R of the next key row */
+    uint8_t colour = cur_row % SN32F2XX_RGB_MATRIX_ROW_CHANNELS;   /* 0 R, 1 B, 2 G of this key row */
     bool    scan   = false;
-    if (colour == 2) {
+    if (colour == 0) {
         if (++key_row >= ROWS_PER_HAND) key_row = 0;
         scan = true;
     }
@@ -663,7 +672,7 @@ static void rowisr_slot(void) {
         uint8_t  li = co[c];
         uint32_t w  = 0;
         if (li < SN32F2XX_LED_COUNT) {
-            uint8_t b = (colour == 0) ? led_state[li].b : (colour == 1) ? led_state[li].g : led_state[li].r;
+            uint8_t b = (colour == 0) ? led_state[li].r : (colour == 1) ? led_state[li].b : led_state[li].g;
             w         = scale_lut[b];
         }
         *col_mr[c].mr = col_mr[c].key | w;
@@ -706,7 +715,7 @@ static void rowisr_slot(void) {
     if (width_sum) {
         if (armed) {
             rec.emitted++;
-            width_acc[colour == 2 ? 0 : (colour == 1 ? 1 : 2)] += width_sum;   /* r, g, b */
+            width_acc[colour == 0 ? 0 : (colour == 1 ? 2 : 1)] += width_sum;   /* r, g, b from the pins' R, B, G */
             rec.omit_run = 0;
         } else {
             rec.omitted++;
