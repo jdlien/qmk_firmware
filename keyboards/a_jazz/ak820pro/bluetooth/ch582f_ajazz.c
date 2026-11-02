@@ -389,15 +389,25 @@ void ch582_led5a_reset(void) {
  * arming, so a host reading the count first knows which slots it has. The
  * slot is its own index, not count % ring: 2^32 is not a multiple of 260, so
  * a wrapped count would skip slots 256-259 (codex rx-tap should-fix 1), and
- * the M0 has no divide instruction to spend per byte. */
+ * the M0 has no divide instruction to spend per byte.
+ *
+ * The link trace (11-01) shares the ring: after each deep sleep's wake, the
+ * link's and the TX queue's first LT_MAX events, each a u16 of ms since the
+ * wake (0xFFFF past 65 s), a kind and an argument, for the waking key lost
+ * over BT (plans/BACKLOG.md): whether the module says the link is down after
+ * the waking key, and when its 5B 32 comes. Frame types and times only,
+ * never a report's content. A bench arm (mode 1) takes the ring back; while
+ * the trace has it, rxtap_count is the wake's timer_read32() and rxtap_slot
+ * the bytes it has used. No RAM of its own: the dev heap gap is at its floor. */
 #define CH582_RXTAP_RING 208   /* eight 26-byte pages (ten until 10-20: RAM for the lock-LED clock) */
-static bool     rxtap_armed = false;
+enum { RXTAP_OFF = 0, RXTAP_BYTES = 1, RXTAP_TRACE = 2 };
+static uint8_t  rxtap_mode  = RXTAP_OFF;
 static uint32_t rxtap_count = 0;
 static uint16_t rxtap_slot  = 0;
 static uint8_t  rxtap_ring[CH582_RXTAP_RING];
 
 static inline void rxtap_note(uint8_t c) {
-    if (!rxtap_armed) return;
+    if (rxtap_mode != RXTAP_BYTES) return;
     rxtap_ring[rxtap_slot] = c;
     if (++rxtap_slot == CH582_RXTAP_RING) rxtap_slot = 0;
     rxtap_count++;
@@ -409,15 +419,71 @@ void ch582_rxtap_arm(bool armed) {
         rxtap_slot  = 0;
         memset(rxtap_ring, 0, sizeof(rxtap_ring));
     }
-    rxtap_armed = armed;
+    rxtap_mode = armed ? RXTAP_BYTES : RXTAP_OFF;
 }
 
+/* The mode (the trace's is 2, which an old reader takes for armed), the
+ * count, the ring's size; since the trace, the slot and the time now, so a
+ * host can place the wake: now less the wake's timer_read32(). */
 void ch582_rxtap_fill(uint8_t *out) {
-    out[0] = rxtap_armed ? 1 : 0;
+    out[0] = rxtap_mode;
     memcpy(&out[1], &rxtap_count, 4);
     uint16_t ring = CH582_RXTAP_RING;
     memcpy(&out[5], &ring, 2);
+    memcpy(&out[7], &rxtap_slot, 2);
+    uint32_t now = timer_read32();
+    memcpy(&out[9], &now, 4);
 }
+
+enum {
+    LT_WAKE = 1,   /* the trace's start (ch582_sleep_wake()); the argument conn_state as the sleep left it */
+    LT_QUEUED,     /* a frame queued; the argument its command, an A6's its parameter */
+    LT_SENT,       /* on the wire, first send */
+    LT_RESENT,     /* on the wire again, after an ACK timeout */
+    LT_ACKED,      /* the module's ACK popped it */
+    LT_GAVE_UP,    /* retries spent, popped unACKed */
+    LT_FULL,       /* refused by a full queue: lost */
+    LT_MERGED,     /* written over the last queued frame of its type */
+    LT_5B,         /* a 5B; the argument its code */
+    LT_PROMOTED    /* a 5A taken for the missed 5B 32 */
+};
+
+/* The wake starts the trace, unless the bench holds the ring. */
+static void lt_begin(uint8_t state) {
+    if (rxtap_mode == RXTAP_BYTES) return;
+    memset(rxtap_ring, 0, sizeof(rxtap_ring));
+    rxtap_count = timer_read32();
+    rxtap_slot  = 0;
+    rxtap_mode  = RXTAP_TRACE;
+    rxtap_ring[2] = LT_WAKE;
+    rxtap_ring[3] = state;
+    rxtap_slot    = 4;
+}
+
+static void lt_note(uint8_t kind, uint8_t arg) {
+    if (rxtap_mode != RXTAP_TRACE || rxtap_slot > CH582_RXTAP_RING - 4) return;
+    uint32_t ms = timer_read32() - rxtap_count;
+    uint16_t t  = ms > 0xFFFFu ? 0xFFFFu : (uint16_t)ms;
+    rxtap_ring[rxtap_slot]     = (uint8_t)t;
+    rxtap_ring[rxtap_slot + 1] = (uint8_t)(t >> 8);
+    rxtap_ring[rxtap_slot + 2] = kind;
+    rxtap_ring[rxtap_slot + 3] = arg;
+    rxtap_slot += 4;
+}
+
+/* A frame's command, or an A6's parameter (a select, a pair; never 0xA_). The
+ * battery poll is noise here and is not traced. */
+static void lt_frame(uint8_t kind, const uint8_t *data, uint8_t len) {
+    if (len >= 2 && data[0] == 0xA6) {
+        if (data[1] == CH582_BATTERY_REQ_PARAM) return;
+        lt_note(kind, data[1]);
+    } else if (len >= 1) {
+        lt_note(kind, data[0]);
+    }
+}
+#    define LT_NOTE(k, a)          lt_note((k), (a))
+#    define LT_FRAME(k, d, n)      lt_frame((k), (d), (n))
+#    define LT_BEGIN(state)        lt_begin(state)
 
 /* The reply echoes its page, as the 5A trace's does. */
 bool ch582_rxtap_page(uint8_t page, uint8_t *out) {
@@ -602,6 +668,9 @@ static void r81_link_lost(void);
 #    define LOCKCHAN_LINK_LOST() do { lockchan_link_lost(&lockchan); r81_link_lost(); ch582_lockchan_clock_drop(); } while (0)
 #else
 #    define LOCKCHAN_LINK_LOST() ((void)0)
+#    define LT_NOTE(k, a)     ((void)0)
+#    define LT_FRAME(k, d, n) ((void)0)
+#    define LT_BEGIN(state)   ((void)0)
 #endif
 
 static const SerialConfig serial_cfg = {
@@ -1330,11 +1399,13 @@ static void ch582_tx_pump(void) {
         tx_stat_timeout++;
         if (++tx_retries > CH582_TX_MAX_RETRIES) {                          /* give up, move on */
             tx_stat_giveup++;
+            LT_FRAME(LT_GAVE_UP, tx_q[tx_head].data, tx_q[tx_head].len);
             if (is_select_frame(tx_q[tx_head].data, tx_q[tx_head].len)) select_tx_failed = true;
             ch582_tx_pop();
             return;
         }
         tx_link_change_check(&tx_q[tx_head]);
+        LT_FRAME(LT_RESENT, tx_q[tx_head].data, tx_q[tx_head].len);
         sdWrite(&CH582_SERIAL_DRIVER, tx_q[tx_head].data, tx_q[tx_head].len); /* retransmit */
         tx_sent_time = timer_read();
         return;
@@ -1365,6 +1436,7 @@ static void ch582_tx_pump(void) {
     }
 #endif
     tx_link_change_check(&tx_q[tx_head]);
+    LT_FRAME(LT_SENT, tx_q[tx_head].data, tx_q[tx_head].len);
     sdWrite(&CH582_SERIAL_DRIVER, tx_q[tx_head].data, tx_q[tx_head].len);
     tx_sent_time = timer_read();
 #ifdef CONSOLE_ENABLE
@@ -1403,6 +1475,7 @@ void ch582_sleep_wake(void) {
     battery_stale     = true;
     battery_poll_held = true;
     LOCKCHAN_LINK_LOST();
+    LT_BEGIN((uint8_t)conn_state);
 }
 
 void ch582_battery_poll_release(void) {
@@ -1480,6 +1553,7 @@ static void ch582_tx_ack(void) {
          * select of another slot ACKed after the target's must undo it). */
         if (is_select_frame(tx_q[tx_head].data, tx_q[tx_head].len))
             select_tx_failed = tx_q[tx_head].data[1] != requested_profile;
+        LT_FRAME(LT_ACKED, tx_q[tx_head].data, tx_q[tx_head].len);
         ch582_tx_pop();
     }
 }
@@ -1531,6 +1605,7 @@ void ch582_send_command(uint8_t cmd, const uint8_t *params, uint8_t param_len) {
             last->data[param_len + 1] = (uint8_t)(s & 0xFF);
             last->len                 = param_len + 2;
             tx_stat_replaced++;
+            LT_NOTE(LT_MERGED, cmd);
             return;
         }
     }
@@ -1538,6 +1613,7 @@ void ch582_send_command(uint8_t cmd, const uint8_t *params, uint8_t param_len) {
     uint8_t nxt = tx_next(tx_tail);
     if (nxt == tx_head) {   /* queue full -> DROPPED KEYSTROKE */
         tx_stat_drop++;
+        LT_NOTE(LT_FULL, cmd == 0xA6 && param_len >= 1 ? params[0] : cmd);
         if (cmd == 0xA6 && param_len >= 1 && params[0] >= CH582_PROFILE_PEER_24G && params[0] <= CH582_PROFILE_PAIR_24G)
             select_tx_failed = true;
         return;
@@ -1553,6 +1629,7 @@ void ch582_send_command(uint8_t cmd, const uint8_t *params, uint8_t param_len) {
     f->data[param_len + 1] = (uint8_t)(sum & 0xFF);
     f->len                 = param_len + 2;
     tx_tail                = nxt;
+    LT_FRAME(LT_QUEUED, f->data, f->len);
 #ifdef WDT_TEST_HOOKS
     /* Battery polls (A6 53) are periodic noise; excluding them makes the
      * count an EXACT observable for the pending-action tests. */
@@ -2084,9 +2161,11 @@ void ch582_task(void) {
                         is_pairing          = false;
                         conn_state          = CH582_CONN_CONNECTED;
                         connected_slot      = profile_to_slot(requested_profile);
+                        LT_NOTE(LT_PROMOTED, 0);
                     }
                     break;
                 case 0x5B: /* connection state code (NOT a slot number) */
+                    LT_NOTE(LT_5B, d);
                     switch (d) {
                         case 0x32: /* link established - the only "connected" signal */
                             /* A PA_BOUNCE survives: this 5B 32 may be the BOUNCE
