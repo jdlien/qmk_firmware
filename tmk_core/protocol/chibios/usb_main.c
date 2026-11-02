@@ -166,7 +166,16 @@ void usb_event_queue_task(void) {
 }
 
 /* Handles the USB driver global events. */
+/* The board's hook from the USB handler, in its context, for every event the
+ * HAL raises before the stack acts on it; a no-op unless a board defines it
+ * (the AK820 Pro's row handler keeps a bus-event generation from it:
+ * keyboards/a_jazz/ak820pro/rgb/rowisr.c). */
+__attribute__((weak)) void usb_event_kb(usbevent_t event) {
+    (void)event;
+}
+
 static void usb_event_cb(USBDriver *usbp, usbevent_t event) {
+    usb_event_kb(event);
     switch (event) {
         case USB_EVENT_ADDRESS:
             return;

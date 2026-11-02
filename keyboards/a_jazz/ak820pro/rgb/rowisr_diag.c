@@ -135,7 +135,62 @@ void rowisr_diag_tick(void) {   /* ISR context, priority 2: above the row interr
     }
 }
 
+/* ---- sub 7: a silence of every interrupt (D3's injections) -----------------
+ *
+ * Armed here, fired by the housekeeping task once its delay has passed, so
+ * this op's reply has reached the host first: under the system lock (PRIMASK
+ * on this core: every interrupt), the marker on the Win Lock LED's pin C15
+ * raised, a spin on CT16B5's TC with its wraps counted (polled every few
+ * cycles, far inside the 349.5 ms wrap), the marker lowered, the lock
+ * released. Both marker edges lie inside the silence, each a store from its
+ * end (the plan's endpoint contract). The length the spin measured, in
+ * CT16B5 ticks, is the status's; the marker's edges on the witness are the
+ * timing. 1..8000 ms (the watchdog, nominally 11.5 s, is not fed meanwhile;
+ * the plan's longest case is 7 s); refused while another is armed, or while
+ * the Win Lock LED is lit or previewed (the pin would give no rising edge;
+ * the pin itself checked under the lock). A row-only hold may be running:
+ * the ordering case nests the two, each on its own pin. A tick stop (a
+ * sleep) cancels an armed silence. */
+static volatile uint16_t sil_ms      = 0;   /* armed: the length; 0 none */
+static uint32_t          sil_fire_ms = 0;   /* timer_read32 at which it fires */
+static uint32_t          sil_ticks   = 0;   /* the last silence's measured length, CT16B5 ticks */
+static uint8_t           sil_done    = 0;
+
+static bool silence_arm(uint16_t ms, uint16_t delay_ms) {
+    if (ms < 1u || ms > 8000u || delay_ms > 5000u || sil_ms != 0) return false;
+    if (lock_state_gui() || (indicator_forced() & 1u)) return false;
+    uint32_t fire = timer_read32() + (delay_ms ? delay_ms : 200u);   /* timer_read32 takes a lock: before ours */
+    chSysLock();
+    if (gpio_read_pin(LED_WINLOCK_PIN)) {
+        chSysUnlock();
+        return false;
+    }
+    sil_fire_ms = fire;
+    sil_ms      = ms;
+    chSysUnlock();
+    return true;
+}
+
+static void silence_run(void) {   /* the housekeeping task: thread context */
+    uint32_t want = (uint32_t)sil_ms * 375u / 2u;   /* 187.5 CT16B5 ticks a ms */
+    chSysLock();
+    indicators_marker2(true);
+    uint16_t last = (uint16_t)ct_rd(5, CT_TC);
+    uint32_t acc  = 0;
+    while (acc < want) {
+        uint16_t now = (uint16_t)ct_rd(5, CT_TC);
+        acc += (uint16_t)(now - last);
+        last = now;
+    }
+    indicators_marker2(false);
+    sil_ticks = acc;
+    sil_ms    = 0;
+    sil_done++;
+    chSysUnlock();
+}
+
 void rowisr_diag_cancelI(void) {   /* I-class: pwm_tick_stopI() */
+    sil_ms = 0;   /* a silence armed across a sleep would fire at the wake */
     if (hold_kind == 0) return;
     hold_endI();
     holds_cancelled++;
@@ -150,6 +205,7 @@ void rowisr_diag_housekeeping(void) {
         }
         chSysUnlock();
     }
+    if (sil_ms != 0 && (int32_t)(timer_read32() - sil_fire_ms) >= 0) silence_run();
 }
 
 static void status_fill(uint8_t *out) {   /* out = &data[4], zeroed */
@@ -159,6 +215,9 @@ static void status_fill(uint8_t *out) {   /* out = &data[4], zeroed */
     uint8_t  flags = hold_flags, done = holds_done, back = holds_backstopped, canc = holds_cancelled;
     uint8_t  depth = sn32f2xx_row_irq_depth();
     bool     on    = (NVIC->ISER[0] & (1u << sn32f2xx_row_irq_number())) != 0;
+    uint16_t sms   = sil_ms;
+    uint32_t stk   = sil_ticks;
+    uint8_t  sdn   = sil_done;
     chSysUnlock();
     out[0] = kind == 1 ? 1u : 0u;
     put16(&out[1], kind == 1 ? left : 0u);
@@ -174,6 +233,10 @@ static void status_fill(uint8_t *out) {   /* out = &data[4], zeroed */
     out[15] = kind == 4 ? 1u : 0u;
     put16(&out[16], kind == 4 ? left : 0u);
     out[18] = sn32f2xx_hw_fault() ? 1u : 0u;   /* [22]: stage 2's init could not reset a timer */
+    out[19] = sms != 0 ? 1u : 0u;              /* [23]: a silence of every interrupt is armed */
+    put16(&out[20], sms);                      /* [24..25]: its length, ms */
+    put32(&out[22], stk);                      /* [26..29]: the last silence's measured length, CT16B5 ticks */
+    out[26] = sdn;                             /* [30]: silences run */
 }
 
 /* ---- sub 3: one LED, one colour --------------------------------------------- */
@@ -226,6 +289,17 @@ bool rowisr_diag_op28(uint8_t *data) {
             memset(&data[4], 0, 28);
             rowisr_record_rows(&data[4]);
             return true;
+        case 6:   /* the frame counter's record and the clocks' state (rowisr.h) */
+            memset(&data[4], 0, 28);
+            rowisr_record_usb(&data[4]);
+            return true;
+        case 7: {   /* a silence of every interrupt: [5..6] ms, [7..8] the delay before it, ms */
+            uint16_t ms = (uint16_t)(data[5] | (data[6] << 8)), delay = (uint16_t)(data[7] | (data[8] << 8));
+            if (!silence_arm(ms, delay)) return false;
+            memset(&data[4], 0, 28);
+            status_fill(&data[4]);
+            return true;
+        }
         default:
             return false;
     }

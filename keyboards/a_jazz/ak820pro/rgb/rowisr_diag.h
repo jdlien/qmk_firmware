@@ -44,7 +44,10 @@
  *          own), [18] matrix_init_custom()'s prime timed out (Bootmagic
  *          scanned an empty matrix), [19] a scan skip is active, [20..21] its
  *          ms left, [22] stage 2's init found a timer whose reset never
- *          completed (nothing runs, the columns released).
+ *          completed (nothing runs, the columns released), [23] a silence
+ *          of every interrupt is armed (sub 7), [24..25] its length in ms,
+ *          [26..29] the last silence's measured length in CT16B5 ticks
+ *          (5.33 us), [30] silences run (wrapping).
  *   sub 3  one LED, one colour  [5] LED index 0..80 or 255 for off,
  *          [6..8] r, g, b
  *          Every other LED dark and that one at that colour, applied after
@@ -72,6 +75,36 @@
  *          omissions per mux row, 18 bytes saturating at 255, [30..31]
  *          every service's count, low 16 bits. Reset with the health
  *          counters.
+ *   sub 6  the USB frame counter's record (D3 case 5) and the clocks' state:
+ *          [4..7] intervals the frame counter judged (VALID, the driver
+ *          ACTIVE at both ends, no bus event), [8] intervals it rejected for
+ *          a disagreement of the spans, [9] intervals rejected for a bus
+ *          event inside them (each saturating; each rejection is one epoch
+ *          loss), [10..11] the worst modular distance among the accepted,
+ *          ms, [12..13] the last rejected interval's span by the extension
+ *          and [14..15] by the frame counter, ms, [16..19] the loss
+ *          generation now (32 bits), [20..21] the bus-event generation,
+ *          [22] the USB driver's state (hal_usb.h: 4 ACTIVE, 5 SUSPENDED),
+ *          [23] the frame counter trusted now, [24..25] FRMNO now, [26] the
+ *          extension VALID, [27] the exclusion bits in force. The counters
+ *          reset with the health counters.
+ *   sub 7  a silence of every interrupt  [5..6] ms 1..8000, [7..8] a delay
+ *          in ms before it, 0 = 200 (so this reply reaches the host first)
+ *          Fired by the housekeeping task after the delay: under the system
+ *          lock, which masks every interrupt on this core, a MARKER on the
+ *          Win Lock LED's pin C15 raised, a spin on CT16B5 for the length
+ *          with its wraps counted, the marker lowered, the lock released;
+ *          each marker edge a store inside the silence (the plan's endpoint
+ *          contract), so a probe on that LED sees the silence to a few
+ *          cycles. The 20 kHz tick, the row handler and the USB handler all
+ *          stop meanwhile; the row handler's record afterwards shows the
+ *          guard's or the frame counter's verdict (INVALID, one loss, from
+ *          8 ms; on USB any length; on battery a 349.5 ms multiple can alias
+ *          past the guard: the plan's declared limit). The watchdog is not
+ *          fed meanwhile (11.5 s nominal). Refused while another is armed
+ *          or the Win Lock LED is lit or previewed; a tick stop cancels an
+ *          armed one. May nest inside a row-only hold (sub 1), each on its
+ *          own pin: the ordering case. Reply as sub 2's.
  *
  * The replies carry no correlation field beyond the op byte, as every dev
  * op's do: one host process at a time, the bench's rule.

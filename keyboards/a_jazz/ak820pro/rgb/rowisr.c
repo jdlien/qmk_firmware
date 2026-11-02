@@ -242,7 +242,7 @@ static uint8_t key_row = 0;
 static volatile uint32_t time_ext   = 0;
 static volatile uint16_t time_stamp = 0;
 static volatile uint8_t  time_valid = 0;
-static volatile uint16_t time_gen   = 0;   /* 16 bits: cannot alias inside the hour (codex, P2 7) */
+static volatile uint32_t time_gen   = 0;   /* 32 bits (the verify review's 7: 16 could alias after 65,536 losses) */
 static volatile uint8_t  time_excl  = 0;   /* ROWISR_EXCL_* bits */
 
 static inline uint16_t sys_tc(void) {
@@ -302,13 +302,50 @@ static inline void time_excludeI(uint8_t bit, bool on) {
     }
 }
 
+/* ---- The USB frame counter (D3 step 1, case 5) ------------------------------
+ *
+ * The host's SOF advances FRMNO (11 bits, 1 kHz) whatever the core does, so
+ * on USB a returning silence of every observer that the 8 ms guard cannot see
+ * (349.5 ms and more, CT16B5's wrap, which the guard reads as the remainder)
+ * is caught after the fact: an interval's span by the extension and its span
+ * by the frame counter must agree, modulo 2.048 s, within 3 ms plus 0.2%
+ * (HCLK and the host's SOF differ by 0.09% at most: docs/sn32f299.md,
+ * "IHRC"). The verdict is trusted only with the driver ACTIVE at both ends,
+ * no bus-event flag pending at either end, and no bus event serviced in
+ * between (a generation the USB handler bumps through usb_event_kb() at
+ * every reset, suspend and wakeup it raises): a bus event inside the
+ * interval makes it INVALID, never healthy, since SOFs stop at a suspend. A
+ * rejected interval is INVALID with one loss, as the guard's: the extension
+ * invalidated, the generation bumped and adopted by this service, so the
+ * next observation re-primes and the next interval starts fresh; nothing is
+ * replayed. Off USB (the driver not ACTIVE) nothing is judged: the declared
+ * blind spot. The proof's scope is 13 s (the plan, D3): past it the check
+ * still runs, and the two moduli can come within the tolerance. */
+static volatile uint16_t usb_gen = 0;   /* bus events the USB handler serviced: reset, suspend, wakeup */
+#define USB_FRMNO_MASK    0x7FFu          /* the LLD's usbhw.h (mskFRAME_NO, mskBUS_*), not on this file's include path */
+#define USB_INSTS_WAKEUP  (1UL << 25)
+#define USB_INSTS_RESUME  (1UL << 29)
+#define USB_INSTS_SUSPEND (1UL << 30)
+#define USB_INSTS_RESET   (1UL << 31)
+#define USB_BUS_EVENTS    (USB_INSTS_RESET | USB_INSTS_SUSPEND | USB_INSTS_RESUME | USB_INSTS_WAKEUP)
+
+void usb_event_kb(usbevent_t event);
+void usb_event_kb(usbevent_t event) {   /* the USB handler (ISR context): tmk_core/protocol/chibios/usb_main.c */
+    if (event == USB_EVENT_RESET || event == USB_EVENT_SUSPEND || event == USB_EVENT_WAKEUP) usb_gen++;
+}
+
 /* A coherent snapshot: the extension observed, the scheduler's TC, the
- * generation and the validity, in one critical section. */
+ * generation and the validity, and the frame counter with its trust (the
+ * driver ACTIVE, no bus-event flag pending) and the bus-event generation, in
+ * one critical section: seven loads. */
 typedef struct {
     uint32_t ext;
+    uint32_t gen;
     uint16_t tc;
-    uint16_t gen;
+    uint16_t frm;      /* FRMNO at the observation */
+    uint16_t ugen;     /* the bus-event generation */
     uint8_t  valid;
+    uint8_t  usb;      /* FRMNO trusted at this end */
 } snap_t;
 
 static inline void take_snapI(snap_t *s) {
@@ -317,6 +354,9 @@ static inline void take_snapI(snap_t *s) {
     s->tc    = (uint16_t)CT_REG(T_SCHED, CT_TC);
     s->gen   = time_gen;
     s->valid = time_valid;
+    s->frm   = (uint16_t)(SN32_USB->FRMNO & USB_FRMNO_MASK);
+    s->ugen  = usb_gen;
+    s->usb   = (USBD1.state == USB_ACTIVE && (SN32_USB->INSTS & USB_BUS_EVENTS) == 0) ? 1u : 0u;
 }
 
 /* The slot boundaries crossed from a to b: round((dt - dphase) / slot), dt the
@@ -371,8 +411,13 @@ static struct {
     uint8_t  spurious;         /* invocations inside the epoch already serviced, saturating */
     uint8_t  late_omit;        /* omissions by the arm deadline (a subset of omitted), saturating */
     uint8_t  omit_row[SN32F2XX_RGB_MATRIX_ROWS_HW];   /* omissions per mux row (row and colour), saturating */
+    uint32_t usb_checked;      /* intervals the frame counter judged: VALID, the driver ACTIVE at both ends, no bus event */
+    uint16_t usb_worst_ms;     /* the worst modular distance among the intervals it accepted, ms */
+    uint16_t usb_last_dt_ms, usb_last_df;   /* the last rejected interval's two spans: the extension's and the frame counter's, ms */
+    uint8_t  usb_rejects;      /* intervals the frame counter rejected: the spans disagree, saturating */
+    uint8_t  usb_events;       /* intervals rejected for a bus event inside them, serviced or pending, saturating */
 } rec;
-static uint16_t seen_gen = 0;        /* the loss generation the handler last saw (the losses, across re-primes) */
+static uint32_t seen_gen = 0;        /* the loss generation the handler last saw (the losses, across re-primes) */
 static bool     hw_fault = false;    /* a timer's reset never completed at init: nothing started, the columns released */
 
 static inline void sat8(uint8_t *c) {
@@ -420,6 +465,26 @@ void rowisr_record_rows(uint8_t *out28) {   /* op 28 sub 5: the rest (rowisr_dia
     out28[6] = emn & 0xFF; out28[7] = emn >> 8;
     memcpy(&out28[8], rows, SN32F2XX_RGB_MATRIX_ROWS_HW);          /* 8..25 */
     out28[26] = sv & 0xFF; out28[27] = (sv >> 8) & 0xFF;            /* every service, low 16 bits */
+}
+
+void rowisr_record_usb(uint8_t *out28) {   /* op 28 sub 6: the frame counter's record and the clocks' state (rowisr_diag.h) */
+    chSysLock();
+    uint32_t ck = rec.usb_checked, gen = time_gen;
+    uint16_t wm = rec.usb_worst_ms, ldt = rec.usb_last_dt_ms, ldf = rec.usb_last_df, ug = usb_gen;
+    uint8_t  rj = rec.usb_rejects, ev = rec.usb_events, tv = time_valid, tx = time_excl;
+    uint16_t frm = (uint16_t)(SN32_USB->FRMNO & USB_FRMNO_MASK);
+    uint8_t  st  = (uint8_t)USBD1.state;
+    uint8_t  live = (USBD1.state == USB_ACTIVE && (SN32_USB->INSTS & USB_BUS_EVENTS) == 0) ? 1u : 0u;
+    chSysUnlock();
+    uint8_t *p = out28;
+#define PUT32(x) do { uint32_t v_ = (x); *p++ = v_ & 0xFF; *p++ = (v_ >> 8) & 0xFF; *p++ = (v_ >> 16) & 0xFF; *p++ = (v_ >> 24) & 0xFF; } while (0)
+#define PUT16(x) do { uint16_t v_ = (x); *p++ = v_ & 0xFF; *p++ = (v_ >> 8) & 0xFF; } while (0)
+    PUT32(ck); *p++ = rj; *p++ = ev; PUT16(wm);   /* 8 */
+    PUT16(ldt); PUT16(ldf); PUT32(gen);           /* 16 */
+    PUT16(ug); *p++ = st; *p++ = live;            /* 20 */
+    PUT16(frm); *p++ = tv; *p++ = tx;             /* 24 */
+#undef PUT16
+#undef PUT32
 }
 
 bool sn32f2xx_hw_fault(void) {
@@ -606,6 +671,37 @@ static void rowisr_slot(void) {
     }
     bool valid1 = have_last && s1.valid && last_snap.valid && s1.gen == last_snap.gen &&
                   (s1.ext - last_snap.ext) <= EPOCH_CONSUMER_MAX;
+    if (valid1 && last_snap.usb) {   /* D3 case 5: the frame counter's verdict on an interval that began on USB */
+        bool reject;
+        if (!s1.usb || s1.ugen != last_snap.ugen) {   /* a bus event inside it, serviced or pending: never healthy */
+            sat8(&rec.usb_events);
+            reject = true;
+        } else {
+            uint32_t dext  = s1.ext - last_snap.ext;                  /* 5.33 us ticks; under an hour, so x2 fits */
+            uint32_t dt_ms = (dext * 2u + 187u) / 375u;               /* the extension's span, ms, rounded */
+            uint32_t df    = (uint32_t)(s1.frm - last_snap.frm) & USB_FRMNO_MASK;   /* the frame counter's, modulo 2,048 */
+            uint32_t diff  = (dt_ms - df) & USB_FRMNO_MASK;
+            if (diff > 1024u) diff = 2048u - diff;                    /* the modular distance */
+            rec.usb_checked++;
+            reject = diff > 3u + (dt_ms >> 9);                        /* 3 ms plus 0.2% of the span */
+            if (reject) {
+                rec.usb_last_dt_ms = dt_ms > 0xFFFFu ? 0xFFFFu : (uint16_t)dt_ms;
+                rec.usb_last_df    = (uint16_t)df;
+                sat8(&rec.usb_rejects);
+            } else if (diff > rec.usb_worst_ms) {
+                rec.usb_worst_ms = (uint16_t)diff;
+            }
+        }
+        if (reject) {   /* INVALID with one loss, as the guard's: the generation bumped and adopted here */
+            chSysLockFromISR();
+            time_invalidateI();
+            s1.gen = time_gen;
+            chSysUnlockFromISR();
+            seen_gen = s1.gen;
+            sat8(&rec.epoch_losses);
+            valid1 = false;   /* counted as an invalid service below; the next observation re-primes */
+        }
+    }
     uint32_t boundaries = 1;
     if (valid1) {
         boundaries = boundaries_between(&last_snap, &s1);

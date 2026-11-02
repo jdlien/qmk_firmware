@@ -61,6 +61,7 @@ void rowisr_time_exclude(uint8_t bit, bool on); /* thread context */
 void rowisr_record_reset(void);
 void rowisr_record_fill(uint8_t *out28);        /* page 7's 28 bytes (health.h) */
 void rowisr_record_rows(uint8_t *out28);        /* op 28 sub 5 (rowisr_diag.h) */
+void rowisr_record_usb(uint8_t *out28);         /* op 28 sub 6: the frame counter's record (D3 case 5) and the clocks' state */
 bool sn32f2xx_hw_fault(void);                   /* a timer's reset never completed at init: nothing runs, the columns released */
 
 /* rgb_matrix's driver entry points (rgb_matrix_driver, defined in rowisr.c).

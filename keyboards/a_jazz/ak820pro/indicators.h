@@ -54,6 +54,11 @@ bool pwm_tick_running(void);
  * high and pauses the tick's writes to it; off drives it low and lets the
  * tick rewrite every pin. I-class or locked. */
 void indicators_marker(bool on);
+/* The bench's second marker, on the Win Lock LED's pin C15 (the silence of
+ * every interrupt, rgb/rowisr_diag.c): on drives it high, off drives it low
+ * and lets the tick rewrite every pin. Used only inside a mask of every
+ * interrupt, so the tick's writes need no pause. */
+void indicators_marker2(bool on);
 #endif
 /* Any indicator wants its LED lit (Caps, Win lock, charging). */
 bool indicators_any_lit(void);
