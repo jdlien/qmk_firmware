@@ -252,6 +252,15 @@ static volatile uint16_t time_stamp = 0;
 static volatile uint8_t  time_valid = 0;
 static volatile uint32_t time_gen   = 0;   /* 32 bits (the verify review's 7: 16 could alias after 65,536 losses) */
 static volatile uint16_t time_last_gap = 0;   /* the last observation gap the guard rejected, ticks (the record) */
+static volatile uint16_t time_guard_rejects = 0;   /* the guard's rejections, wrapping (the report's attribution) */
+
+/* The frames' freshness staled, with a new baseline: FRMNO as it reads now,
+ * not fresh; only a frame seen moving after this restores the trust (a
+ * movement inside a discarded gap cannot: the second verify review's 1). */
+static inline void frm_staleI(void) {
+    frm_seen     = (uint16_t)(SN32_USB->FRMNO & USB_FRMNO_MASK);
+    frm_seen_ext = time_ext - USB_FRM_FRESH;
+}
 static volatile uint8_t  time_excl  = 0;   /* ROWISR_EXCL_* bits */
 
 static inline uint16_t sys_tc(void) {
@@ -273,18 +282,25 @@ static inline void time_observeI(void) {
     if (gap >= EPOCH_INVALID_GAP) {
         time_valid    = 0;
         time_gen++;
-        time_last_gap = gap;                      /* the rejected gap, for the record */
-        frm_seen_ext  = time_ext - USB_FRM_FRESH; /* the discarded time stales the frames' freshness (the verify review's 1) */
+        time_last_gap = gap;   /* the rejected gap, for the record */
+        time_guard_rejects++;
+        frm_staleI();          /* the discarded time stales the frames' freshness (the verify reviews' 1) */
         return;
     }
     time_ext += gap;
 }
 
-static inline void time_invalidateI(void) {
+/* stale_frames: an exclusion discards time (the re-prime after it adds only
+ * the gap since the last stamp), so the frames' freshness goes with it; the
+ * handler's own rejection discards nothing (the next observation re-primes
+ * with its whole gap) and the frames, which disagreed with the extension
+ * because they counted the silence, stay trusted (the second verify
+ * review's new P1: staling them made the next interval a false rejection). */
+static inline void time_invalidateI(bool stale_frames) {
     if (time_valid) {
-        time_valid   = 0;
+        time_valid = 0;
         time_gen++;
-        frm_seen_ext = time_ext - USB_FRM_FRESH;
+        if (stale_frames) frm_staleI();
     }
 }
 
@@ -310,7 +326,7 @@ void rowisr_time_exclude(uint8_t bit, bool on) {   /* thread context: degraded m
     chSysLock();
     if (on) {
         time_excl |= bit;
-        time_invalidateI();
+        time_invalidateI(true);
     } else {
         time_excl &= (uint8_t)~bit;
     }
@@ -319,18 +335,19 @@ void rowisr_time_exclude(uint8_t bit, bool on) {   /* thread context: degraded m
 
 void rowisr_time_read(rowisr_time_t *t) {   /* thread context: the silence's report (rowisr_diag.c); a copy, not an observation */
     chSysLock();
-    t->ext      = time_ext;
-    t->gen      = time_gen;
-    t->stamp    = time_stamp;
-    t->last_gap = time_last_gap;
-    t->valid    = time_valid;
+    t->ext           = time_ext;
+    t->gen           = time_gen;
+    t->stamp         = time_stamp;
+    t->last_gap      = time_last_gap;
+    t->guard_rejects = time_guard_rejects;
+    t->valid         = time_valid;
     chSysUnlock();
 }
 
 static inline void time_excludeI(uint8_t bit, bool on) {
     if (on) {
         time_excl |= bit;
-        time_invalidateI();
+        time_invalidateI(true);
     } else {
         time_excl &= (uint8_t)~bit;
     }
@@ -704,8 +721,9 @@ static inline void sched_set_period(uint32_t ticks) {   /* I-class; MR9 = ticks 
  * arm nothing (the record's reader masks this handler). */
 static inline void service_commit(const snap_t *s1, bool valid1, uint32_t boundaries) {
     last_snap = *s1;
-    if (adopt_pending) {   /* the frame counter rejected this interval and bumped the generation itself: the baseline takes it, so the next interval is fresh */
+    if (adopt_pending) {   /* the frame counter rejected this interval and bumped the generation itself: the baseline takes it, so the next interval is fresh ... */
         last_snap.gen = adopt_gen;
+        last_snap.usb = 0;   /* ... and is not judged: one interval unjudged after a rejection, never a second verdict on the same silence (the second verify review) */
         adopt_pending = false;
     }
     have_last = true;
@@ -777,7 +795,7 @@ static void rowisr_slot(void) {
             chSysLockFromISR();
             bool fresh = time_valid != 0 && time_gen == s1.gen;   /* no other observer invalidated since the snapshot, re-primed or not */
             if (fresh) {
-                time_invalidateI();
+                time_invalidateI(false);   /* nothing discarded, the frames stay trusted (time_invalidateI's comment) */
                 adopt_gen = time_gen;
             }
             chSysUnlockFromISR();

@@ -252,6 +252,8 @@ static void report_fill(uint8_t page, uint8_t *out) {   /* subs 8 and 9: out = &
         put16(&out[2], sil_rep.t1.stamp);
         put16(&out[4], sil_rep.t0.last_gap);
         put16(&out[6], sil_rep.t1.last_gap);
+        put16(&out[8], sil_rep.t0.guard_rejects);
+        put16(&out[10], sil_rep.t1.guard_rejects);
     }
 }
 

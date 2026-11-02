@@ -53,6 +53,7 @@ void rowisr_time_exclude(uint8_t bit, bool on); /* thread context */
 typedef struct {   /* the extension's state, copied (not an observation): the silence's report */
     uint32_t ext, gen;
     uint16_t stamp, last_gap;   /* the last observer's CT16B5 stamp; the last gap the 8 ms guard rejected */
+    uint16_t guard_rejects;     /* the guard's rejections so far, wrapping */
     uint8_t  valid;
 } rowisr_time_t;
 void rowisr_time_read(rowisr_time_t *t);         /* thread context */

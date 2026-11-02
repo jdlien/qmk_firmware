@@ -102,8 +102,10 @@
  *          unmask, the lock released; each marker edge lies inside the
  *          silence, a few instructions from its end (the plan's endpoint
  *          contract; the masked part is one function and its disassembly
- *          is the count), so a probe on that LED sees the silence to a
- *          fraction of a microsecond. The 20 kHz
+ *          is the count: nine instructions with three loads before the
+ *          rising store, about 14 cycles, 0.3 us at 48 MHz; one store
+ *          before the unmask), so a probe on that LED sees the silence to
+ *          under half a microsecond. The 20 kHz
  *          tick, the row handler and the USB handler all stop meanwhile.
  *          What the record shows afterwards is the verdict on the
  *          OBSERVATION GAP, the silence plus the observers' offsets at each
@@ -130,12 +132,14 @@
  *          silences not run for a high pin, [31] silences run.
  *   sub 9  its second page: [4..5] the last observer's CT16B5 stamp before
  *          and [6..7] after, [8..9] the last gap the 8 ms guard rejected,
- *          before and [10..11] after (CT16B5 ticks). The extension's state is
- *          copied at each end, not observed. Read with sub 6's counts: a
- *          generation moved across the silence is one loss, the guard's if
- *          its last rejected gap moved too, the frame counter's if sub 6's
- *          rejections did; a generation unchanged with the extension's
- *          reading far short of the spin's is the alias past the guard.
+ *          before and [10..11] after (CT16B5 ticks), [12..13] the guard's
+ *          rejection count before and [14..15] after (wrapping). The
+ *          extension's state is copied at each end, not observed. Read with
+ *          sub 6's counts: a generation moved across the silence is one
+ *          loss, the guard's if its count moved too, the frame counter's if
+ *          sub 6's rejections did; a generation unchanged with the
+ *          extension's reading far short of the spin's is the alias past
+ *          the guard.
  *
  * The replies carry no correlation field beyond the op byte, as every dev
  * op's do: one host process at a time, the bench's rule.
