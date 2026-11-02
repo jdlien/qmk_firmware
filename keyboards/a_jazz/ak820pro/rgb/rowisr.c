@@ -239,6 +239,14 @@ static uint8_t key_row = 0;
  * INVALID bumps the loss generation; INVALID becomes VALID only by a re-prime
  * while no exclusion is active. Each observation is a critical section of a
  * few instructions. */
+/* The frame counter's freshness (below, "The USB frame counter"): FRMNO's
+ * last seen value and the extension's time then, tracked by both observers;
+ * staled by every invalidation, since the extension discards time there. */
+#define USB_FRMNO_MASK    0x7FFu          /* the LLD's usbhw.h (mskFRAME_NO, mskBUS_*), not on this file's include path */
+#define USB_FRM_FRESH     750u            /* 4 ms of CT16B5 ticks: FRMNO must have moved this recently to be trusted */
+static uint16_t frm_seen     = 0xFFFFu;
+static uint32_t frm_seen_ext = 0;
+
 static volatile uint32_t time_ext   = 0;
 static volatile uint16_t time_stamp = 0;
 static volatile uint8_t  time_valid = 0;
@@ -265,7 +273,8 @@ static inline void time_observeI(void) {
     if (gap >= EPOCH_INVALID_GAP) {
         time_valid    = 0;
         time_gen++;
-        time_last_gap = gap;   /* the rejected gap, for the record */
+        time_last_gap = gap;                      /* the rejected gap, for the record */
+        frm_seen_ext  = time_ext - USB_FRM_FRESH; /* the discarded time stales the frames' freshness (the verify review's 1) */
         return;
     }
     time_ext += gap;
@@ -273,14 +282,27 @@ static inline void time_observeI(void) {
 
 static inline void time_invalidateI(void) {
     if (time_valid) {
-        time_valid = 0;
+        time_valid   = 0;
         time_gen++;
+        frm_seen_ext = time_ext - USB_FRM_FRESH;
+    }
+}
+
+/* FRMNO tracked by both observers, so a row-only hold the tick keeps VALID
+ * keeps the frames fresh too (a hold across a 2.048 s frame wrap could
+ * otherwise return to an equal FRMNO; the verify review). I-class. */
+static inline void frm_trackI(void) {
+    uint16_t frm = (uint16_t)(SN32_USB->FRMNO & USB_FRMNO_MASK);
+    if (frm != frm_seen) {
+        frm_seen     = frm;
+        frm_seen_ext = time_ext;
     }
 }
 
 void rowisr_time_observe(void) {   /* the 20 kHz tick's observation (indicators.c) */
     chSysLockFromISR();
     time_observeI();
+    frm_trackI();
     chSysUnlockFromISR();
 }
 
@@ -295,11 +317,13 @@ void rowisr_time_exclude(uint8_t bit, bool on) {   /* thread context: degraded m
     chSysUnlock();
 }
 
-void rowisr_time_read(uint32_t *ext, uint32_t *gen, uint8_t *valid) {   /* thread context: the silence's report (rowisr_diag.c) */
+void rowisr_time_read(rowisr_time_t *t) {   /* thread context: the silence's report (rowisr_diag.c); a copy, not an observation */
     chSysLock();
-    *ext   = time_ext;
-    *gen   = time_gen;
-    *valid = time_valid;
+    t->ext      = time_ext;
+    t->gen      = time_gen;
+    t->stamp    = time_stamp;
+    t->last_gap = time_last_gap;
+    t->valid    = time_valid;
     chSysUnlock();
 }
 
@@ -324,8 +348,10 @@ static inline void time_excludeI(uint8_t bit, bool on) {
  * its transceiver on (USB_CFG.PHY_EN: the LLD clears it at a suspend, and
  * one of its paths returns to ACTIVE without it), no bus-event flag is
  * pending, and FRMNO was seen moving within the last 4 ms of the extension's
- * time (the bench's data cut leaves the driver ACTIVE with the frames
- * stopped, sleep.c; the hardware's own suspend needs 3 ms of idle bus). An
+ * time, tracked by both observers and staled by every invalidation, since
+ * the extension discards time there (the bench's data cut leaves the driver
+ * ACTIVE with the frames stopped, sleep.c; the hardware's own suspend needs
+ * 3 ms of idle bus). An
  * interval is judged when it began trusted; it is rejected when it ends
  * untrusted or a bus event was serviced inside it (a generation the USB
  * handler bumps through usb_event_kb() at every reset, suspend and wakeup it
@@ -341,16 +367,12 @@ static inline void time_excludeI(uint8_t bit, bool on) {
  * past it the check still runs, and the two moduli can come within the
  * tolerance. */
 static volatile uint16_t usb_gen = 0;   /* bus events the USB handler serviced: reset, suspend, wakeup */
-#define USB_FRMNO_MASK    0x7FFu          /* the LLD's usbhw.h (mskFRAME_NO, mskBUS_*), not on this file's include path */
 #define USB_INSTS_WAKEUP  (1UL << 25)
 #define USB_INSTS_RESUME  (1UL << 29)
 #define USB_INSTS_SUSPEND (1UL << 30)
 #define USB_INSTS_RESET   (1UL << 31)
 #define USB_BUS_EVENTS    (USB_INSTS_RESET | USB_INSTS_SUSPEND | USB_INSTS_RESUME | USB_INSTS_WAKEUP)
 #define USB_CFG_PHY_EN    (1UL << 30)     /* USB_CFG.PHY_EN, the transceiver on (sleep.c, F-045) */
-#define USB_FRM_FRESH     750u            /* 4 ms of CT16B5 ticks: FRMNO must have moved this recently to be trusted */
-static uint16_t frm_seen     = 0xFFFFu;   /* the FRMNO value the snapshot last saw change, and the extension's time then */
-static uint32_t frm_seen_ext = 0;
 
 void usb_event_kb(usbevent_t event);
 void usb_event_kb(usbevent_t event) {   /* the USB handler (ISR context): tmk_core/protocol/chibios/usb_main.c */
@@ -385,12 +407,8 @@ static inline void take_timeI(snap_t *s) {
 
 static inline void take_snapI(snap_t *s) {
     take_timeI(s);
-    uint16_t frm = (uint16_t)(SN32_USB->FRMNO & USB_FRMNO_MASK);
-    if (frm != frm_seen) {
-        frm_seen     = frm;
-        frm_seen_ext = time_ext;
-    }
-    s->frm  = frm;
+    frm_trackI();
+    s->frm  = frm_seen;
     s->ugen = usb_gen;
     s->usb  = (USBD1.state == USB_ACTIVE && (SN32_USB->CFG & USB_CFG_PHY_EN) != 0 &&
                (SN32_USB->INSTS & USB_BUS_EVENTS) == 0 && (time_ext - frm_seen_ext) < USB_FRM_FRESH) ? 1u : 0u;
@@ -749,16 +767,19 @@ static void rowisr_slot(void) {
             rec.usb_last_dt_ms = dt_ms > 0xFFFFu ? 0xFFFFu : (uint16_t)dt_ms;
             rec.usb_last_df    = (uint16_t)df;
             /* INVALID with one loss, as the guard's. The generation is bumped
-             * only if no other observer has since the snapshot; otherwise that
-             * observer's loss is the one, counted at the next entry by the
-             * generation check, and this baseline is not adopted (its time
-             * could predate a gap the tick discarded; the review's P2 4). The
+             * only if no other observer has since the snapshot (the generation
+             * unchanged: a tick's invalidation, re-primed or not, is that
+             * observer's loss, counted once at the next entry by the
+             * generation check, and this baseline is not adopted, since its
+             * time predates a gap the tick discarded; the review's P2 4). The
              * snapshot stays as taken, so step 6 and the exit see the
              * generation moved and measure nothing across it. */
             chSysLockFromISR();
-            bool fresh = time_valid != 0;
-            time_invalidateI();
-            adopt_gen = time_gen;
+            bool fresh = time_valid != 0 && time_gen == s1.gen;   /* no other observer invalidated since the snapshot, re-primed or not */
+            if (fresh) {
+                time_invalidateI();
+                adopt_gen = time_gen;
+            }
             chSysUnlockFromISR();
             if (fresh) {
                 seen_gen      = adopt_gen;
@@ -897,9 +918,20 @@ static void rowisr_slot(void) {
      * at 5.33 us resolution), both ends VALID in one generation. */
     snap_t sx;
     chSysLockFromISR();
-    take_timeI(&sx);
+    take_snapI(&sx);
     chSysUnlockFromISR();
-    if (s1.valid && sx.valid && sx.gen == s1.gen) {
+    bool dur_ok = s1.valid && sx.valid && sx.gen == s1.gen;
+    if (dur_ok && s1.usb) {   /* an aliasing interruption inside the handler is judged at the next entry; this span too, before its sample is taken (the verify review's 4) */
+        if (!sx.usb || sx.ugen != s1.ugen) {
+            dur_ok = false;
+        } else {
+            uint32_t dt_ms = ((sx.ext - s1.ext) * 2u + 187u) / 375u;
+            uint32_t diff  = (dt_ms - ((uint32_t)(sx.frm - s1.frm) & USB_FRMNO_MASK)) & USB_FRMNO_MASK;
+            if (diff > 1024u) diff = 2048u - diff;
+            if (diff > 3u + (dt_ms >> 9)) dur_ok = false;
+        }
+    }
+    if (dur_ok) {
         uint32_t b2 = boundaries_between(&s1, &sx);
         uint32_t el = b2 * slot_ticks + (uint32_t)((int32_t)sx.tc - (int32_t)s1.tc);
         rec.elapsed_sum += el;

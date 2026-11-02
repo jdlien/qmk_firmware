@@ -141,13 +141,16 @@ void rowisr_diag_tick(void) {   /* ISR context, priority 2: above the row interr
  * Armed here, fired by the housekeeping task once its delay has passed, so
  * this op's reply has reached the host first: under the system lock (PRIMASK
  * on this core: every interrupt), the marker on the Win Lock LED's pin C15
- * raised (a load of the pin, a branch and a store after the mask), a spin on
- * CT16B5's TC with its wraps counted (polled every few cycles, far inside
+ * raised (the pin's read, its branch and the store after the mask), a spin
+ * on CT16B5's TC with its wraps counted (polled every few cycles, far inside
  * the 349.5 ms wrap), the marker lowered by one store, the lock released;
  * the state checks and the bookkeeping lie outside the mask (the review's
- * P2 5; the disassembly checked). The length the spin measured, in CT16B5 ticks, the TC at
- * each edge and the extension's reading before and 200 us after (its time,
- * generation and validity, through rowisr_time_read) are the report (sub 8);
+ * P2 5; the masked part is its own function, the disassembly checked). The
+ * length the spin measured, in CT16B5 ticks, the TC at each edge and the
+ * extension's copied state before and 2 ms after (its time, generation,
+ * validity, the last observer's stamp and the guard's last rejected gap,
+ * through rowisr_time_read: a copy, not an observation) are the report
+ * (subs 8 and 9);
  * the marker's edges on the witness are the timing. 1,000..8,000,000 us
  * (the watchdog, nominally 11.5 s, is not fed meanwhile; the plan's longest
  * case is 7 s); refused while another is armed, or while the Win Lock LED is
@@ -159,11 +162,36 @@ void rowisr_diag_tick(void) {   /* ISR context, priority 2: above the row interr
 static volatile uint32_t sil_us      = 0;   /* armed: the length in us; 0 none */
 static uint32_t          sil_fire_ms = 0;   /* timer_read32 at which it fires */
 static uint8_t           sil_done = 0, sil_lost = 0;   /* run; not run at the firing (the marker's pin was high) */
-static struct {                             /* the last silence's report (sub 8) */
-    uint32_t us, ticks, ext0, ext1, gen0, gen1;
-    uint16_t tc0, tc1;
-    uint8_t  valid0, valid1;
+static struct {                             /* the last silence's report (subs 8 and 9) */
+    uint32_t      us, ticks;
+    uint16_t      tc0, tc1;                 /* CT16B5 at the marker's edges */
+    rowisr_time_t t0, t1;                   /* the extension before, and 2 ms after */
 } sil_rep;
+
+/* The masked part on its own, so the rising edge follows the mask by the
+ * pin's read, its branch and the store, and the falling edge precedes the
+ * unmask by one store (the ELF checked); 0 if the pin was high (no edge). */
+__attribute__((noinline)) static uint32_t silence_masked(uint32_t want, uint16_t *tc0, uint16_t *tc1) {
+    chSysLock();
+    if (gpio_read_pin(LED_WINLOCK_PIN)) {   /* the pin itself, under the mask: the tick could have raised it since the check outside */
+        chSysUnlock();
+        return 0;
+    }
+    gpio_write_pin_high(LED_WINLOCK_PIN);   /* the marker's rising edge */
+    uint16_t t0   = (uint16_t)ct_rd(5, CT_TC);
+    uint16_t last = t0;
+    uint32_t acc  = 0;
+    while (acc < want) {
+        uint16_t now = (uint16_t)ct_rd(5, CT_TC);
+        acc += (uint16_t)(now - last);
+        last = now;
+    }
+    gpio_write_pin_low(LED_WINLOCK_PIN);    /* the falling edge: one store before the unmask */
+    chSysUnlock();
+    *tc0 = t0;
+    *tc1 = last;
+    return acc ? acc : 1u;
+}
 
 static bool silence_arm(uint32_t us, uint16_t delay_ms) {
     if (us < 1000u || us > 8000000u || delay_ms > 5000u || sil_us != 0) return false;
@@ -183,54 +211,48 @@ static bool silence_arm(uint32_t us, uint16_t delay_ms) {
 static void silence_run(void) {   /* the housekeeping task: thread context */
     uint32_t us   = sil_us;
     uint32_t want = (uint32_t)(((uint64_t)us * 3u + 8u) / 16u);   /* 187.5 ticks a ms: us x 3 / 16, rounded */
-    uint32_t ext0, gen0;
-    uint8_t  valid0;
-    rowisr_time_read(&ext0, &gen0, &valid0);
     if (lock_state_gui() || (indicator_forced() & 1u)) {   /* lit or previewed since the arm: no clean rising edge to mark */
         sil_us = 0;
         sil_lost++;
         return;
     }
-    chSysLock();
-    if (gpio_read_pin(LED_WINLOCK_PIN)) {   /* the pin itself, under the mask (the tick could have raised it since the check above) */
-        chSysUnlock();
+    rowisr_time_t t0;
+    rowisr_time_read(&t0);
+    uint16_t tc0 = 0, tc1 = 0;
+    uint32_t acc = silence_masked(want, &tc0, &tc1);
+    if (acc == 0) {
         sil_us = 0;
         sil_lost++;
         return;
     }
-    gpio_write_pin_high(LED_WINLOCK_PIN);   /* the marker's rising edge: a load, a branch and a store after the mask */
-    uint16_t tc0  = (uint16_t)ct_rd(5, CT_TC);
-    uint16_t last = tc0;
-    uint32_t acc  = 0;
-    while (acc < want) {
-        uint16_t now = (uint16_t)ct_rd(5, CT_TC);
-        acc += (uint16_t)(now - last);
-        last = now;
-    }
-    gpio_write_pin_low(LED_WINLOCK_PIN);    /* the falling edge: one store before the unmask */
-    chSysUnlock();
     indicators_out_resync();
-    sil_rep.us = us; sil_rep.ticks = acc; sil_rep.tc0 = tc0; sil_rep.tc1 = last;
-    sil_rep.ext0 = ext0; sil_rep.gen0 = gen0; sil_rep.valid0 = valid0;
-    wait_us(200);   /* the tick's first observations after the unmask: the guard's verdict and the re-prime */
-    rowisr_time_read(&sil_rep.ext1, &sil_rep.gen1, &sil_rep.valid1);
+    sil_rep.us = us; sil_rep.ticks = acc; sil_rep.tc0 = tc0; sil_rep.tc1 = tc1; sil_rep.t0 = t0;
+    wait_ms(2);   /* the observers' first passes after the unmask: the tick's within 50 us, scan-only's slots within 625 us; the guard's verdict and the re-prime */
+    rowisr_time_read(&sil_rep.t1);
     sil_us = 0;
     sil_done++;
 }
 
-static void report_fill(uint8_t *out) {   /* sub 8: out = &data[4], zeroed */
-    put32(&out[0], sil_rep.us);
-    put32(&out[4], sil_rep.ticks);
-    put32(&out[8], sil_rep.ext0);
-    put32(&out[12], sil_rep.ext1);
-    put16(&out[16], (uint16_t)sil_rep.gen0);
-    put16(&out[18], (uint16_t)sil_rep.gen1);
-    put16(&out[20], sil_rep.tc0);
-    put16(&out[22], sil_rep.tc1);
-    out[24] = sil_rep.valid0;
-    out[25] = sil_rep.valid1;
-    out[26] = sil_lost;
-    out[27] = sil_done;
+static void report_fill(uint8_t page, uint8_t *out) {   /* subs 8 and 9: out = &data[4], zeroed */
+    if (page == 0) {
+        put32(&out[0], sil_rep.us);
+        put32(&out[4], sil_rep.ticks);
+        put32(&out[8], sil_rep.t0.ext);
+        put32(&out[12], sil_rep.t1.ext);
+        put16(&out[16], (uint16_t)sil_rep.t0.gen);
+        put16(&out[18], (uint16_t)sil_rep.t1.gen);
+        put16(&out[20], sil_rep.tc0);
+        put16(&out[22], sil_rep.tc1);
+        out[24] = sil_rep.t0.valid;
+        out[25] = sil_rep.t1.valid;
+        out[26] = sil_lost;
+        out[27] = sil_done;
+    } else {
+        put16(&out[0], sil_rep.t0.stamp);
+        put16(&out[2], sil_rep.t1.stamp);
+        put16(&out[4], sil_rep.t0.last_gap);
+        put16(&out[6], sil_rep.t1.last_gap);
+    }
 }
 
 void rowisr_diag_cancelI(void) {   /* I-class: pwm_tick_stopI(), and the driver's deep-sleep entry */
@@ -345,9 +367,10 @@ bool rowisr_diag_op28(uint8_t *data) {
             status_fill(&data[4]);
             return true;
         }
-        case 8:   /* the last silence's report */
+        case 8:   /* the last silence's report, and its second page */
+        case 9:
             memset(&data[4], 0, 28);
-            report_fill(&data[4]);
+            report_fill(sub == 9 ? 1u : 0u, &data[4]);
             return true;
         default:
             return false;

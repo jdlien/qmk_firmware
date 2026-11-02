@@ -96,15 +96,21 @@
  *          0 = 200 (so this reply reaches the host first)
  *          Fired by the housekeeping task after the delay: under the system
  *          lock, which masks every interrupt on this core, a MARKER on the
- *          Win Lock LED's pin C15 raised by one store, a spin on CT16B5 for
- *          the length with its wraps counted, the marker lowered by one
- *          store, the lock released; each marker edge lies inside the
- *          silence, a store from its end (the plan's endpoint contract), so
- *          a probe on that LED sees the silence to a few cycles. The 20 kHz
+ *          Win Lock LED's pin C15 raised (the pin's read, its branch and the
+ *          store after the mask), a spin on CT16B5 for the length with its
+ *          wraps counted, the marker lowered by one store before the
+ *          unmask, the lock released; each marker edge lies inside the
+ *          silence, a few instructions from its end (the plan's endpoint
+ *          contract; the masked part is one function and its disassembly
+ *          is the count), so a probe on that LED sees the silence to a
+ *          fraction of a microsecond. The 20 kHz
  *          tick, the row handler and the USB handler all stop meanwhile.
  *          What the record shows afterwards is the verdict on the
- *          OBSERVATION GAP, the silence plus the observers' offsets (under
- *          0.1 ms with the tick running), not on the requested length: a
+ *          OBSERVATION GAP, the silence plus the observers' offsets at each
+ *          end (the tick's 50 us period plus its service latency, which
+ *          higher-priority handlers lengthen and no nominal figure bounds;
+ *          scan-only's 625 us slot plus the handler's: the plan, D3 case
+ *          2), not on the requested length: a
  *          gap under 8 ms exact, 8 ms and more INVALID by the guard with one
  *          loss, a gap near a multiple of 349.5 ms past the guard and, on
  *          USB, INVALID by the frame counter inside its 13 s scope; with no
@@ -117,14 +123,19 @@
  *          each on its own pin: the ordering case. Reply as sub 2's.
  *   sub 8  the last silence's report: [4..7] its length as requested, us,
  *          [8..11] as the spin measured it, CT16B5 ticks (5.33 us), [12..15]
- *          the extension's time before it and [16..19] 200 us after it,
+ *          the extension's time before it and [16..19] 2 ms after it,
  *          [20..21] the loss generation before and [22..23] after (low 16
  *          bits), [24..25] CT16B5's TC at the rising edge and [26..27] at the
  *          falling edge, [28] the extension VALID before and [29] after, [30]
- *          silences not run for a high pin, [31] silences run. The
- *          extension's reading across the silence against the spin's is the
- *          guard's view of it: a bumped generation is its rejection, an
- *          unchanged one with a short reading is the alias.
+ *          silences not run for a high pin, [31] silences run.
+ *   sub 9  its second page: [4..5] the last observer's CT16B5 stamp before
+ *          and [6..7] after, [8..9] the last gap the 8 ms guard rejected,
+ *          before and [10..11] after (CT16B5 ticks). The extension's state is
+ *          copied at each end, not observed. Read with sub 6's counts: a
+ *          generation moved across the silence is one loss, the guard's if
+ *          its last rejected gap moved too, the frame counter's if sub 6's
+ *          rejections did; a generation unchanged with the extension's
+ *          reading far short of the spin's is the alias past the guard.
  *
  * The replies carry no correlation field beyond the op byte, as every dev
  * op's do: one host process at a time, the bench's rule.
