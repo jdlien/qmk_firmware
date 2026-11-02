@@ -341,6 +341,19 @@ static uint32_t boundaries_between(const snap_t *a, const snap_t *b) {
     return (uint32_t)(((uint64_t)dt + half) / slot_ticks);
 }
 
+/* Whether a slot boundary lies between a and b: step 6's crossed check,
+ * inside the masked section, so a comparison and a shift, never
+ * boundaries_between()'s divide (a software __udivsi3 on this core; the
+ * verify review's timing concern, 11-01). Same validity rule as above. */
+static inline bool crossed_between(const snap_t *a, const snap_t *b) {
+    uint32_t dext = b->ext - a->ext;
+    if (dext >= 0x700000UL) return true;   /* 39 s and more: crossed many times over */
+    int32_t dphase = (int32_t)b->tc - (int32_t)a->tc;
+    int32_t dt     = (int32_t)(dext * SYS_TICK_HCLK) - dphase;
+    if (dt < 0) dt = 0;
+    return (uint32_t)dt + (slot_ticks >> 1) >= slot_ticks;
+}
+
 /* ---- The record (D10) ------------------------------------------------------ */
 static struct {
     uint32_t slots_elapsed;    /* boundaries crossed, summed over services with a VALID interval */
@@ -699,7 +712,7 @@ static void rowisr_slot(void) {
     snap_t s6;
     take_snapI(&s6);
     crossed = (CT_REG(T_SCHED, CT_RIS) & RIS_MR9) != 0;
-    if (!crossed && s1.valid && s6.valid && s6.gen == s1.gen && boundaries_between(&s1, &s6) != 0) crossed = true;
+    if (!crossed && s1.valid && s6.valid && s6.gen == s1.gen && crossed_between(&s1, &s6)) crossed = true;
     if (!crossed) {
         if (width_sum && s6.tc <= ROWISR_ARM_DEADLINE) {
             pulse_arm_all();
