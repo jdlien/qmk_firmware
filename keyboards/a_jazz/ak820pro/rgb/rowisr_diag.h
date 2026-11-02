@@ -85,26 +85,46 @@
  *          and [14..15] by the frame counter, ms, [16..19] the loss
  *          generation now (32 bits), [20..21] the bus-event generation,
  *          [22] the USB driver's state (hal_usb.h: 4 ACTIVE, 5 SUSPENDED),
- *          [23] the frame counter trusted now, [24..25] FRMNO now, [26] the
- *          extension VALID, [27] the exclusion bits in force. The counters
- *          reset with the health counters.
- *   sub 7  a silence of every interrupt  [5..6] ms 1..8000, [7..8] a delay
- *          in ms before it, 0 = 200 (so this reply reaches the host first)
+ *          [23] the frame counter trusted now (ACTIVE, the transceiver on,
+ *          no bus-event flag pending, FRMNO seen moving within 4 ms),
+ *          [24..25] FRMNO now, [26] the extension VALID now, [27] the
+ *          exclusion bits in force, [28..29] the last observation gap the
+ *          8 ms guard rejected, CT16B5 ticks, [30] FRMNO seen moving within
+ *          the last 4 ms. The counters reset with the health counters.
+ *   sub 7  a silence of every interrupt  [5..8] the length in us,
+ *          1,000..8,000,000, little-endian; [9..10] a delay in ms before it,
+ *          0 = 200 (so this reply reaches the host first)
  *          Fired by the housekeeping task after the delay: under the system
  *          lock, which masks every interrupt on this core, a MARKER on the
- *          Win Lock LED's pin C15 raised, a spin on CT16B5 for the length
- *          with its wraps counted, the marker lowered, the lock released;
- *          each marker edge a store inside the silence (the plan's endpoint
- *          contract), so a probe on that LED sees the silence to a few
- *          cycles. The 20 kHz tick, the row handler and the USB handler all
- *          stop meanwhile; the row handler's record afterwards shows the
- *          guard's or the frame counter's verdict (INVALID, one loss, from
- *          8 ms; on USB any length; on battery a 349.5 ms multiple can alias
- *          past the guard: the plan's declared limit). The watchdog is not
- *          fed meanwhile (11.5 s nominal). Refused while another is armed
- *          or the Win Lock LED is lit or previewed; a tick stop cancels an
- *          armed one. May nest inside a row-only hold (sub 1), each on its
- *          own pin: the ordering case. Reply as sub 2's.
+ *          Win Lock LED's pin C15 raised by one store, a spin on CT16B5 for
+ *          the length with its wraps counted, the marker lowered by one
+ *          store, the lock released; each marker edge lies inside the
+ *          silence, a store from its end (the plan's endpoint contract), so
+ *          a probe on that LED sees the silence to a few cycles. The 20 kHz
+ *          tick, the row handler and the USB handler all stop meanwhile.
+ *          What the record shows afterwards is the verdict on the
+ *          OBSERVATION GAP, the silence plus the observers' offsets (under
+ *          0.1 ms with the tick running), not on the requested length: a
+ *          gap under 8 ms exact, 8 ms and more INVALID by the guard with one
+ *          loss, a gap near a multiple of 349.5 ms past the guard and, on
+ *          USB, INVALID by the frame counter inside its 13 s scope; with no
+ *          host's frames such a gap can read healthy: the plan's declared
+ *          limit. The watchdog is not fed meanwhile (11.5 s nominal).
+ *          Refused while another is armed or the Win Lock LED is lit or
+ *          previewed, and not run (counted as lost, sub 8's [30]) if the
+ *          pin is high at the firing; a tick stop or a deep sleep's entry
+ *          cancels an armed one. May nest inside a row-only hold (sub 1),
+ *          each on its own pin: the ordering case. Reply as sub 2's.
+ *   sub 8  the last silence's report: [4..7] its length as requested, us,
+ *          [8..11] as the spin measured it, CT16B5 ticks (5.33 us), [12..15]
+ *          the extension's time before it and [16..19] 200 us after it,
+ *          [20..21] the loss generation before and [22..23] after (low 16
+ *          bits), [24..25] CT16B5's TC at the rising edge and [26..27] at the
+ *          falling edge, [28] the extension VALID before and [29] after, [30]
+ *          silences not run for a high pin, [31] silences run. The
+ *          extension's reading across the silence against the spin's is the
+ *          guard's view of it: a bumped generation is its rejection, an
+ *          unchanged one with a short reading is the alias.
  *
  * The replies carry no correlation field beyond the op byte, as every dev
  * op's do: one host process at a time, the bench's rule.

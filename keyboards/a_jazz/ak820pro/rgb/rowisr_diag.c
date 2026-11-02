@@ -7,6 +7,7 @@
 #include <hal.h>
 #include "gpio.h"
 #include "timer.h"
+#include "wait.h"
 #ifdef RGB_MATRIX_ENABLE
 #    include "rgb_matrix.h"
 #endif
@@ -135,29 +136,36 @@ void rowisr_diag_tick(void) {   /* ISR context, priority 2: above the row interr
     }
 }
 
-/* ---- sub 7: a silence of every interrupt (D3's injections) -----------------
+/* ---- subs 7 and 8: a silence of every interrupt (D3's injections) ------------
  *
  * Armed here, fired by the housekeeping task once its delay has passed, so
  * this op's reply has reached the host first: under the system lock (PRIMASK
  * on this core: every interrupt), the marker on the Win Lock LED's pin C15
- * raised, a spin on CT16B5's TC with its wraps counted (polled every few
- * cycles, far inside the 349.5 ms wrap), the marker lowered, the lock
- * released. Both marker edges lie inside the silence, each a store from its
- * end (the plan's endpoint contract). The length the spin measured, in
- * CT16B5 ticks, is the status's; the marker's edges on the witness are the
- * timing. 1..8000 ms (the watchdog, nominally 11.5 s, is not fed meanwhile;
- * the plan's longest case is 7 s); refused while another is armed, or while
- * the Win Lock LED is lit or previewed (the pin would give no rising edge;
- * the pin itself checked under the lock). A row-only hold may be running:
- * the ordering case nests the two, each on its own pin. A tick stop (a
- * sleep) cancels an armed silence. */
-static volatile uint16_t sil_ms      = 0;   /* armed: the length; 0 none */
+ * raised by one store, a spin on CT16B5's TC with its wraps counted (polled
+ * every few cycles, far inside the 349.5 ms wrap), the marker lowered by one
+ * store, the lock released; the bookkeeping lies outside the mask (the
+ * review's P2 5). The length the spin measured, in CT16B5 ticks, the TC at
+ * each edge and the extension's reading before and 200 us after (its time,
+ * generation and validity, through rowisr_time_read) are the report (sub 8);
+ * the marker's edges on the witness are the timing. 1,000..8,000,000 us
+ * (the watchdog, nominally 11.5 s, is not fed meanwhile; the plan's longest
+ * case is 7 s); refused while another is armed, or while the Win Lock LED is
+ * lit or previewed (the pin would give no rising edge), checked again under
+ * the lock at the firing: if the pin is high then, the silence is not run
+ * and counted as lost. A row-only hold may be running: the ordering case
+ * nests the two, each on its own pin. A tick stop or a deep sleep's entry
+ * cancels an armed silence. */
+static volatile uint32_t sil_us      = 0;   /* armed: the length in us; 0 none */
 static uint32_t          sil_fire_ms = 0;   /* timer_read32 at which it fires */
-static uint32_t          sil_ticks   = 0;   /* the last silence's measured length, CT16B5 ticks */
-static uint8_t           sil_done    = 0;
+static uint8_t           sil_done = 0, sil_lost = 0;   /* run; not run at the firing (the marker's pin was high) */
+static struct {                             /* the last silence's report (sub 8) */
+    uint32_t us, ticks, ext0, ext1, gen0, gen1;
+    uint16_t tc0, tc1;
+    uint8_t  valid0, valid1;
+} sil_rep;
 
-static bool silence_arm(uint16_t ms, uint16_t delay_ms) {
-    if (ms < 1u || ms > 8000u || delay_ms > 5000u || sil_ms != 0) return false;
+static bool silence_arm(uint32_t us, uint16_t delay_ms) {
+    if (us < 1000u || us > 8000000u || delay_ms > 5000u || sil_us != 0) return false;
     if (lock_state_gui() || (indicator_forced() & 1u)) return false;
     uint32_t fire = timer_read32() + (delay_ms ? delay_ms : 200u);   /* timer_read32 takes a lock: before ours */
     chSysLock();
@@ -166,31 +174,61 @@ static bool silence_arm(uint16_t ms, uint16_t delay_ms) {
         return false;
     }
     sil_fire_ms = fire;
-    sil_ms      = ms;
+    sil_us      = us;
     chSysUnlock();
     return true;
 }
 
 static void silence_run(void) {   /* the housekeeping task: thread context */
-    uint32_t want = (uint32_t)sil_ms * 375u / 2u;   /* 187.5 CT16B5 ticks a ms */
+    uint32_t us   = sil_us;
+    uint32_t want = (uint32_t)(((uint64_t)us * 3u + 8u) / 16u);   /* 187.5 ticks a ms: us x 3 / 16, rounded */
+    uint32_t ext0, gen0;
+    uint8_t  valid0;
+    rowisr_time_read(&ext0, &gen0, &valid0);
     chSysLock();
-    indicators_marker2(true);
-    uint16_t last = (uint16_t)ct_rd(5, CT_TC);
+    if (lock_state_gui() || (indicator_forced() & 1u) || gpio_read_pin(LED_WINLOCK_PIN)) {   /* no rising edge to mark */
+        sil_us = 0;
+        sil_lost++;
+        chSysUnlock();
+        return;
+    }
+    gpio_write_pin_high(LED_WINLOCK_PIN);   /* the marker's rising edge: one store after the mask */
+    uint16_t tc0  = (uint16_t)ct_rd(5, CT_TC);
+    uint16_t last = tc0;
     uint32_t acc  = 0;
     while (acc < want) {
         uint16_t now = (uint16_t)ct_rd(5, CT_TC);
         acc += (uint16_t)(now - last);
         last = now;
     }
-    indicators_marker2(false);
-    sil_ticks = acc;
-    sil_ms    = 0;
-    sil_done++;
+    gpio_write_pin_low(LED_WINLOCK_PIN);    /* the falling edge: one store before the unmask */
     chSysUnlock();
+    indicators_out_resync();
+    sil_rep.us = us; sil_rep.ticks = acc; sil_rep.tc0 = tc0; sil_rep.tc1 = last;
+    sil_rep.ext0 = ext0; sil_rep.gen0 = gen0; sil_rep.valid0 = valid0;
+    wait_us(200);   /* the tick's first observations after the unmask: the guard's verdict and the re-prime */
+    rowisr_time_read(&sil_rep.ext1, &sil_rep.gen1, &sil_rep.valid1);
+    sil_us = 0;
+    sil_done++;
 }
 
-void rowisr_diag_cancelI(void) {   /* I-class: pwm_tick_stopI() */
-    sil_ms = 0;   /* a silence armed across a sleep would fire at the wake */
+static void report_fill(uint8_t *out) {   /* sub 8: out = &data[4], zeroed */
+    put32(&out[0], sil_rep.us);
+    put32(&out[4], sil_rep.ticks);
+    put32(&out[8], sil_rep.ext0);
+    put32(&out[12], sil_rep.ext1);
+    put16(&out[16], (uint16_t)sil_rep.gen0);
+    put16(&out[18], (uint16_t)sil_rep.gen1);
+    put16(&out[20], sil_rep.tc0);
+    put16(&out[22], sil_rep.tc1);
+    out[24] = sil_rep.valid0;
+    out[25] = sil_rep.valid1;
+    out[26] = sil_lost;
+    out[27] = sil_done;
+}
+
+void rowisr_diag_cancelI(void) {   /* I-class: pwm_tick_stopI(), and the driver's deep-sleep entry */
+    sil_us = 0;   /* a silence armed across a sleep would fire at the wake */
     if (hold_kind == 0) return;
     hold_endI();
     holds_cancelled++;
@@ -205,7 +243,7 @@ void rowisr_diag_housekeeping(void) {
         }
         chSysUnlock();
     }
-    if (sil_ms != 0 && (int32_t)(timer_read32() - sil_fire_ms) >= 0) silence_run();
+    if (sil_us != 0 && (int32_t)(timer_read32() - sil_fire_ms) >= 0) silence_run();
 }
 
 static void status_fill(uint8_t *out) {   /* out = &data[4], zeroed */
@@ -215,8 +253,8 @@ static void status_fill(uint8_t *out) {   /* out = &data[4], zeroed */
     uint8_t  flags = hold_flags, done = holds_done, back = holds_backstopped, canc = holds_cancelled;
     uint8_t  depth = sn32f2xx_row_irq_depth();
     bool     on    = (NVIC->ISER[0] & (1u << sn32f2xx_row_irq_number())) != 0;
-    uint16_t sms   = sil_ms;
-    uint32_t stk   = sil_ticks;
+    uint32_t sus   = sil_us;
+    uint32_t stk   = sil_rep.ticks;
     uint8_t  sdn   = sil_done;
     chSysUnlock();
     out[0] = kind == 1 ? 1u : 0u;
@@ -233,8 +271,8 @@ static void status_fill(uint8_t *out) {   /* out = &data[4], zeroed */
     out[15] = kind == 4 ? 1u : 0u;
     put16(&out[16], kind == 4 ? left : 0u);
     out[18] = sn32f2xx_hw_fault() ? 1u : 0u;   /* [22]: stage 2's init could not reset a timer */
-    out[19] = sms != 0 ? 1u : 0u;              /* [23]: a silence of every interrupt is armed */
-    put16(&out[20], sms);                      /* [24..25]: its length, ms */
+    out[19] = sus != 0 ? 1u : 0u;              /* [23]: a silence of every interrupt is armed */
+    put16(&out[20], (uint16_t)(sus / 1000u));  /* [24..25]: its length, ms */
     put32(&out[22], stk);                      /* [26..29]: the last silence's measured length, CT16B5 ticks */
     out[26] = sdn;                             /* [30]: silences run */
 }
@@ -293,13 +331,18 @@ bool rowisr_diag_op28(uint8_t *data) {
             memset(&data[4], 0, 28);
             rowisr_record_usb(&data[4]);
             return true;
-        case 7: {   /* a silence of every interrupt: [5..6] ms, [7..8] the delay before it, ms */
-            uint16_t ms = (uint16_t)(data[5] | (data[6] << 8)), delay = (uint16_t)(data[7] | (data[8] << 8));
-            if (!silence_arm(ms, delay)) return false;
+        case 7: {   /* a silence of every interrupt: [5..8] us, [9..10] the delay before it, ms */
+            uint32_t us    = (uint32_t)data[5] | (uint32_t)data[6] << 8 | (uint32_t)data[7] << 16 | (uint32_t)data[8] << 24;
+            uint16_t delay = (uint16_t)(data[9] | (data[10] << 8));
+            if (!silence_arm(us, delay)) return false;
             memset(&data[4], 0, 28);
             status_fill(&data[4]);
             return true;
         }
+        case 8:   /* the last silence's report */
+            memset(&data[4], 0, 28);
+            report_fill(&data[4]);
+            return true;
         default:
             return false;
     }

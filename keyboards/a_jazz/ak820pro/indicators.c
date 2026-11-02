@@ -121,9 +121,8 @@ void indicators_marker(bool on) {
     gpio_write_pin(LED_CAPS_LOCK_PIN, on);
     if (!on) ind_last_out = IND_OUT_UNKNOWN;
 }
-void indicators_marker2(bool on) {   /* the Win Lock pin, inside a mask of every interrupt: no pause needed */
-    gpio_write_pin(LED_WINLOCK_PIN, on);
-    if (!on) ind_last_out = IND_OUT_UNKNOWN;
+void indicators_out_resync(void) {   /* a pin written outside this tick (the silence's marker on C15): rewrite every pin */
+    ind_last_out = IND_OUT_UNKNOWN;
 }
 #    define IND_MARKER_HELD() ind_marker
 #else

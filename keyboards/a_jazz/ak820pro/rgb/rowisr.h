@@ -50,6 +50,7 @@
 #define ROWISR_EXCL_LOCK     0x04u
 void rowisr_time_observe(void);                 /* I-class: from the 20 kHz tick */
 void rowisr_time_exclude(uint8_t bit, bool on); /* thread context */
+void rowisr_time_read(uint32_t *ext, uint32_t *gen, uint8_t *valid);   /* thread context: the extension now (the silence's report) */
 
 /* The handler's record (D10): health page 7 (HC_GET7, the totals) and op 28
  * sub 5 (the rest). Its elapsed figures run from the entry snapshot to the
