@@ -51,11 +51,17 @@
 void rowisr_time_observe(void);                 /* I-class: from the 20 kHz tick */
 void rowisr_time_exclude(uint8_t bit, bool on); /* thread context */
 
-/* The handler's record (D10): health page 7 (HC_GET7) and op 28 sub 5.
- * Reset with the health counters. */
+/* The handler's record (D10): health page 7 (HC_GET7, the totals) and op 28
+ * sub 5 (the rest). Its elapsed figures run from the entry snapshot to the
+ * exit snapshot in the scheduler's 48 MHz ticks: the port's prologue and
+ * epilogue, the health hooks and the accounting after the exit snapshot lie
+ * outside them; page 4's hooks bracket the whole handler at 5.33 us
+ * resolution, and the two together bound the complete cost. Reset with the
+ * health counters. */
 void rowisr_record_reset(void);
-void rowisr_record_fill(uint8_t *out28);        /* page 7's 28 bytes */
-void rowisr_record_rows(uint8_t *out28);        /* op 28 sub 5: the omissions per mux row and the rest */
+void rowisr_record_fill(uint8_t *out28);        /* page 7's 28 bytes (health.h) */
+void rowisr_record_rows(uint8_t *out28);        /* op 28 sub 5 (rowisr_diag.h) */
+bool sn32f2xx_hw_fault(void);                   /* a timer's reset never completed at init: nothing runs, the columns released */
 
 /* rgb_matrix's driver entry points (rgb_matrix_driver, defined in rowisr.c).
  * Since stage 1 sn32f2xx_init() touches no hardware: the timers, the pins

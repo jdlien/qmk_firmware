@@ -78,6 +78,7 @@ void watchdog_boot_check(void) {
      * reset loop, possibly on battery. Past the threshold the WDT stays off:
      * the board still boots and types, it just loses the auto-recovery. */
     degraded_mode = (consec_resets >= WDT_DEGRADED_THRESHOLD);
+    rowisr_time_exclude(ROWISR_EXCL_DEGRADED, degraded_mode);   /* the row handler's epoch clock: INVALID for the whole degraded boot (D3 step 1) */
 
 #ifdef CONSOLE_ENABLE
     if (fired_last) {

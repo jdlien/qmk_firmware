@@ -173,6 +173,7 @@ static void status_fill(uint8_t *out) {   /* out = &data[4], zeroed */
     out[14] = sn32f2xx_prime_timed_out() ? 1u : 0u;
     out[15] = kind == 4 ? 1u : 0u;
     put16(&out[16], kind == 4 ? left : 0u);
+    out[18] = sn32f2xx_hw_fault() ? 1u : 0u;   /* [22]: stage 2's init could not reset a timer */
 }
 
 /* ---- sub 3: one LED, one colour --------------------------------------------- */

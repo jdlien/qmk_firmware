@@ -130,9 +130,11 @@ void health_fill4(uint8_t *out28);
 void health_fill6(uint8_t *out28);
 /* Page 7 (HC_GET7, protocol 9): the row handler's record since the health
  * reset (plans/ROW-ISR-PLAN.md, D10; rgb/rowisr.c), in the scheduler's
- * 48 MHz ticks: u32 slots elapsed, u32 serviced, u32 pulses emitted, u32
- * omitted, u32 elapsed sum, u16 latency max, u16 elapsed max, u16 elapsed
- * min, u8 epoch losses, u8 services with an INVALID interval. */
+ * 48 MHz ticks: u32 slots elapsed (over the services with a VALID interval),
+ * u32 those services, u32 lit pulses emitted, u32 lit rows omitted, u32 the
+ * handler's elapsed sum (entry to exit snapshot; wraps after 89 s of handler
+ * time: a window's figure), u32 its samples, u16 latency max, u16 elapsed
+ * max (clips at 0xFFFF). The rest is op 28 sub 5 (rgb/rowisr_diag.h). */
 void health_fill7(uint8_t *out28);
 
 /* Live readouts for the on-board display (graphics/display.c debug page).

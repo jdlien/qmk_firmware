@@ -231,6 +231,11 @@ void od_tick(void) {
     mon_last = now;
     if (!mon_primed) { mon_primed = 1; return; }
     mon_ticks++;
+    if (gap > mon_max) {   /* the worst gap of every primed observation, below the counting threshold too (D10's tick-gap gate; codex, stage 2, P2 11) */
+        chSysLockFromISR();
+        mon_max = gap; mon_max_ctx = od_ctx; mon_max_act = activity;
+        chSysUnlockFromISR();
+    }
     if (gap < MON_T130) return;
     /* The rare path. */
     chSysLockFromISR();
@@ -238,7 +243,6 @@ void od_tick(void) {
     if (gap >= MON_T200) mon_n200++;
     if (gap >= MON_T350) mon_n350++;
     uint8_t ctx = od_ctx, act = activity;
-    if (gap > mon_max) { mon_max = gap; mon_max_ctx = ctx; mon_max_act = act; }
     if (gap >= MON_T200) {
         mon_entry_t *e = &mon_ring[mon_seq % MON_RING];
         e->seq = mon_seq++; e->secs = rtc_seconds_since_boot(); e->gap = gap; e->ctx = ctx; e->act = act;

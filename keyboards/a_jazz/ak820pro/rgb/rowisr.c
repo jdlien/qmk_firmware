@@ -57,7 +57,6 @@
 #endif
 #include "rowisr.h"
 #include "rowisr_diag.h"   /* the quiesce cancels a dev hold-off first (an inline no-op in other builds) */
-#include "watchdog.h"      /* watchdog_degraded(): an exclusion of the epoch clock */
 
 #define ROWS_PER_HAND (MATRIX_ROWS)
 #ifndef MATRIX_IO_DELAY
@@ -235,7 +234,7 @@ static uint8_t key_row = 0;
 static volatile uint32_t time_ext   = 0;
 static volatile uint16_t time_stamp = 0;
 static volatile uint8_t  time_valid = 0;
-static volatile uint8_t  time_gen   = 0;
+static volatile uint16_t time_gen   = 0;   /* 16 bits: cannot alias inside the hour (codex, P2 7) */
 static volatile uint8_t  time_excl  = 0;   /* ROWISR_EXCL_* bits */
 
 static inline uint16_t sys_tc(void) {
@@ -300,7 +299,7 @@ static inline void time_excludeI(uint8_t bit, bool on) {
 typedef struct {
     uint32_t ext;
     uint16_t tc;
-    uint8_t  gen;
+    uint16_t gen;
     uint8_t  valid;
 } snap_t;
 
@@ -318,35 +317,46 @@ static inline void take_snapI(snap_t *s) {
  * within the resolution, so the rounding is unambiguous. Only when both are
  * VALID in the same generation; the caller checks. 32-bit arithmetic below
  * ~44 s of gap, 64-bit above it (up to the hour). */
+static uint32_t slot_ticks = ROWISR_SLOT_TICKS;   /* the scheduler's period in force: the slot, or scan-only's (codex, P2 5) */
+
 static uint32_t boundaries_between(const snap_t *a, const snap_t *b) {
     uint32_t dext   = b->ext - a->ext;
     int32_t  dphase = (int32_t)b->tc - (int32_t)a->tc;
-    if (dext < 0x800000UL) {
-        int32_t  dt = (int32_t)(dext * SYS_TICK_HCLK) - dphase;
+    uint32_t half   = slot_ticks / 2u;
+    if (dext < 0x700000UL) {   /* 7.3 M ticks, 39 s: dext x 256 plus any phase stays inside int32 (codex, P2 7) */
+        int32_t dt = (int32_t)(dext * SYS_TICK_HCLK) - dphase;
         if (dt < 0) dt = 0;
-        return ((uint32_t)dt + ROWISR_SLOT_TICKS / 2u) / ROWISR_SLOT_TICKS;
+        return ((uint32_t)dt + half) / slot_ticks;
     }
     int64_t dt = (int64_t)dext * SYS_TICK_HCLK - dphase;
     if (dt < 0) dt = 0;
-    return (uint32_t)(((uint64_t)dt + ROWISR_SLOT_TICKS / 2u) / ROWISR_SLOT_TICKS);
+    return (uint32_t)(((uint64_t)dt + half) / slot_ticks);
 }
 
 /* ---- The record (D10) ------------------------------------------------------ */
 static struct {
-    uint32_t slots_elapsed;    /* boundaries crossed, summed over VALID services */
-    uint32_t serviced;         /* handler invocations that serviced an epoch */
-    uint32_t emitted;          /* pulses armed */
-    uint32_t omitted;          /* slots left dark: late, preempted across a slot, or dark by frame excluded? no: dark frames are not omissions */
-    uint32_t elapsed_sum;      /* entry to exit, HCLK ticks, VALID services */
-    uint16_t elapsed_min, elapsed_max;
+    uint32_t slots_elapsed;    /* boundaries crossed, summed over services with a VALID interval */
+    uint32_t serviced;         /* every service of an epoch (scan-only and the guard included) */
+    uint32_t serviced_valid;   /* the services whose interval since the last was VALID: the population of slots_elapsed */
+    uint32_t emitted;          /* lit pulses armed */
+    uint32_t omitted;          /* lit rows left dark: late for the arm, or preempted across a slot; a dark row is neither */
+    uint32_t elapsed_sum;      /* entry snapshot to exit snapshot, HCLK ticks, wrapping after 89 s of handler time: windows, not lifetimes */
+    uint32_t elapsed_samples;  /* the population of elapsed_sum */
+    uint16_t elapsed_min, elapsed_max;   /* the maximum clips at 0xFFFF (1,365 us) */
     uint16_t latency_max;      /* entry TC, services with exactly one boundary crossed */
     uint16_t omit_run, omit_run_max;
-    uint8_t  epoch_losses;     /* generation changes seen by the handler */
-    uint8_t  invalid_services; /* services whose interval was INVALID, counted apart */
-    uint8_t  spurious;         /* invocations inside the epoch already serviced */
-    uint8_t  late_omit;        /* omissions by the arm deadline (a subset of omitted) */
-    uint16_t omit_row[SN32F2XX_RGB_MATRIX_ROWS_HW];   /* omissions per mux row (row and colour) */
+    uint8_t  epoch_losses;     /* generation changes the handler saw, saturating */
+    uint8_t  invalid_services; /* services whose interval was INVALID, saturating */
+    uint8_t  spurious;         /* invocations inside the epoch already serviced, saturating */
+    uint8_t  late_omit;        /* omissions by the arm deadline (a subset of omitted), saturating */
+    uint8_t  omit_row[SN32F2XX_RGB_MATRIX_ROWS_HW];   /* omissions per mux row (row and colour), saturating */
 } rec;
+static uint16_t seen_gen = 0;        /* the loss generation the handler last saw (the losses, across re-primes) */
+static bool     hw_fault = false;    /* a timer's reset never completed at init: nothing started, the columns released */
+
+static inline void sat8(uint8_t *c) {
+    if (*c != 0xFFu) (*c)++;
+}
 static uint64_t width_acc[3] = {0};   /* emitted width sums per colour, ticks: r, g, b (D8) */
 
 static snap_t  last_snap;          /* the last serviced invocation's step-1 pair */
@@ -359,35 +369,40 @@ void rowisr_record_reset(void) {
     chSysUnlock();
 }
 
-void rowisr_record_fill(uint8_t *out28) {
+void rowisr_record_fill(uint8_t *out28) {   /* page 7: the totals (health.h) */
     chSysLock();
-    uint32_t se = rec.slots_elapsed, sv = rec.serviced, em = rec.emitted, om = rec.omitted, es = rec.elapsed_sum;
-    uint16_t lm = rec.latency_max, emx = rec.elapsed_max, emn = rec.elapsed_min, orm = rec.omit_run_max;
-    uint8_t  el = rec.epoch_losses, iv = rec.invalid_services, sp = rec.spurious, lo = rec.late_omit;
+    uint32_t se = rec.slots_elapsed, sv = rec.serviced_valid, em = rec.emitted, om = rec.omitted;
+    uint32_t es = rec.elapsed_sum, ns = rec.elapsed_samples;
+    uint16_t lm = rec.latency_max, emx = rec.elapsed_max;
     chSysUnlock();
     uint8_t *p = out28;
 #define PUT32(x) do { uint32_t v_ = (x); *p++ = v_ & 0xFF; *p++ = (v_ >> 8) & 0xFF; *p++ = (v_ >> 16) & 0xFF; *p++ = (v_ >> 24) & 0xFF; } while (0)
 #define PUT16(x) do { uint16_t v_ = (x); *p++ = v_ & 0xFF; *p++ = (v_ >> 8) & 0xFF; } while (0)
     PUT32(se); PUT32(sv); PUT32(em); PUT32(om);   /* 16 */
-    PUT32(es);                                    /* 20 */
-    PUT16(lm); PUT16(emx);                        /* 24 */
-    PUT16(emn == 0xFFFFu ? 0u : emn);             /* 26 */
-    *p++ = el; *p++ = iv;                         /* 28 */
-    (void)sp; (void)lo; (void)orm;                /* op 28 sub 5 reports the rest with the per-row omissions */
+    PUT32(es); PUT32(ns);                         /* 24 */
+    PUT16(lm); PUT16(emx);                        /* 28 */
 #undef PUT16
 #undef PUT32
 }
 
-void rowisr_record_rows(uint8_t *out28) {   /* op 28 sub 5: [0..1] omit_run_max, [2] spurious, [3] late, [4..] omit_row[18] as u8 saturated... see rowisr_diag.h */
+void rowisr_record_rows(uint8_t *out28) {   /* op 28 sub 5: the rest (rowisr_diag.h) */
     chSysLock();
-    uint16_t orm = rec.omit_run_max;
-    uint8_t  sp = rec.spurious, lo = rec.late_omit;
-    uint16_t rows[SN32F2XX_RGB_MATRIX_ROWS_HW];
+    uint16_t orm = rec.omit_run_max, emn = rec.elapsed_min;
+    uint32_t sv  = rec.serviced;
+    uint8_t  sp = rec.spurious, lo = rec.late_omit, el = rec.epoch_losses, iv = rec.invalid_services;
+    uint8_t  rows[SN32F2XX_RGB_MATRIX_ROWS_HW];
     memcpy(rows, rec.omit_row, sizeof(rows));
     chSysUnlock();
-    out28[0] = orm & 0xFF; out28[1] = orm >> 8; out28[2] = sp; out28[3] = lo;
-    for (uint8_t i = 0; i < SN32F2XX_RGB_MATRIX_ROWS_HW; i++) out28[4 + i] = rows[i] > 255u ? 255u : (uint8_t)rows[i];
-    for (uint8_t i = 4 + SN32F2XX_RGB_MATRIX_ROWS_HW; i < 28; i++) out28[i] = 0;
+    out28[0] = orm & 0xFF; out28[1] = orm >> 8;
+    out28[2] = sp; out28[3] = lo; out28[4] = el; out28[5] = iv;
+    emn = emn == 0xFFFFu ? 0u : emn;
+    out28[6] = emn & 0xFF; out28[7] = emn >> 8;
+    memcpy(&out28[8], rows, SN32F2XX_RGB_MATRIX_ROWS_HW);          /* 8..25 */
+    out28[26] = sv & 0xFF; out28[27] = (sv >> 8) & 0xFF;            /* every service, low 16 bits */
+}
+
+bool sn32f2xx_hw_fault(void) {
+    return hw_fault;
 }
 
 /* ---- The key matrix's row helpers (the interim scanner, D1) ----------------
@@ -502,11 +517,13 @@ static inline void pulse_arm_all(void) {   /* TC = 0 then CEN, each; a stop matc
     CT_REG(T_B2, CT_TMRCTRL) = CT_CEN;
 }
 
-static void timer_reset(uint32_t t) {   /* CRST is synchronous and self-clearing */
+static bool timer_reset(uint32_t t) {   /* CRST is synchronous and self-clearing; false if it never clears */
     CT_REG(t, CT_TMRCTRL) = CT_CRST;
-    for (uint32_t i = 0; i < 1000u && (CT_REG(t, CT_TMRCTRL) & CT_CRST); i++) {
+    for (uint32_t i = 0; i < 1000u; i++) {
+        if (!(CT_REG(t, CT_TMRCTRL) & CT_CRST)) return true;
         __asm__ volatile("" ::: "memory");
     }
+    return false;
 }
 
 /* ---- Scan-only (dev, light sleep's sizing) ---------------------------------- */
@@ -529,65 +546,81 @@ bool sn32f2xx_scan_only_active(void) { return false; }
 #endif
 
 static inline void sched_set_period(uint32_t ticks) {   /* I-class; MR9 = ticks - 1, TC restarted so a shorter period cannot be passed */
+    slot_ticks                = ticks;
     CT_REG(T_SCHED, CT_MR(9)) = CT_KEY | (ticks - 1u);
     CT_REG(T_SCHED, CT_TC)    = 0;
+}
+
+/* A service's commit: the serviced epoch advances here, and the statistics
+ * that depend on the interval's validity are taken only now (codex, P2 4
+ * and 6). Called under the lock from step 6, unlocked on the paths that
+ * arm nothing (the record's reader masks this handler). */
+static inline void service_commit(const snap_t *s1, bool valid1, uint32_t boundaries) {
+    last_snap = *s1;
+    have_last = true;
+    rec.serviced++;
+    if (valid1) {
+        rec.slots_elapsed += boundaries;
+        rec.serviced_valid++;
+        if (boundaries == 1 && s1->tc > rec.latency_max) rec.latency_max = s1->tc;
+    }
 }
 
 /* ---- The handler (D3) ------------------------------------------------------- */
 
 static void rowisr_slot(void) {
     sn32f2xx_isr_enter_hook();
-    /* 1. The flag, then the coherent snapshot and the epoch reconstruction. */
-    uint32_t ris = CT_REG(T_SCHED, CT_RIS);
-    CT_REG(T_SCHED, CT_IC) = ris;
+    /* 1. The flag and the entry snapshot, coherent: acknowledged and
+     * captured in one section, so a boundary crossed between the two cannot
+     * leave a flagged epoch the snapshot already belongs to (codex, P2 4). */
     snap_t s1;
     chSysLockFromISR();
+    uint32_t ris = CT_REG(T_SCHED, CT_RIS);
+    CT_REG(T_SCHED, CT_IC) = ris;
     take_snapI(&s1);
     chSysUnlockFromISR();
+    if (s1.gen != seen_gen) {   /* a loss since the handler last looked, whichever observer saw it, re-primed or not */
+        seen_gen = s1.gen;
+        sat8(&rec.epoch_losses);
+    }
+    bool valid1 = have_last && s1.valid && last_snap.valid && s1.gen == last_snap.gen &&
+                  (s1.ext - last_snap.ext) <= EPOCH_CONSUMER_MAX;
     uint32_t boundaries = 1;
-    bool     interval_valid = false;
-    if (have_last) {
-        if (s1.valid && last_snap.valid && s1.gen == last_snap.gen) {
-            boundaries     = boundaries_between(&last_snap, &s1);
-            interval_valid = true;
-        } else {
-            if (s1.gen != last_snap.gen) rec.epoch_losses++;
-            rec.invalid_services++;
+    if (valid1) {
+        boundaries = boundaries_between(&last_snap, &s1);
+        if (boundaries == 0) {   /* inside the epoch already serviced: count and leave */
+            sat8(&rec.spurious);
+            sn32f2xx_isr_exit_hook();
+            return;
         }
+    } else if (have_last) {
+        sat8(&rec.invalid_services);
     }
-    if (interval_valid && boundaries == 0) {   /* inside the epoch already serviced: count and leave */
-        rec.spurious++;
-        sn32f2xx_isr_exit_hook();
-        return;
-    }
-    if (interval_valid) {
-        rec.slots_elapsed += boundaries;
-        if (boundaries == 1 && s1.tc > rec.latency_max) rec.latency_max = s1.tc;
-    }
-    rec.serviced++;
-    last_snap = s1;
-    have_last = true;
 
     /* 2. Deselect every mux row (the outputs are parked: belt and braces). */
     mux_deselect_all();
 
 #ifdef SN32F2XX_SLEEP_HOOKS
-    /* Scan-only: applied here, between slots. Entering releases the columns
-     * (they stay released: no LED work) and lengthens the slot; leaving
-     * restores the slot, and the next LED slot takes the columns back. */
+    /* Scan-only: applied here, between slots. The invocation ends with the
+     * cadence change, so nothing is reconstructed across it (codex, P2 5),
+     * and the columns' ownership follows the mode at once: released
+     * throughout scan-only, taken back before any ordinary arm (codex, P1). */
     if (scan_only_req != scan_only) {
         scan_only = scan_only_req;
         chSysLockFromISR();
         sched_set_period(scan_only ? SN32F2XX_SCAN_ONLY_TICKS : ROWISR_SLOT_TICKS);
-        have_last = false;   /* a cadence change re-primes the pair */
+        have_last = false;
         chSysUnlockFromISR();
-        if (scan_only) columns_release();
+        if (scan_only) columns_release(); else columns_active();
+        sn32f2xx_isr_exit_hook();
+        return;
     }
     if (scan_only) {
         if (EFLD1.state != FLASH_PGM || sn32f2xx_pgm_scan) {
             if (++scan_only_row >= ROWS_PER_HAND) scan_only_row = 0;
             scan_key_row(scan_only_row);
         }
+        service_commit(&s1, valid1, boundaries);
         sn32f2xx_isr_exit_hook();
         return;
     }
@@ -597,6 +630,7 @@ static void rowisr_slot(void) {
         /* The 09-01 guard, only where sn32f2xx_pgm_scan is false (a dev
          * build's write test): a program in progress, the board dark for it
          * (the rows are deselected above and nothing is armed). */
+        service_commit(&s1, valid1, boundaries);
         sn32f2xx_isr_exit_hook();
         return;
     }
@@ -646,45 +680,56 @@ static void rowisr_slot(void) {
     if (width_sum) mux_select(cur_row);
 
     /* 6. Inside one critical section: a fresh snapshot against step 1's; a
-     * boundary crossed meanwhile means the work ran across a slot (do not
-     * arm, leave the flag for the pending interrupt, which services the new
-     * epoch); otherwise admit the arm against the whole terminal window. */
-    bool armed = false;
+     * boundary crossed meanwhile means the work ran across a slot (no arm,
+     * nothing committed, the flag left for the pending interrupt, which
+     * services the new epoch and reconstructs this one as missed);
+     * otherwise the arm admitted against the whole terminal window, and the
+     * serviced epoch committed here, at the decision. */
+    bool armed = false, crossed;
     chSysLockFromISR();
-    snap_t   s6;
+    snap_t s6;
     take_snapI(&s6);
-    uint32_t ris6    = CT_REG(T_SCHED, CT_RIS);
-    bool     crossed = (ris6 & RIS_MR9) != 0;
-    if (!crossed && s6.valid && s6.gen == s1.gen && boundaries_between(&s1, &s6) != 0) crossed = true;
-    if (!crossed && width_sum && s6.tc <= ROWISR_ARM_DEADLINE) {
-        pulse_arm_all();
-        armed = true;
+    crossed = (CT_REG(T_SCHED, CT_RIS) & RIS_MR9) != 0;
+    if (!crossed && s1.valid && s6.valid && s6.gen == s1.gen && boundaries_between(&s1, &s6) != 0) crossed = true;
+    if (!crossed) {
+        if (width_sum && s6.tc <= ROWISR_ARM_DEADLINE) {
+            pulse_arm_all();
+            armed = true;
+        }
+        service_commit(&s1, valid1, boundaries);
     }
-    if (!crossed && !width_sum) armed = true;   /* a dark row: nothing to emit, nothing omitted */
     chSysUnlockFromISR();
-    if (armed) {
-        if (width_sum) {
+
+    /* The pulse's account (D8, D10): a dark row emits nothing and omits
+     * nothing whatever the timing (codex, P2 9); a lit row armed is
+     * emitted, one late or crossed is omitted, per mux row. */
+    if (width_sum) {
+        if (armed) {
             rec.emitted++;
             width_acc[colour == 2 ? 0 : (colour == 1 ? 1 : 2)] += width_sum;   /* r, g, b */
+            rec.omit_run = 0;
+        } else {
+            rec.omitted++;
+            sat8(&rec.omit_row[cur_row]);
+            if (!crossed) sat8(&rec.late_omit);
+            if (++rec.omit_run > rec.omit_run_max) rec.omit_run_max = rec.omit_run;
+            if (!crossed) mux_deselect_all();   /* late: leave the row dark (a crossed one is deselected by the re-entry) */
         }
-        rec.omit_run = 0;
-    } else {
-        rec.omitted++;
-        rec.omit_row[cur_row]++;
-        if (!crossed) rec.late_omit++;
-        if (++rec.omit_run > rec.omit_run_max) rec.omit_run_max = rec.omit_run;
-        if (!crossed) mux_deselect_all();   /* late: leave the row dark */
     }
 
-    /* The exit snapshot: the handler's elapsed time, boundaries reconstructed. */
+    /* The exit snapshot: the handler's elapsed time, entry snapshot to exit
+     * snapshot (the port's prologue and epilogue, the health hooks and this
+     * accounting lie outside it: page 4's hooks bracket the whole handler
+     * at 5.33 us resolution), both ends VALID in one generation. */
     snap_t sx;
     chSysLockFromISR();
     take_snapI(&sx);
     chSysUnlockFromISR();
-    if (sx.valid && sx.gen == s1.gen) {
+    if (s1.valid && sx.valid && sx.gen == s1.gen) {
         uint32_t b2 = boundaries_between(&s1, &sx);
-        uint32_t el = b2 * ROWISR_SLOT_TICKS + (uint32_t)((int32_t)sx.tc - (int32_t)s1.tc);
+        uint32_t el = b2 * slot_ticks + (uint32_t)((int32_t)sx.tc - (int32_t)s1.tc);
         rec.elapsed_sum += el;
+        rec.elapsed_samples++;
         if (el > rec.elapsed_max) rec.elapsed_max = el > 0xFFFFu ? 0xFFFFu : (uint16_t)el;
         if (el < rec.elapsed_min) rec.elapsed_min = (uint16_t)el;
     }
@@ -721,6 +766,9 @@ void sn32f2xx_sleep_enterI(void) {
 }
 
 void sn32f2xx_sleep_exitI(void) {
+#ifdef SN32F2XX_SLEEP_HOOKS
+    if (scan_only) columns_release(); else
+#endif
     columns_active();
     CT_REG(T_SCHED, CT_TC) = 0;
     CT_REG(T_SCHED, CT_IC) = RIS_ALL;
@@ -763,8 +811,8 @@ uint8_t sn32f2xx_row_irq_number(void) {
 
 /* ---- Init ------------------------------------------------------------------ */
 
-static void pulse_timer_init(uint32_t t) {
-    timer_reset(t);
+static bool pulse_timer_init(uint32_t t) {
+    if (!timer_reset(t)) return false;
     CT_REG(t, CT_PRE) = 0;   /* HCLK */
     if (t == T_B1) {
         CT_REG(t, CT_MR(12))   = ROWISR_TERMINAL;
@@ -784,10 +832,11 @@ static void pulse_timer_init(uint32_t t) {
     }
     CT_REG(t, CT_IC) = RIS_ALL;
     pulse_park(t);
+    return true;
 }
 
-static void sched_init(void) {
-    timer_reset(T_SCHED);
+static bool sched_init(void) {
+    if (!timer_reset(T_SCHED)) return false;
     CT_REG(T_SCHED, CT_PRE)     = 0;
     CT_REG(T_SCHED, CT_PWMCTRL) = CT_KEY;   /* no PWM on the scheduler */
     sched_set_period(ROWISR_SLOT_TICKS);
@@ -795,6 +844,7 @@ static void sched_init(void) {
     CT_REG(T_SCHED, CT_IC)      = RIS_ALL;
     nvicEnableVector(SCHED_IRQn, SCHED_PRIO);
     CT_REG(T_SCHED, CT_TMRCTRL) = CT_CEN;
+    return true;
 }
 
 /* The hardware, once, from matrix_init_custom(): the pins, the pin mux, the
@@ -820,18 +870,26 @@ static void rowisr_hw_init(void) {
     SN_PFPA->CT16B0 = SN32F2XX_PWM_PFPA_CT16B0;
     SN_PFPA->CT16B1 = SN32F2XX_PWM_PFPA_CT16B1;
     SN_PFPA->CT16B2 = SN32F2XX_PWM_PFPA_CT16B2;
-    /* The timers' clocks (the PWM LLD used to enable them). */
+    /* The timers' clocks, then the blocks reset whole, as the PWM LLD's
+     * start did (a bootloader hand-off can leave a counter mode, a capture
+     * or an inverted output configured; codex, P2 13), then the
+     * configuration. A reset that never completes starts nothing: the
+     * columns stay released and op 28's status says so. */
     sys1EnableCT16B0();
     sys1EnableCT16B1();
     sys1EnableCT16B2();
     sys1EnableCT16B4();
-    pulse_timer_init(T_B0);
-    pulse_timer_init(T_B1);
-    pulse_timer_init(T_B2);
-    columns_active();
+    sys1ResetCT16B0();
+    sys1ResetCT16B1();
+    sys1ResetCT16B2();
+    sys1ResetCT16B4();
     rowisr_record_reset();
-    if (watchdog_degraded()) rowisr_time_exclude(ROWISR_EXCL_DEGRADED, true);
-    sched_init();
+    if (!pulse_timer_init(T_B0) || !pulse_timer_init(T_B1) || !pulse_timer_init(T_B2) || !sched_init()) {
+        hw_fault = true;
+        columns_release();
+        return;
+    }
+    columns_active();
 }
 
 /* CUSTOM_MATRIX = lite: quantum/matrix_common.c's matrix_init() calls this

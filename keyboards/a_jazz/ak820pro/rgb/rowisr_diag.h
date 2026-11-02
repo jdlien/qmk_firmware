@@ -43,7 +43,8 @@
  *          overlapped another holder (began or ended at depth above its
  *          own), [18] matrix_init_custom()'s prime timed out (Bootmagic
  *          scanned an empty matrix), [19] a scan skip is active, [20..21] its
- *          ms left.
+ *          ms left, [22] stage 2's init found a timer whose reset never
+ *          completed (nothing runs, the columns released).
  *   sub 3  one LED, one colour  [5] LED index 0..80 or 255 for off,
  *          [6..8] r, g, b
  *          Every other LED dark and that one at that colour, applied after
@@ -65,8 +66,12 @@
  *   sub 5  the handler's record, the rest of it (stage 2, D10; page 7 has
  *          the totals): [4..5] the longest run of omissions, [6] invocations
  *          inside an epoch already serviced, [7] omissions by the arm
- *          deadline, [8..25] omissions per mux row, 18 bytes saturating at
- *          255. Reset with the health counters.
+ *          deadline, [8] epoch losses the handler saw, [9] services whose
+ *          interval was INVALID (each saturating at 255), [10..11] the
+ *          handler's shortest elapsed time in 48 MHz ticks, [12..29]
+ *          omissions per mux row, 18 bytes saturating at 255, [30..31]
+ *          every service's count, low 16 bits. Reset with the health
+ *          counters.
  *
  * The replies carry no correlation field beyond the op byte, as every dev
  * op's do: one host process at a time, the bench's rule.
