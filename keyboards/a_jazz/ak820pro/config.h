@@ -503,4 +503,6 @@
 // trial of 11-03, stage 5f, after codex's ranking of 13:21. Costs ~600 B of
 // RAM, which the dev build finds by shrinking the overrun diagnostics' rings
 // (overrun_diag.c). 0 puts the same code back in flash: the A/B is this flag.
-#define ROWISR_RAMTEXT 1
+// Measured 14:31-14:37 11-03 on white (12f2c14cad): 51.7 us a slot against
+// 49.5-52.3 in flash, no gain, so the flag is 0 and the rings are whole.
+#define ROWISR_RAMTEXT 0
