@@ -294,8 +294,17 @@ static void i2c_note(msg_t r, uint32_t sc0, uint32_t c0) {
  * transfer grows by the handler's share, 2.6 ms to about 3.3 ms at a 20%
  * occupancy, against the 10 ms deadline and the 5 ms one around deep sleep
  * (i2c_max_cycles and the bracket's width, status page 4, are the gate).
- * HAL's own state update stays under its lock: begin is entered with it
- * held and end returns with it held. The dev-build accounting (od_*) stays. */
+ * Measured on white (11-03 04:53, the first stage 4 build): with the
+ * handler and the 20 kHz tick preempting the bit-bang, a 7-byte read runs
+ * to ~5.5 ms, twice its 2.6 ms, and 5 of a burst of 300 reads on the deep
+ * sleep's 5 ms deadline timed out where every earlier burst had none. So
+ * the transactions on that short deadline (the pre-sleep read, the wake's
+ * recovery, and the dev burst that mimics it: pcf_short_timeout) keep the
+ * hold-off, and the board is dark or waking at those moments anyway; the
+ * ordinary 10 ms transactions run unmasked, lit. HAL's own state update
+ * stays under its lock: begin is entered with it held and end returns with
+ * it held. The dev-build accounting (od_*) stays. */
+static bool i2c_row_held = false;   /* this transfer holds the row line (a short-deadline one); one transfer at a time */
 
 void ak820_i2c_xfer_begin(void)
 {
@@ -304,6 +313,10 @@ void ak820_i2c_xfer_begin(void)
     od_mask_end();   /* the opening stretch, closed before the unlock: a partial
                       * span, excluding HAL's own state update */
 #endif
+    if (pcf_short_timeout) {   /* the 5 ms transactions: the handler would run them past their deadline (above) */
+        sn32f2xx_row_irq_hold();
+        i2c_row_held = true;
+    }
     chSysUnlock();
 }
 
@@ -313,6 +326,10 @@ void ak820_i2c_xfer_end(void)
     if (od_lock_mode() != OD_LOCK_UNLOCKED) return;
 #endif
     chSysLock();
+    if (i2c_row_held) {
+        i2c_row_held = false;
+        sn32f2xx_row_irq_release();
+    }
 #ifdef AK820_DEV_HOOKS
     od_mask_begin();   /* the closing stretch */
 #endif
