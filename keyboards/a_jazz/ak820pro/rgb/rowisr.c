@@ -206,11 +206,20 @@ static const col_mr_t col_mr[SN32F2XX_RGB_MATRIX_COLS] = {
     COLMR(T_B1, 6), COLMR(T_B1, 7), COLMR(T_B1, 9), COLMR(T_B0, 1), COLMR(T_B0, 0), COLMR(T_B1, 10),
     COLMR(T_B0, 3), COLMR(T_B0, 2), COLMR(T_B1, 11)};
 
-/* The scale (D8): MR = ROWISR_WIDTH(byte), linear; every width strictly
- * below the terminal (D2). Stage 6's curve brings a table back. */
+/* The scale (D8): MR = width_lut[byte], the rounded linear formula
+ * ROWISR_WIDTH() tabulated in flash (512 B): on this core the compiler
+ * expands the multiply by 300 into five shift-adds a column, and a halfword
+ * load with its wait states is cheaper (codex's judgment, 11-03 13:21;
+ * stage 5e). Every width strictly below the terminal (D2). Stage 6's curve
+ * replaces the table's contents, not its shape. */
 #if ((255u * ROWISR_K_Q6 + 32u) >> 6) >= ROWISR_TERMINAL   /* the preprocessor cannot see ROWISR_WIDTH()'s cast */
 #    error "every channel match must stay strictly below the terminal (D2)"
 #endif
+#define W1(i) (uint16_t)ROWISR_WIDTH(i)
+#define W4(i) W1(i), W1((i) + 1), W1((i) + 2), W1((i) + 3)
+#define W16(i) W4(i), W4((i) + 4), W4((i) + 8), W4((i) + 12)
+#define W64(i) W16(i), W16((i) + 16), W16((i) + 32), W16((i) + 48)
+static const uint16_t width_lut[256] = {W64(0), W64(64), W64(128), W64(192)};
 
 #ifdef RGB_MATRIX_ENABLE
 static RGB  led_state[SN32F2XX_LED_COUNT];     /* the front frame: what the handler drives */
@@ -594,7 +603,6 @@ static inline bool crossed_between(const snap_t *a, const snap_t *b) {
 /* ---- The record (D10) ------------------------------------------------------ */
 static struct {
     uint32_t slots_elapsed;    /* boundaries crossed, summed over services with a VALID interval */
-    uint32_t serviced;         /* every service of an epoch (scan-only and the guard included) */
     uint32_t serviced_valid;   /* the services whose interval since the last was VALID: the population of slots_elapsed */
     uint32_t emitted;          /* lit pulses armed */
     uint32_t omitted;          /* lit rows left dark: late for the arm, or preempted across a slot; a dark row is neither */
@@ -814,13 +822,20 @@ __attribute__((weak)) void input_note_consume(const matrix_row_t *diff, uint8_t 
 __attribute__((weak)) void sn32f2xx_isr_enter_hook(void) {}
 __attribute__((weak)) void sn32f2xx_isr_exit_hook(void) {}
 
-static void scan_key_row(uint8_t row) {
+/* The electrical scan: the row selected, the settle, the columns read, the
+ * row deselected. Its bookkeeping (scan_publish) runs after the arm in the
+ * slot handler since stage 5e, off the deadline's path (codex's judgment,
+ * 11-03 13:21); scan-only and the flash-program guard publish at once. */
+static inline matrix_row_t scan_key_row_sample(uint8_t row) {
     const pin_t pin = key_row_pins[row];
     palClearLine(pin);   /* select: one BCLR, the row driven low (push-pull from init) */
     scan_settle();
     matrix_row_t now = columns_read();
     palSetLine(pin);     /* deselect: one BSET, the row back high */
-    input_note_row_scan(row);
+    return now;
+}
+static void scan_publish(uint8_t row, matrix_row_t now) {
+    input_note_row_scan(row);   /* the row's sample time: taken here, a few tens of us after the read since 5e, the same offset every slot */
     matrix_row_t prev  = shared_matrix[row];
     shared_matrix[row] = now;
     RIG_NOTE(row, prev, now);
@@ -829,6 +844,9 @@ static void scan_key_row(uint8_t row) {
         if (rows_seen != SHARED_MATRIX_ALL_ROWS) return;   /* not complete yet */
     }
     matrix_scanned = true;   /* dirty flag: something new since last consume */
+}
+static void scan_key_row(uint8_t row) {
+    scan_publish(row, scan_key_row_sample(row));
 }
 
 /* ---- The pins and the control words ----------------------------------------- */
@@ -922,7 +940,6 @@ static inline void service_commit(const snap_t *s1, bool valid1, uint32_t bounda
         adopt_pending = false;
     }
     have_last = true;
-    rec.serviced++;
     if (valid1) {
         rec.slots_elapsed += boundaries;
         rec.serviced_valid++;
@@ -1116,13 +1133,19 @@ static void rowisr_slot(void) {
         scan = true;
     }
 
-    /* 3. The scan slot (the interim scanner): the columns released around it. */
+    /* 3. The scan slot (the interim scanner): the columns released around the
+     * electrical scan; its bookkeeping after the arm (stage 5e). */
+    matrix_row_t scan_now = 0;
+    bool         scanned  = false;
     if (scan) {
         columns_release();
 #ifdef AK820_DEV_HOOKS
         if (!sn32f2xx_scan_skip)   /* op 28 sub 4: the LED work alone, to attribute the scan's cost */
 #endif
-        scan_key_row(key_row);
+        {
+            scan_now = scan_key_row_sample(key_row);
+            scanned  = true;
+        }
         columns_active();
     }
 
@@ -1141,7 +1164,7 @@ static void rowisr_slot(void) {
     for (uint8_t c = 0; c < SN32F2XX_RGB_MATRIX_COLS; c++) {
         uint8_t  li = co[c];
         uint32_t w  = 0;
-        if (li < SN32F2XX_LED_COUNT) w = ROWISR_WIDTH(plane[(uint32_t)li * sizeof(RGB)]);
+        if (li < SN32F2XX_LED_COUNT) w = width_lut[plane[(uint32_t)li * sizeof(RGB)]];
         *col_mr[c].mr = col_mr[c].key | w;
         width_sum += w;
     }
@@ -1180,6 +1203,8 @@ static void rowisr_slot(void) {
         service_commit(&s1, valid1, boundaries);
     }
     chSysUnlockFromISR();
+
+    if (scanned) scan_publish(key_row, scan_now);   /* the scan's bookkeeping, off the deadline's path (5e) */
 
     /* The pulse's account (D8, D10): a dark row emits nothing and omits
      * nothing whatever the timing (codex, P2 9); a lit row armed is
