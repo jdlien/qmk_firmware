@@ -15,7 +15,14 @@
  * span at 115200 8N1, if the FIFO is 16 bytes (its depth is unstated). */
 #define OD_T_1MS0 ((uint16_t)(CH_CFG_ST_FREQUENCY / 1000u))
 #define OD_T_1MS4 ((uint16_t)(CH_CFG_ST_FREQUENCY * 14u / 10000u))
-#define OD_RING   32u
+#ifndef ROWISR_RAMTEXT
+#    define ROWISR_RAMTEXT 0
+#endif
+#if ROWISR_RAMTEXT
+#    define OD_RING   8u    /* the SRAM trial's room: the hot section needs the dev build's gap (stage 5f, 11-03) */
+#else
+#    define OD_RING   32u
+#endif
 
 static inline uint16_t od_now(void) { return (uint16_t)st_lld_get_counter(); }
 
@@ -208,7 +215,11 @@ uint8_t od_uart_priority(void) { return (uint8_t)NVIC_GetPriority(UART2_IRQn); }
 #define MON_T130 ((uint16_t)(CH_CFG_ST_FREQUENCY * 130u / 1000000u))
 #define MON_T200 ((uint16_t)(CH_CFG_ST_FREQUENCY * 200u / 1000000u))
 #define MON_T350 ((uint16_t)(CH_CFG_ST_FREQUENCY * 350u / 1000000u))
-#define MON_RING 16u
+#if ROWISR_RAMTEXT
+#    define MON_RING 4u
+#else
+#    define MON_RING 16u
+#endif
 static volatile uint8_t  mon_on, mon_primed;
 static uint16_t          mon_last;
 static volatile uint16_t mon_max, mon_seq;

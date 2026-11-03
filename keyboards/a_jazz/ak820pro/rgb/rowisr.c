@@ -990,6 +990,80 @@ void rowisr_record_sections(uint8_t *out28) {   /* [0..3] the services summed, [
 #define sec_commit() ((void)0)
 #endif
 
+/* ---- The hot section (D3 steps 3-5), in SRAM when ROWISR_RAMTEXT ------------
+ *
+ * The scan slot's electrical scan, the fifteen match registers and the mux
+ * select: the handler's largest block (section 2 of the cost diagnostic,
+ * 37.9 us at 267 us). On this core an instruction fetched from flash costs
+ * 3-5 cycles (the diagnostic: the reads are free, the instruction count is
+ * the cost), from SRAM one; .ramtext is copied at boot with .data, as
+ * sleep.c's ds_deep_wfi (stage 5f's trial, codex's first-ranked lever, 11-03
+ * 13:21). long_call: flash and SRAM are 512 MB apart, past a BL. With the
+ * flag off the same function is inline in flash: the A/B is the flag. */
+#ifndef ROWISR_RAMTEXT
+#    define ROWISR_RAMTEXT 0
+#endif
+#if ROWISR_RAMTEXT
+#    define HOT_ATTR __attribute__((section(".ramtext"), noinline, long_call)) static
+#else
+#    define HOT_ATTR static inline
+#endif
+typedef struct {
+    matrix_row_t scan_now;
+    uint32_t     width_sum;
+    bool         scanned;
+} hot_out_t;
+HOT_ATTR void rowisr_hot(uint8_t mux_row, uint8_t krow, uint8_t colour, bool scan, hot_out_t *o) {
+    /* 3. The scan slot (the interim scanner): the columns released around the
+     * electrical scan; its bookkeeping after the arm (stage 5e). */
+    o->scan_now = 0;
+    o->scanned  = false;
+    if (scan) {
+        columns_release();
+#ifdef AK820_DEV_HOOKS
+        if (!sn32f2xx_scan_skip)   /* op 28 sub 4: the LED work alone, to attribute the scan's cost */
+#endif
+        {
+            o->scan_now = scan_key_row_sample(krow);
+            o->scanned  = true;
+        }
+        columns_active();
+    }
+
+    /* 4. The fifteen match registers for the next mux row, through the scale
+     * table, zeros for the nine holes. The sum of the widths feeds D8. */
+    uint32_t width_sum = 0;
+#ifdef RGB_MATRIX_ENABLE
+    /* Stage 5a: the colour's byte plane chosen once (the pins' R, B, G against
+     * the struct's r, g, b), the width a table load, the fifteen columns
+     * unrolled so each match register's address and key are the compiler's
+     * constants: the loop was the handler's largest block (section 2 of the
+     * cost diagnostic, 11-03). */
+    const uint8_t *co    = g_led_config.matrix_co[krow];
+    const uint8_t *plane = (const uint8_t *)led_state + (colour == 0 ? offsetof(RGB, r) : (colour == 1 ? offsetof(RGB, b) : offsetof(RGB, g)));
+#if !ROWISR_RAMTEXT
+#    pragma GCC unroll 15   /* in flash the unroll pays; in SRAM the loop's overhead is a cycle an instruction and the 300 B are the dev build's gap (the first 5f link overflowed the RAM by 8 B) */
+#endif
+    for (uint8_t c = 0; c < SN32F2XX_RGB_MATRIX_COLS; c++) {
+        uint8_t  li = co[c];
+        uint32_t w  = 0;
+        if (li < SN32F2XX_LED_COUNT) w = width_lut[plane[(uint32_t)li * sizeof(RGB)]];
+        *col_mr[c].mr = col_mr[c].key | w;
+        width_sum += w;
+    }
+#else
+    (void)colour;
+    for (uint8_t c = 0; c < SN32F2XX_RGB_MATRIX_COLS; c++) *col_mr[c].mr = col_mr[c].key;
+#endif
+    o->width_sum = width_sum;
+
+    /* 5. Select the mux row for it (the outputs are parked: this lights
+     * nothing until the restart). A row with every width zero stays
+     * deselected: no transistor base current for a dark row (the old
+     * driver's enable_pwm_output; F-033's phantom was the exception). */
+    if (width_sum) mux_select(mux_row);
+}
+
 /* ---- The handler (D3) ------------------------------------------------------- */
 
 static void rowisr_slot(void) {
@@ -1133,50 +1207,13 @@ static void rowisr_slot(void) {
         scan = true;
     }
 
-    /* 3. The scan slot (the interim scanner): the columns released around the
-     * electrical scan; its bookkeeping after the arm (stage 5e). */
-    matrix_row_t scan_now = 0;
-    bool         scanned  = false;
-    if (scan) {
-        columns_release();
-#ifdef AK820_DEV_HOOKS
-        if (!sn32f2xx_scan_skip)   /* op 28 sub 4: the LED work alone, to attribute the scan's cost */
-#endif
-        {
-            scan_now = scan_key_row_sample(key_row);
-            scanned  = true;
-        }
-        columns_active();
-    }
-
-    /* 4. The fifteen match registers for the next mux row, through the scale
-     * table, zeros for the nine holes. The sum of the widths feeds D8. */
-    uint32_t width_sum = 0;
-#ifdef RGB_MATRIX_ENABLE
-    /* Stage 5a: the colour's byte plane chosen once (the pins' R, B, G against
-     * the struct's r, g, b), the width a multiply and a shift, the fifteen
-     * columns unrolled so each match register's address and key are the
-     * compiler's constants: the loop was the handler's largest block (section
-     * 2 of the cost diagnostic, 11-03). */
-    const uint8_t *co    = g_led_config.matrix_co[key_row];
-    const uint8_t *plane = (const uint8_t *)led_state + (colour == 0 ? offsetof(RGB, r) : (colour == 1 ? offsetof(RGB, b) : offsetof(RGB, g)));
-#pragma GCC unroll 15
-    for (uint8_t c = 0; c < SN32F2XX_RGB_MATRIX_COLS; c++) {
-        uint8_t  li = co[c];
-        uint32_t w  = 0;
-        if (li < SN32F2XX_LED_COUNT) w = width_lut[plane[(uint32_t)li * sizeof(RGB)]];
-        *col_mr[c].mr = col_mr[c].key | w;
-        width_sum += w;
-    }
-#else
-    for (uint8_t c = 0; c < SN32F2XX_RGB_MATRIX_COLS; c++) *col_mr[c].mr = col_mr[c].key;
-#endif
-
-    /* 5. Select the mux row for it (the outputs are parked: this lights
-     * nothing until the restart). A row with every width zero stays
-     * deselected: no transistor base current for a dark row (the old
-     * driver's enable_pwm_output; F-033's phantom was the exception). */
-    if (width_sum) mux_select(cur_row);
+    /* 3 to 5: the scan, the match registers and the mux select (rowisr_hot,
+     * in SRAM when ROWISR_RAMTEXT). */
+    hot_out_t hot;
+    rowisr_hot(cur_row, key_row, colour, scan, &hot);
+    matrix_row_t scan_now  = hot.scan_now;
+    bool         scanned   = hot.scanned;
+    uint32_t     width_sum = hot.width_sum;
 
     SEC_STAMP(3);   /* section 2: steps 2 to 5, the mux rows, the scan and the match registers */
     /* 6. Inside one critical section: a fresh snapshot against step 1's; a

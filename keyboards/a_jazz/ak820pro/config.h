@@ -497,3 +497,10 @@
 // 125 (stage 5: a 444 Hz field, the pulse window and the scale halved with
 // it). 11-03: 125, stage 5b, on white for its gates.
 #define ROWISR_CADENCE_US 125u
+
+// The row ISR's hot section (the scan, the match registers, the mux select)
+// run from SRAM (rgb/rowisr.c, rowisr_hot; .ramtext as sleep.c's WFI): the
+// trial of 11-03, stage 5f, after codex's ranking of 13:21. Costs ~600 B of
+// RAM, which the dev build finds by shrinking the overrun diagnostics' rings
+// (overrun_diag.c). 0 puts the same code back in flash: the A/B is this flag.
+#define ROWISR_RAMTEXT 1
