@@ -70,7 +70,7 @@
 #    error "rowisr.c reads the columns as two port words with a press low (the pull-ups, COL2ROW)"
 #endif
 #ifndef ROWISR_SETTLE_TICKS
-#    define ROWISR_SETTLE_TICKS 96u   /* the column settle after the row select, HCLK ticks: 2 us at 48 MHz (D3 step 3; Q1's sweep sets it) */
+#    define ROWISR_SETTLE_TICKS 24u   /* the column settle after the row select, HCLK ticks: 0.5 us at 48 MHz (D3 step 3; Q1's sweep on stage 3, 11-03, was exact down to 0 ticks, so 2 us was margin the scan slot cannot afford at 125 us: stage 5d) */
 #endif
 #if (DIODE_DIRECTION != COL2ROW)
 #    error "rowisr.c scans COL2ROW: a row driven low, the columns read"
@@ -130,7 +130,7 @@
 #endif
 #if ROWISR_CADENCE_US == 125u
 #    define ROWISR_SLOT_US    125u
-#    define ROWISR_TERMINAL   2047u                              /* the pulse timers' terminal match: a 42.7 us window */
+#    define ROWISR_TERMINAL   1535u                              /* the pulse timers' terminal match: a 32 us window (stage 5d: 2,047's 80 us arm deadline omitted 0.29% of the scan slots on white, every one by the deadline, 12:49-12:54 11-03; 1,535 keeps 1.28x headroom over the full width, 1,195, and puts the deadline at 90.5 us) */
 #    define ROWISR_K_Q6       300u                               /* 4.6875 ticks a unit: the measured 267 us duty at k = 10 scaled by 125/267 (4.6817; D4's 4.845 came from the stage-0 slot and field), the logger's hold the arbiter (stage 5's gate; codex on 4294a3befd) */
 #elif ROWISR_CADENCE_US == 267u
 #    define ROWISR_SLOT_US    267u
@@ -142,7 +142,7 @@
 #define ROWISR_SLOT_TICKS     (ROWISR_SLOT_US * 48u)             /* 12,816 or 6,000 at HCLK */
 #define ROWISR_WINDOW_TICKS   (ROWISR_TERMINAL + 1u)             /* a counter runs to its terminal whatever the duties */
 #define ROWISR_ARM_MARGIN     120u                               /* the three arms' skew, the tail and the guard: 2.5 us */
-#define ROWISR_ARM_DEADLINE   (ROWISR_SLOT_TICKS - ROWISR_WINDOW_TICKS - ROWISR_ARM_MARGIN)   /* 8,600 ticks (179 us in) at 267 us; 3,832 (80 us) at 125 */
+#define ROWISR_ARM_DEADLINE   (ROWISR_SLOT_TICKS - ROWISR_WINDOW_TICKS - ROWISR_ARM_MARGIN)   /* 8,600 ticks (179 us in) at 267 us; 4,344 (90.5 us) at 125 */
 #define ROWISR_WIDTH(b)       (((uint32_t)(b) * ROWISR_K_Q6 + 32u) >> 6)   /* a byte's pulse width, ticks, rounded (D4: floored, byte 1 was 20% under; exact at 640/64) */
 #define SYS_TICK_HCLK         256u                               /* one CT16B5 tick in HCLK ticks (5.33 us) */
 #define EPOCH_INVALID_GAP     1500u                              /* 8 ms of CT16B5 ticks: an observation gap this long is abnormal */
