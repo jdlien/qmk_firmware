@@ -45,7 +45,7 @@ bool sleep_recovering(void);
 void sleep_page1_fill(uint8_t *out);
 
 enum { SLEEP_WAKE_NONE = 0, SLEEP_WAKE_KEY, SLEEP_WAKE_BACKSTOP, SLEEP_WAKE_STRAYS, SLEEP_WAKE_BLOCKED,
-       SLEEP_WAKE_KNOB, SLEEP_WAKE_CHARGE };
+       SLEEP_WAKE_KNOB, SLEEP_WAKE_CHARGE, SLEEP_WAKE_KEEPALIVE };
 #define SLEEP_V_PCF       0x01u   /* the slept seconds are the PCF's (else the counted ones) */
 #define SLEEP_V_ACQ_DONE  0x02u   /* the acquisition set the phase (else it aborted or was skipped) */
 #define SLEEP_V_USB_SOF   0x04u   /* a host's frames came after the wake */

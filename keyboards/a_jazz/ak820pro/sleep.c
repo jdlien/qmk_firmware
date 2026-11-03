@@ -319,6 +319,54 @@ static uint16_t rc_samples0;         /* battery_supply_samples() at the wake */
  * their job (SLEEP_RC_* bits; codex, deep-sleep build review 7). */
 static uint8_t  rc_timed_out;
 
+/* The keep-alive. The module ends a BLE link 30 min after the last traffic
+ * it hears from either side (docs/wireless.md, "The module ends the link 30
+ * min after the last thing it hears"), and asleep the board sends none, so
+ * the key that wakes it after a longer sleep goes nowhere while the link
+ * comes back (2.4 s to the Mac's keyboard device). So a ladder sleep with a
+ * BT link up wakes after ~25 real minutes, and its recovery's battery poll
+ * is the traffic; then the ladder sleeps again. Only for 18 h asleep since
+ * the last input (JD, 11-03): a weekend away lets the link go. The held link
+ * costs ~0.14 mA asleep (white's six drops, 11-03) and each wake ~3 s
+ * awake. The cap is in counted seconds, which run slow asleep (3139 an hour
+ * on 10-19) by a rate that varies with the board and its temperature, so
+ * each sleep the PCF timed measures it for the next. */
+#ifndef KA_REAL_S
+#    define KA_REAL_S 1500u        /* 25 min a sleep: 5 under the module's 30 */
+#endif
+#ifndef KA_FOR_S
+#    define KA_FOR_S 64800u        /* 18 h asleep since the last input */
+#endif
+#define KA_RATE_PM     872u        /* counted s per 1000 real asleep until measured: 10-19's 3139 an hour */
+#define KA_RATE_LO     500u        /* a measurement outside these is not believed */
+#define KA_RATE_HI     1200u
+#define KA_RATE_MIN_S  600u        /* the shortest sleep that measures it, timed by the PCF */
+static uint16_t ka_rate_pm = KA_RATE_PM;
+static uint32_t ka_asleep_s;       /* slept since the last input, sleep by sleep */
+static uint32_t rc_absent_s;       /* the same at the last wake: the "use left" notice's */
+
+/* A wake's slept seconds (the PCF's, or the counted ones if it failed): the
+ * absence and, from a PCF-timed sleep, the rate. ds_secs is at most the
+ * backstop, so x 1000 fits. */
+static void ka_slept(uint32_t s, bool pcf) {
+    ka_asleep_s += s;
+    rc_absent_s = ka_asleep_s;
+    if (pcf && s >= KA_RATE_MIN_S) {
+        uint32_t pm = ds_secs * 1000u / s;
+        if (pm >= KA_RATE_LO && pm <= KA_RATE_HI) ka_rate_pm = (uint16_t)pm;
+    }
+}
+
+/* At the ladder's sleep: the cap, and whether it is the keep-alive's. Input
+ * since the last wake (a key wake's own included, recovery_begin) starts the
+ * absence over. A link down, on 2.4G or none: the backstop, as before. */
+static uint32_t ka_cap(bool *ka) {
+    if (last_input_activity_elapsed() < timer_elapsed32(rc_woke_at)) ka_asleep_s = 0;
+    *ka = ka_asleep_s + KA_REAL_S <= KA_FOR_S && !ch582_is_usb() && !ch582_is_24g() &&
+          ch582_get_conn_state() == CH582_CONN_CONNECTED;
+    return *ka ? (uint32_t)KA_REAL_S * ka_rate_pm / 1000u : DS_BACKSTOP_S;
+}
+
 static void recovery_begin(uint8_t reason);
 
 /* The Deep-sleep itself, run from SRAM (.ramtext, copied at boot with .data;
@@ -451,10 +499,11 @@ __attribute__((noreturn)) static void ds_clock_failI(uint32_t which) {
  * radio busy), true otherwise, whether it slept (ds_flags) or a source was
  * already active. It wakes after `cap_s` counted seconds, counting from
  * `preset_s`; `no_feed` leaves the watchdog unfed. The ladder's sleep passes
- * the backstop, fed, from 0; only the dev bench's arm passes its own, so an
- * arm cancelled or left over never reaches the ladder's (codex, deep-sleep
- * build review 5). */
-static bool deep_sleep(uint32_t cap_s, bool no_feed, uint32_t preset_s) {
+ * the backstop or the keep-alive's cap (`keepalive`: its wake is that
+ * reason), fed, from 0; only the dev bench's arm passes its own, so an arm
+ * cancelled or left over never reaches the ladder's (codex, deep-sleep build
+ * review 5). */
+static bool deep_sleep(uint32_t cap_s, bool no_feed, uint32_t preset_s, bool keepalive) {
     WDT_SCOPE(WDT_SITE_DEEP_SLEEP);
     static volatile uint32_t sacrificial;
     sacrificial++;   /* the breadcrumb above must reach RAM before the CPU stops */
@@ -568,7 +617,7 @@ static bool deep_sleep(uint32_t cap_s, bool no_feed, uint32_t preset_s) {
                 if (!no_feed) SN_WDT->FEED = (mskWDT_WDKEY | mskWDT_FV);   /* no lock calls in here */
                 secs++;
                 if (!(r0 || r1 || r2) && secs >= cap_s) {
-                    ds_reason = SLEEP_WAKE_BACKSTOP;
+                    ds_reason = keepalive ? SLEEP_WAKE_KEEPALIVE : SLEEP_WAKE_BACKSTOP;
                     break;
                 }
             }
@@ -752,6 +801,7 @@ static void recovery_task(void) {
             bool     pcf;
             if (rtc_wake_slept(&s, &pcf)) {
                 rc_pcf_s = s;
+                ka_slept(s, pcf);
                 ds_slept_total += s;
                 battery_sleep_account(s * 1000u);
                 rtc_wake_gauge_taken();
@@ -793,6 +843,7 @@ static void recovery_task(void) {
         bool     pcf;
         if (rtc_wake_slept(&s, &pcf)) {
             rc_pcf_s = s;
+            ka_slept(s, pcf);
             if (pcf) ds_flags |= SLEEP_V_PCF;
             ds_slept_total += s;
             battery_sleep_account(s * 1000u);
@@ -862,7 +913,9 @@ static void recovery_task(void) {
             if (!painted) rc_timed_out |= SLEEP_RC_DISPLAY;
             display_wake_release();
             rc_close(SLEEP_RC_DISPLAY);
-            if (rc_pcf_s >= RC_LONG_SLEEP_S) power_wake_notice();   /* "6h use left", if it matters */
+            /* "6h use left", if it matters: after the whole absence, never at a
+             * keep-alive's wake, whose sleeps alone never reach it. */
+            if (ds_reason != SLEEP_WAKE_KEEPALIVE && rc_absent_s >= RC_LONG_SLEEP_S) power_wake_notice();
         }
     }
     if (rc_open == 0) rc_active = false;
@@ -941,7 +994,7 @@ static void arm_task(void) {
     ds_blocked = blockers() & (uint16_t)~(DSB_LIT | DSB_RGB);   /* the bench forces the stage */
     if (ds_blocked == 0 && rtc_sleep_prepare()) {
         battery_sleep_enter();
-        if (deep_sleep(ds_arm_cap_s, ds_arm_no_feed, ds_arm_preset_s)) {
+        if (deep_sleep(ds_arm_cap_s, ds_arm_no_feed, ds_arm_preset_s, false)) {
             ds_state      = DS_DONE;
             ds_woke_at    = timer_read32();
             ds_kp_pending = true;
@@ -994,7 +1047,9 @@ void sleep_task(void) {
         ds_wanted_blocked = b;
         if (b == 0 && rtc_sleep_prepare()) {
             battery_sleep_enter();
-            deep_sleep(DS_BACKSTOP_S, false, 0);
+            bool     ka;
+            uint32_t cap = ka_cap(&ka);
+            deep_sleep(cap, false, 0, ka);
         }
     }
     rtc_pass_mark();                  /* the PCF transactions of the next pass count from here */
