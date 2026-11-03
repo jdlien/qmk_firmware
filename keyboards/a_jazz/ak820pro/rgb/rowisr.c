@@ -223,8 +223,10 @@ volatile bool sn32f2xx_scan_skip = false; /* rowisr.h: op 28 sub 4 */
  * from the row below's R (peach alphas and pink mods from a purple and blue
  * theme, and magenta above each of the nine holes at a white frame; white,
  * 11-01). */
-static uint8_t cur_row = 0;
-static uint8_t key_row = 0;
+static uint8_t cur_row    = 0;
+static uint8_t key_row    = 0;
+static uint8_t cur_colour = 0;   /* cur_row % SN32F2XX_RGB_MATRIX_ROW_CHANNELS, counted beside it: no divide on the slot */
+_Static_assert(SN32F2XX_RGB_MATRIX_ROWS_HW % SN32F2XX_RGB_MATRIX_ROW_CHANNELS == 0, "the mux rows are whole key rows, so cur_row and cur_colour wrap together");
 
 /* ---- The epoch clock (D3 step 1) ----------------------------------------
  *
@@ -251,6 +253,28 @@ static uint8_t key_row = 0;
 #define USB_FRMNO_MASK    0x7FFu          /* the LLD's usbhw.h (mskFRAME_NO, mskBUS_*), not on this file's include path */
 #define USB_FRM_FRESH     750u            /* 4 ms of CT16B5 ticks: FRMNO must have moved this recently to be trusted */
 #define USB_FRM_PENDING   1500u           /* 8 ms more: a stale's recovery ends without a frame (no host), pending no longer */
+#define USB_FRM_TICKS_X2  375u            /* one frame, 1 ms, is 187.5 CT16B5 ticks: the spans compare at twice the tick */
+#define USB_WRAP_X2       768000UL        /* 2,048 frames at twice the tick: the frame counter's modulus */
+#define USB_TOL_TICKS     563u            /* 3 ms of ticks, rounded up: the tolerance's fixed part */
+
+/* The modular distance between an interval's two spans, the extension's in
+ * CT16B5 ticks and the frame counter's in frames (ms), returned in ticks:
+ * both taken at twice the tick so a frame's half tick is kept, the
+ * difference folded at the frame counter's modulus. No divide below
+ * 2.048 s, which is every interval the handler judges (a slot, or a
+ * hold-off; the guard ends any gap of 8 ms between observations); the one
+ * divide stays for a longer span (the supported hour, never seen). The
+ * milliseconds the record reports are made off the handler
+ * (rowisr_record_usb). The warm windows of 11-02 put the two ms
+ * conversions that stood here, with the snapshots, at 19 us a slot: a
+ * software divide each on this core. */
+static inline uint32_t usb_distance_ticks(uint32_t dext, uint32_t df) {
+    uint32_t dx2 = dext < USB_WRAP_X2 / 2u ? dext * 2u : (dext * 2u) % USB_WRAP_X2;   /* x2 fits: the span is under an hour */
+    uint32_t fx2 = df * USB_FRM_TICKS_X2;
+    uint32_t d   = dx2 > fx2 ? dx2 - fx2 : fx2 - dx2;
+    if (d > USB_WRAP_X2 / 2u) d = USB_WRAP_X2 - d;
+    return d >> 1;
+}
 static uint16_t frm_seen     = 0xFFFFu;
 static uint32_t frm_seen_ext = 0;
 static uint8_t  frm_pending  = 0;         /* a stale happened and no frame has moved since: the recovery (the fourth verify review's 1) */
@@ -498,7 +522,11 @@ static uint32_t boundaries_between(const snap_t *a, const snap_t *b) {
     if (dext < 0x700000UL) {   /* 7.3 M ticks, 39 s: dext x 256 plus any phase stays inside int32 (codex, P2 7) */
         int32_t dt = (int32_t)(dext * SYS_TICK_HCLK) - dphase;
         if (dt < 0) dt = 0;
-        return ((uint32_t)dt + half) / slot_ticks;
+        uint32_t q = (uint32_t)dt + half;
+        if (q < 2u * slot_ticks) return q >= slot_ticks ? 1u : 0u;   /* one boundary or none, every slot's and every exit's case: by
+                                                                       * comparison, not the software divide this core has (the warm
+                                                                       * windows of 11-02: a divide here at step 1 and at the exit) */
+        return q / slot_ticks;                                        /* a late service: the count */
     }
     int64_t dt = (int64_t)dext * SYS_TICK_HCLK - dphase;
     if (dt < 0) dt = 0;
@@ -536,8 +564,9 @@ static struct {
     uint8_t  late_omit;        /* omissions by the arm deadline (a subset of omitted), saturating */
     uint8_t  omit_row[SN32F2XX_RGB_MATRIX_ROWS_HW];   /* omissions per mux row (row and colour), saturating */
     uint32_t usb_checked;      /* intervals the frame counter judged: VALID, the driver ACTIVE at both ends, no bus event */
-    uint16_t usb_worst_ms;     /* the worst modular distance among the intervals it accepted, ms */
-    uint16_t usb_last_dt_ms, usb_last_df;   /* the last rejected interval's two spans: the extension's and the frame counter's, ms */
+    uint16_t usb_worst;        /* the worst modular distance among the intervals it accepted, CT16B5 ticks (under the tolerance: it fits) */
+    uint32_t usb_last_dt;      /* the last rejected interval's span by the extension, CT16B5 ticks (reported in ms) */
+    uint16_t usb_last_df;      /* and by the frame counter, frames (ms) */
     uint8_t  usb_rejects;      /* intervals the frame counter rejected: the spans disagree, saturating */
     uint8_t  usb_events;       /* intervals rejected for a bus event inside them, serviced or pending, or the frames stopped, saturating */
     uint8_t  usb_unjudged;     /* intervals excluded without a loss: both ends inside a stale's recovery, no frame yet, saturating */
@@ -597,7 +626,8 @@ void rowisr_record_rows(uint8_t *out28) {   /* op 28 sub 5: the rest (rowisr_dia
 void rowisr_record_usb(uint8_t *out28) {   /* op 28 sub 6: the frame counter's record and the clocks' state (rowisr_diag.h) */
     chSysLock();
     uint32_t ck = rec.usb_checked, gen = time_gen;
-    uint16_t wm = rec.usb_worst_ms, ldt = rec.usb_last_dt_ms, ldf = rec.usb_last_df, ug = usb_gen;
+    uint32_t ldt_t = rec.usb_last_dt;
+    uint16_t wm_t = rec.usb_worst, ldf = rec.usb_last_df, ug = usb_gen;
     uint8_t  rj = rec.usb_rejects, ev = rec.usb_events, uj = rec.usb_unjudged, tv = time_valid, tx = time_excl;
     uint16_t frm = (uint16_t)(SN32_USB->FRMNO & USB_FRMNO_MASK);
     uint8_t  st  = (uint8_t)USBD1.state;
@@ -607,6 +637,9 @@ void rowisr_record_usb(uint8_t *out28) {   /* op 28 sub 6: the frame counter's r
     uint8_t  pend = frm_pending;
     uint16_t lgap = time_last_gap;
     chSysUnlock();
+    uint16_t wm    = (uint16_t)((wm_t * 2u + 187u) / 375u);        /* ticks to ms, rounded: the divides live here, off the handler */
+    uint32_t ldt32 = (ldt_t * 2u + 187u) / 375u;                    /* an hour's ticks x 2 fits */
+    uint16_t ldt   = ldt32 > 0xFFFFu ? 0xFFFFu : (uint16_t)ldt32;
     uint8_t *p = out28;
 #define PUT32(x) do { uint32_t v_ = (x); *p++ = v_ & 0xFF; *p++ = (v_ >> 8) & 0xFF; *p++ = (v_ >> 16) & 0xFF; *p++ = (v_ >> 24) & 0xFF; } while (0)
 #define PUT16(x) do { uint16_t v_ = (x); *p++ = v_ & 0xFF; *p++ = (v_ >> 8) & 0xFF; } while (0)
@@ -827,9 +860,8 @@ static void rowisr_slot(void) {
          * hardware). Not judged when the bus is down or the frames are known
          * stopped at the start: the declared blind spot. */
         bool     reject  = false, unjudged = false;
-        uint32_t dext  = s1.ext - last_snap.ext;                      /* 5.33 us ticks; under an hour, so x2 fits */
-        uint32_t dt_ms = (dext * 2u + 187u) / 375u;                   /* the extension's span, ms, rounded */
-        uint32_t df    = (uint32_t)(s1.frm - last_snap.frm) & USB_FRMNO_MASK;   /* the frame counter's, modulo 2,048 */
+        uint32_t dext  = s1.ext - last_snap.ext;                      /* the extension's span, 5.33 us ticks; under an hour */
+        uint32_t df    = (uint32_t)(s1.frm - last_snap.frm) & USB_FRMNO_MASK;   /* the frame counter's, frames, modulo 2,048 */
         if (!s1.bus || s1.ugen != last_snap.ugen) {   /* the bus down at the end, or a bus event serviced inside: never healthy */
             sat8(&rec.usb_events);
             reject = true;
@@ -843,16 +875,15 @@ static void rowisr_slot(void) {
                 unjudged = true;
             }
         } else {
-            uint32_t diff = (dt_ms - df) & USB_FRMNO_MASK;
-            if (diff > 1024u) diff = 2048u - diff;                    /* the modular distance */
+            uint32_t diff = usb_distance_ticks(dext, df);             /* the modular distance, ticks, no divide */
             rec.usb_checked++;
-            reject = diff > 3u + (dt_ms >> 9);                        /* 3 ms plus the span / 512, about 0.2% */
+            reject = diff > USB_TOL_TICKS + (dext >> 9);              /* 3 ms plus the span / 512, about 0.2% */
             if (reject) sat8(&rec.usb_rejects);
-            else if (diff > rec.usb_worst_ms) rec.usb_worst_ms = (uint16_t)diff;
+            else if (diff > rec.usb_worst) rec.usb_worst = (uint16_t)diff;   /* under the tolerance: it fits */
         }
         if (reject) {
-            rec.usb_last_dt_ms = dt_ms > 0xFFFFu ? 0xFFFFu : (uint16_t)dt_ms;
-            rec.usb_last_df    = (uint16_t)df;
+            rec.usb_last_dt = dext;
+            rec.usb_last_df = (uint16_t)df;
             /* INVALID with one loss, as the guard's. The generation is bumped
              * only if no other observer has since the snapshot (the generation
              * unchanged: a tick's invalidation, re-primed or not, is that
@@ -922,7 +953,9 @@ static void rowisr_slot(void) {
     /* The rotation: the next mux row; every third one a new key row (the
      * pins' order: see cur_row's comment). */
     if (++cur_row >= SN32F2XX_RGB_MATRIX_ROWS_HW) cur_row = 0;
-    uint8_t colour = cur_row % SN32F2XX_RGB_MATRIX_ROW_CHANNELS;   /* 0 R, 1 B, 2 G of this key row */
+    if (++cur_colour >= SN32F2XX_RGB_MATRIX_ROW_CHANNELS) cur_colour = 0;   /* 0 R, 1 B, 2 G of this key row, counted beside cur_row (the
+                                                                           * `% 3` was a software divide on every slot); they wrap together */
+    uint8_t colour = cur_colour;
     bool    scan   = false;
     if (colour == 0) {
         if (++key_row >= ROWS_PER_HAND) key_row = 0;
@@ -1015,10 +1048,9 @@ static void rowisr_slot(void) {
         if (!sx.bus || !sx.fresh || sx.ugen != s1.ugen) {
             dur_ok = false;
         } else {
-            uint32_t dt_ms = ((sx.ext - s1.ext) * 2u + 187u) / 375u;
-            uint32_t diff  = (dt_ms - ((uint32_t)(sx.frm - s1.frm) & USB_FRMNO_MASK)) & USB_FRMNO_MASK;
-            if (diff > 1024u) diff = 2048u - diff;
-            if (diff > 3u + (dt_ms >> 9)) dur_ok = false;
+            uint32_t dext = sx.ext - s1.ext;
+            uint32_t diff = usb_distance_ticks(dext, (uint32_t)(sx.frm - s1.frm) & USB_FRMNO_MASK);
+            if (diff > USB_TOL_TICKS + (dext >> 9)) dur_ok = false;
         }
     }
     if (dur_ok) {
