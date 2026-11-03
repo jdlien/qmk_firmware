@@ -1086,24 +1086,32 @@ static void rowisr_slot(void) {
      * accounting lie outside it: page 4's hooks bracket the whole handler
      * at 5.33 us resolution), both ends VALID in one generation. The
      * exit's snapshot is time only since 11-03 (the cost diagnostic put the
-     * full snapshot and the exit's verdict at 14.5 us a slot): an aliasing
-     * silence inside the handler is judged at the next entry as before, and
-     * the one elapsed sample it would spoil is kept out by the frame
-     * counter alone, one read: more than two frames across a handler the
-     * extension read as under a slot is a wrap lost inside it (off USB the
-     * frames stand still and the check is void, the declared blind spot; a
-     * bus event inside resets or stops them and the sample is dropped,
-     * conservatively). The sample is reconstructed signed and dropped when
-     * negative (codex on 1d73bf3ed5: six wraps and a short phase could
-     * underflow it). */
+     * full snapshot and the exit's verdict at 14.5 us a slot), plus the two
+     * loads the verdict on this one sample needs: FRMNO and the bus-event
+     * generation. An aliasing silence inside the handler is judged at the
+     * next entry as before; the elapsed sample it would spoil is kept out
+     * by the same modular comparison of the two spans the entry uses (a
+     * wrap lost inside the handler leaves the frames' span 349.5 ms past
+     * the extension's), and by a bus event serviced inside (a suspend
+     * stops the frames with the extension running, a reset zeroes them:
+     * codex on 5bf8de959a). Off USB the frames stand still and the spans
+     * agree to within the handler's length: the declared blind spot, as
+     * before. The sample is reconstructed signed and dropped when negative
+     * (codex on 1d73bf3ed5: six wraps and a short phase could underflow
+     * it). */
     SEC_STAMP(4);   /* section 3: step 6, the arm */
     snap_t sx;
     chSysLockFromISR();
     take_timeI(&sx);
-    uint16_t frm_x = (uint16_t)(SN32_USB->FRMNO & USB_FRMNO_MASK);
+    uint16_t frm_x  = (uint16_t)(SN32_USB->FRMNO & USB_FRMNO_MASK);
+    uint16_t ugen_x = usb_gen;
     chSysUnlockFromISR();
     SEC_STAMP(5);   /* section 4: the exit snapshot */
-    bool dur_ok = s1.valid && sx.valid && sx.gen == s1.gen && (((uint32_t)(frm_x - s1.frm) & USB_FRMNO_MASK) <= 2u);
+    bool dur_ok = s1.valid && sx.valid && sx.gen == s1.gen && ugen_x == s1.ugen;
+    if (dur_ok) {
+        uint32_t dext = sx.ext - s1.ext;
+        if (usb_distance_ticks(dext, (uint32_t)(frm_x - s1.frm) & USB_FRMNO_MASK) > USB_TOL_TICKS + (dext >> 9)) dur_ok = false;
+    }
     if (dur_ok) {
         uint32_t b2 = boundaries_between(&s1, &sx);
         int32_t  el = (int32_t)(b2 * slot_ticks) + ((int32_t)sx.tc - (int32_t)s1.tc);
