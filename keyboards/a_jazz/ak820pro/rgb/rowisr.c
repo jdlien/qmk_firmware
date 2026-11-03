@@ -279,13 +279,15 @@ static inline uint32_t usb_distance_ticks(uint32_t dext, uint32_t df) {
     return d >> 1;
 }
 
-/* FRMNO read until two consecutive reads agree, three reads at most: a read
- * that lands on the counter's update can return a torn value (0x0FF read as
- * 0x000 while the carry into bit 8 is in flight: the pairs of false
- * rejections at spans 0/256 ms on the trim, 11-02, and the exit-only build,
- * 11-03, one tear giving -255 then +256 from the adopted baseline). Two
- * reads 11 cycles apart cannot both be torn, and a third, after a
- * disagreement, is past the update. */
+/* FRMNO read twice, and a third time if the two differ: a bounded retry
+ * against a read that lands on the register's update and returns a torn
+ * value (our reading of the pairs of false rejections at spans 0/256 ms on
+ * the trim, 11-02, and the exit-only build, 11-03: 0x0FF read as 0x000
+ * while the carry into bit 8 is in flight gives -255, then +256 from the
+ * torn baseline the rejection path commits). It rests on the update being
+ * shorter than the reads' spacing, which the manual does not state and the
+ * back-to-back scan (op 28 sub 14) is to qualify; a mitigation until then,
+ * not a proof (codex on cf7b61560d). */
 static inline uint16_t frmno_read(void) {
     uint16_t a = (uint16_t)(SN32_USB->FRMNO & USB_FRMNO_MASK);
     uint16_t b = (uint16_t)(SN32_USB->FRMNO & USB_FRMNO_MASK);
@@ -718,7 +720,12 @@ void rowisr_settle_set(uint16_t ticks) {
 #endif
 static inline void scan_settle(void) {
     uint32_t t0 = CT_REG(T_SCHED, CT_TC);
-    while ((CT_REG(T_SCHED, CT_TC) - t0) < settle_ticks) {}   /* the counter's reset inside (a slot boundary: the handler was late) reads as a huge gap and ends the wait */
+    for (;;) {
+        int32_t d = (int32_t)CT_REG(T_SCHED, CT_TC) - (int32_t)t0;
+        if (d < 0) d += (int32_t)slot_ticks;   /* the counter's reset at the slot boundary (a late scan): the elapsed time modulo the period in force, so the
+                                                * wait is never cut short (codex's P1 on cf7b61560d: an unsigned difference across the reset ended it at once) */
+        if ((uint32_t)d >= settle_ticks) break;   /* settle_ticks is bounded under every period (4,800 at most against 12,816 and scan-only's), so this ends */
+    }
 }
 
 #ifdef AK820_DEV_HOOKS
@@ -746,10 +753,13 @@ static inline void rig_note(uint8_t row, matrix_row_t prev, matrix_row_t now) {
         rise >>= 1;
     }
 }
-void rowisr_rig_set(uint8_t r0, uint8_t c0, uint8_t r1, uint8_t c1) {   /* 0xFF keeps a position */
+void rowisr_rig_set(uint8_t r0, uint8_t c0, uint8_t r1, uint8_t c1) {   /* 0xFF keeps a position; two equal positions are refused (key 0 would eat key 1's rises) */
+    uint8_t nr0 = rig_row[0], nc0 = rig_col[0], nr1 = rig_row[1], nc1 = rig_col[1];
+    if (r0 != 0xFFu && r0 < MATRIX_ROWS && c0 < MATRIX_COLS) { nr0 = r0; nc0 = c0; }
+    if (r1 != 0xFFu && r1 < MATRIX_ROWS && c1 < MATRIX_COLS) { nr1 = r1; nc1 = c1; }
+    if (nr0 == nr1 && nc0 == nc1) return;
     chSysLock();
-    if (r0 != 0xFFu && r0 < MATRIX_ROWS && c0 < MATRIX_COLS) { rig_row[0] = r0; rig_col[0] = c0; }
-    if (r1 != 0xFFu && r1 < MATRIX_ROWS && c1 < MATRIX_COLS) { rig_row[1] = r1; rig_col[1] = c1; }
+    rig_row[0] = nr0; rig_col[0] = nc0; rig_row[1] = nr1; rig_col[1] = nc1;
     chSysUnlock();
 }
 void rowisr_rig_read(uint8_t *out28) {   /* [0..1] presses and [2..3] releases on key 0, [4..7] key 1's, [8..9] presses elsewhere; [10..13] the positions; zeroed */
