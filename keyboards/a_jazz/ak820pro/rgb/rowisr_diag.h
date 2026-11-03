@@ -147,6 +147,20 @@
  *
  * The replies carry no correlation field beyond the op byte, as every dev
  * op's do: one host process at a time, the bench's rule.
+ *   sub 10 the cost of a register read: 256 reads of one register in a masked
+ *          loop timed by CT16B5, the least of 8 trials; the ticks for 256
+ *          reads are the HCLK cycles a read costs, the loop included. Reply
+ *          [4..5] USB FRMNO, [6..7] USB INSTS, [8..9] USB CFG, [10..11]
+ *          CT16B5's TC, [12..13] a RAM word (the loop alone), [14] the
+ *          trials, [15..16] the reads. The warm windows of 11-02.
+ *   sub 11 the handler's sections: T_SCHED's TC stamped at seven points of
+ *          the full path (rowisr.c, SEC_STAMP), the six deltas summed over
+ *          the services that reached the exit. Reply [4..7] the services,
+ *          [8..31] the six sums in HCLK ticks: 0 the entry snapshot, 1 step
+ *          1's checks and the frame counter's judgment, 2 steps 2 to 5 (the
+ *          mux rows, the scan, the match registers), 3 step 6 (the arm), 4
+ *          the exit snapshot, 5 the exit judgment and the record. Reset on
+ *          read: a window is two reads.
  */
 #pragma once
 

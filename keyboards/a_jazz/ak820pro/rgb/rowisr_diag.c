@@ -14,6 +14,30 @@
 #include "rowisr.h"
 #include "indicators.h"
 
+/* ---- sub 10: the cost of a register read ----------------------------------- */
+/* 256 reads of one register in a loop, interrupts masked, timed by CT16B5
+ * (HCLK/256): the ticks for 256 reads equal the HCLK cycles per read, loop
+ * included; the least of 8 trials. A RAM word gives the loop's own cost. The
+ * USB block's registers (FRMNO, INSTS, CFG) are read 6 times a slot by the
+ * handler and once a tick by the 20 kHz observer since D3 case 5; the warm
+ * windows of 11-02 (19 us a slot, not the divides) ask what one costs. */
+static volatile uint32_t read_sink;
+static uint16_t read_trial(volatile const uint32_t *p) {
+    uint16_t best = 0xFFFFu;
+    for (uint8_t t = 0; t < 8u; t++) {
+        uint32_t acc = 0;
+        chSysLock();
+        uint16_t t0 = (uint16_t)(*(volatile uint32_t *)(0x4000A004u));   /* CT16B5's TC: CT16_BASE(5) + CT_TC, spelled out so the loop has no call */
+        for (uint16_t i = 0; i < 256u; i++) acc += *p;
+        uint16_t t1 = (uint16_t)(*(volatile uint32_t *)(0x4000A004u));
+        chSysUnlock();
+        read_sink = acc;
+        uint16_t d = (uint16_t)(t1 - t0);
+        if (d < best) best = d;
+    }
+    return best;
+}
+
 /* ---- sub 0: the timers' registers ------------------------------------------ */
 
 #define CT16_BASE(n) (0x40000000u + 0x2000u * (n))   /* docs/sn32f299.md, the memory map */
@@ -373,6 +397,19 @@ bool rowisr_diag_op28(uint8_t *data) {
         case 9:
             memset(&data[4], 0, 28);
             report_fill(sub == 9 ? 1u : 0u, &data[4]);
+            return true;
+        case 10:   /* the cost of a register read: [4..5] FRMNO, [6..7] INSTS, [8..9] CFG, [10..11] CT16B5's TC, [12..13] a RAM word; HCLK cycles a read */
+            memset(&data[4], 0, 28);
+            put16(&data[4],  read_trial(&SN32_USB->FRMNO));
+            put16(&data[6],  read_trial(&SN32_USB->INSTS));
+            put16(&data[8],  read_trial(&SN32_USB->CFG));
+            put16(&data[10], read_trial((volatile const uint32_t *)0x4000A004u));
+            put16(&data[12], read_trial(&read_sink));
+            data[14] = 8; data[15] = 0; data[16] = 0; data[17] = 1;   /* trials, reads (256, little-endian) */
+            return true;
+        case 11:   /* the handler's sections (rowisr.h) */
+            memset(&data[4], 0, 28);
+            rowisr_record_sections(&data[4]);
             return true;
         default:
             return false;

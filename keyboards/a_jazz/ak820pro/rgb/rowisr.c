@@ -823,10 +823,52 @@ static inline void service_commit(const snap_t *s1, bool valid1, uint32_t bounda
     }
 }
 
+/* ---- The handler's sections, dev only (op 28 sub 11) ------------------------
+ *
+ * T_SCHED's TC stamped at seven points of the full path, the six deltas
+ * summed in HCLK ticks over the services that reached the exit, read and
+ * reset off the handler (rowisr_record_sections). A wrap of the TC inside a
+ * section (a late service across the slot's reset) is unwrapped by the
+ * period. Early returns commit nothing. The warm windows of 11-02 put the
+ * detector at 19 us a slot over stage 2 and the trim of its divides moved
+ * nothing: these say where the time is. Dev builds only; the daily build
+ * carries neither the stamps nor the sums. */
+#ifdef AK820_DEV_HOOKS
+#define SEC_N 6
+static uint32_t sec_sum[SEC_N];
+static uint32_t sec_count;
+static uint16_t sec_t[SEC_N + 1];
+#define SEC_STAMP(i) (sec_t[i] = (uint16_t)CT_REG(T_SCHED, CT_TC))
+static inline void sec_commit(void) {
+    for (uint8_t i = 0; i < SEC_N; i++) {
+        int32_t d = (int32_t)sec_t[i + 1] - (int32_t)sec_t[i];
+        if (d < 0) d += (int32_t)slot_ticks;
+        sec_sum[i] += (uint32_t)d;
+    }
+    sec_count++;
+}
+void rowisr_record_sections(uint8_t *out28) {   /* [0..3] the services summed, [4..27] the six sums, HCLK ticks; reset on read */
+    uint32_t c, s[SEC_N];
+    chSysLock();
+    c = sec_count; sec_count = 0;
+    for (uint8_t i = 0; i < SEC_N; i++) { s[i] = sec_sum[i]; sec_sum[i] = 0; }
+    chSysUnlock();
+    uint8_t *p = out28;
+#define PUT32(x) do { uint32_t v_ = (x); *p++ = v_ & 0xFF; *p++ = (v_ >> 8) & 0xFF; *p++ = (v_ >> 16) & 0xFF; *p++ = (v_ >> 24) & 0xFF; } while (0)
+    PUT32(c);
+    for (uint8_t i = 0; i < SEC_N; i++) PUT32(s[i]);
+#undef PUT32
+}
+#else
+#define SEC_STAMP(i) ((void)0)
+#define sec_commit() ((void)0)
+#endif
+
 /* ---- The handler (D3) ------------------------------------------------------- */
 
 static void rowisr_slot(void) {
     sn32f2xx_isr_enter_hook();
+    SEC_STAMP(0);
     /* 1. The flag and the entry snapshot, coherent: acknowledged and
      * captured in one section, so a boundary crossed between the two cannot
      * leave a flagged epoch the snapshot already belongs to (codex, P2 4). */
@@ -836,6 +878,7 @@ static void rowisr_slot(void) {
     CT_REG(T_SCHED, CT_IC) = ris;
     take_snapI(&s1);
     chSysUnlockFromISR();
+    SEC_STAMP(1);   /* section 0: the entry snapshot */
     adopt_pending = false;
     if (s1.gen != seen_gen) {   /* a loss since the handler last looked, whichever observer saw it, re-primed or not */
         seen_gen = s1.gen;
@@ -913,6 +956,7 @@ static void rowisr_slot(void) {
     }
     if (!valid1 && have_last) sat8(&rec.invalid_services);
 
+    SEC_STAMP(2);   /* section 1: step 1's checks and the frame counter's judgment */
     /* 2. Deselect every mux row (the outputs are parked: belt and braces). */
     mux_deselect_all();
 
@@ -998,6 +1042,7 @@ static void rowisr_slot(void) {
      * driver's enable_pwm_output; F-033's phantom was the exception). */
     if (width_sum) mux_select(cur_row);
 
+    SEC_STAMP(3);   /* section 2: steps 2 to 5, the mux rows, the scan and the match registers */
     /* 6. Inside one critical section: a fresh snapshot against step 1's; a
      * boundary crossed meanwhile means the work ran across a slot (no arm,
      * nothing committed, the flag left for the pending interrupt, which
@@ -1040,10 +1085,12 @@ static void rowisr_slot(void) {
      * snapshot (the port's prologue and epilogue, the health hooks and this
      * accounting lie outside it: page 4's hooks bracket the whole handler
      * at 5.33 us resolution), both ends VALID in one generation. */
+    SEC_STAMP(4);   /* section 3: step 6, the arm */
     snap_t sx;
     chSysLockFromISR();
     take_snapI(&sx);
     chSysUnlockFromISR();
+    SEC_STAMP(5);   /* section 4: the exit snapshot */
     bool dur_ok = s1.valid && sx.valid && sx.gen == s1.gen;
     if (dur_ok && s1.bus && (s1.fresh || s1.pending)) {   /* an aliasing interruption inside the handler is judged at the next entry; this span too, before its sample is taken (the verify review's 4) */
         if (!sx.bus || !sx.fresh || sx.ugen != s1.ugen) {
@@ -1062,6 +1109,8 @@ static void rowisr_slot(void) {
         if (el > rec.elapsed_max) rec.elapsed_max = el > 0xFFFFu ? 0xFFFFu : (uint16_t)el;
         if (el < rec.elapsed_min) rec.elapsed_min = (uint16_t)el;
     }
+    SEC_STAMP(6);   /* section 5: the exit judgment and the record */
+    sec_commit();
     sn32f2xx_isr_exit_hook();
 }
 
