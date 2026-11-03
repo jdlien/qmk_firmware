@@ -1094,9 +1094,8 @@ static void rowisr_slot(void) {
      * wrap lost inside the handler leaves the frames' span 349.5 ms past
      * the extension's), and by a bus event serviced inside (a suspend
      * stops the frames with the extension running, a reset zeroes them:
-     * codex on 5bf8de959a). Off USB the frames stand still and the spans
-     * agree to within the handler's length: the declared blind spot, as
-     * before. The sample is reconstructed signed and dropped when negative
+     * codex on 5bf8de959a). Off USB the spans are not compared, as the
+     * entry does not judge there: the declared blind spot, as before. The sample is reconstructed signed and dropped when negative
      * (codex on 1d73bf3ed5: six wraps and a short phase could underflow
      * it). */
     SEC_STAMP(4);   /* section 3: step 6, the arm */
@@ -1108,7 +1107,8 @@ static void rowisr_slot(void) {
     chSysUnlockFromISR();
     SEC_STAMP(5);   /* section 4: the exit snapshot */
     bool dur_ok = s1.valid && sx.valid && sx.gen == s1.gen && ugen_x == s1.ugen;
-    if (dur_ok) {
+    if (dur_ok && s1.bus) {   /* the spans compared only with the bus up at the entry, as the entry judges: off USB the frames stand
+                               * still and a healthy handler past 3 ms would fail the comparison (codex's verify of 7e438dc9b5) */
         uint32_t dext = sx.ext - s1.ext;
         if (usb_distance_ticks(dext, (uint32_t)(frm_x - s1.frm) & USB_FRMNO_MASK) > USB_TOL_TICKS + (dext >> 9)) dur_ok = false;
     }
