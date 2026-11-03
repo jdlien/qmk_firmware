@@ -76,6 +76,8 @@
  *          every service's count, low 16 bits. Reset with the health
  *          counters.
  *   sub 6  the USB frame counter's record (D3 case 5) and the clocks' state:
+ *          (since 11-03 an interval is eight services, 2.1 ms: the
+ *          judgment's cadence, rowisr.c; the counts are of those)
  *          [4..7] intervals the frame counter judged (VALID, the driver
  *          ACTIVE at both ends, no bus event), [8] intervals it rejected for
  *          a disagreement of the spans, [9] intervals rejected for a bus
