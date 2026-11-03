@@ -121,9 +121,10 @@
  * scale go together. 267 us is the measured stage-0 slot (11-01), stages 2-4's;
  * 125 us is stage 5's, a 444 Hz field: the window halves with the slot (the
  * literal terminal 2,047, 42.7 us, an arm deadline ~80 us in) and the scale
- * follows the field so the light is the same (D4: w(c) = round(4.845 c);
- * here 310/64 = 4.84375, checked against the logger at stage 5's gate). The
- * scale is Q6 fixed point: ticks = (byte x ROWISR_K_Q6) >> 6. */
+ * follows the field so the duty is the same (the measured 267 us duty at k =
+ * 10 scaled by 125/267 = 4.6817; here 300/64 = 4.6875, checked against the
+ * logger at stage 5's gate; D4's 4.845 came from the stage-0 slot and field).
+ * The scale is Q6 fixed point, rounded: ticks = (byte x ROWISR_K_Q6 + 32) >> 6. */
 #ifndef ROWISR_CADENCE_US
 #    define ROWISR_CADENCE_US 267u
 #endif

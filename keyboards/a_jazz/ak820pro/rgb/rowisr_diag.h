@@ -75,7 +75,7 @@
  *          interval was INVALID (each saturating at 255), [10..11] the
  *          handler's shortest elapsed time in 48 MHz ticks, [12..29]
  *          omissions per mux row, 18 bytes saturating at 255, [30..31]
- *          the elapsed samples dropped for a boundary inside the handler (stage 5a; page 7 has every service's count). Reset with the health
+ *          the elapsed samples dropped for a boundary inside the handler (stage 5a; the services' low word it replaced is gone: page 7 carries the valid services, not every service). Reset with the health
  *          counters.
  *   sub 6  the USB frame counter's record (D3 case 5) and the clocks' state:
  *          [4..7] intervals the frame counter judged (VALID, the driver
