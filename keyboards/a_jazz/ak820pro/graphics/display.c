@@ -1810,8 +1810,11 @@ static void draw_battery(bool force) {
         /* "Low" keeps a red sliver: the text glyphs cannot be recoloured, and
          * an empty white outline beside it would not read as a warning. */
         if (want_fw == 0 && batt == 0 && st == BATTERY_STATE_BATTERY) want_fw = 2;
-        want_col = (batt <= 20) ? COL_BATT_LOW
-                 : (batt <= 50) ? COL_BATT_WARN
+        /* Red where the low cap starts saving the lights (power.c's LOW_CAP_PM,
+         * ~2 days at JD's logged use), amber from a third (~4 days): 50/20 was
+         * set before the drains showed how far 20% goes. */
+        want_col = (batt <= 15) ? COL_BATT_LOW
+                 : (batt <= 33) ? COL_BATT_WARN
                                 : COL_BATT_OK;
     }
     /* The mode's bulb: on battery only, where the ladder runs; on USB every
