@@ -564,7 +564,7 @@ static struct {
     uint8_t  late_omit;        /* omissions by the arm deadline (a subset of omitted), saturating */
     uint8_t  omit_row[SN32F2XX_RGB_MATRIX_ROWS_HW];   /* omissions per mux row (row and colour), saturating */
     uint32_t usb_checked;      /* intervals the frame counter judged: VALID, the driver ACTIVE at both ends, no bus event */
-    uint16_t usb_worst;        /* the worst modular distance among the intervals it accepted, CT16B5 ticks (under the tolerance: it fits) */
+    uint16_t usb_worst;        /* the worst modular distance among the intervals it accepted, CT16B5 ticks, saturating */
     uint32_t usb_last_dt;      /* the last rejected interval's span by the extension, CT16B5 ticks (reported in ms) */
     uint16_t usb_last_df;      /* and by the frame counter, frames (ms) */
     uint8_t  usb_rejects;      /* intervals the frame counter rejected: the spans disagree, saturating */
@@ -879,7 +879,8 @@ static void rowisr_slot(void) {
             rec.usb_checked++;
             reject = diff > USB_TOL_TICKS + (dext >> 9);              /* 3 ms plus the span / 512, about 0.2% */
             if (reject) sat8(&rec.usb_rejects);
-            else if (diff > rec.usb_worst) rec.usb_worst = (uint16_t)diff;   /* under the tolerance: it fits */
+            else if (diff > rec.usb_worst) rec.usb_worst = diff > 0xFFFFu ? 0xFFFFu : (uint16_t)diff;   /* under the tolerance, which grows with
+                                                                                                    * the span: saturated for a span past 3 min */
         }
         if (reject) {
             rec.usb_last_dt = dext;
