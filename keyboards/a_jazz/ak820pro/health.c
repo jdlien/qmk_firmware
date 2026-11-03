@@ -120,17 +120,17 @@ void input_note_row_scan(uint8_t row) {
     row_last[row] = now;
 }
 
-void input_note_consume(const matrix_row_t *raw, const matrix_row_t *fresh, uint8_t rows) {
-    /* Main-loop context: safe to read the timer here. */
+void input_note_consume(const matrix_row_t *diff, uint8_t rows) {
+    /* Main-loop context, off the lock: the XOR per row of the snapshot the
+     * consume copied, taken under its lock (rowisr.c, stage 3), so every
+     * transition that reaches debounce is counted. Per-row gap timing lives
+     * in the ISR -- see input_note_row_scan(). */
     consumes++;
-    /* Per-row gap timing moved into the ISR -- see input_note_row_scan(). */
-
-    /* Raw edges: population count of the XOR, per row, before the copy. */
     for (uint8_t i = 0; i < rows; i++) {
-        matrix_row_t diff = raw[i] ^ fresh[i];
-        if (!diff) continue;
+        matrix_row_t d = diff[i];
+        if (!d) continue;
         cooked_changes++;              /* rows differing at consume time */
-        while (diff) { raw_edges += (diff & 1u); diff >>= 1; }
+        while (d) { raw_edges += (d & 1u); d >>= 1; }
     }
 }
 static uint8_t  loop_gap_max_mark = LOOP_MARK_NONE;

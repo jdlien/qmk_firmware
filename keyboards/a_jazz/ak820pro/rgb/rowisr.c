@@ -59,11 +59,14 @@
 #include "rowisr_diag.h"   /* the quiesce cancels a dev hold-off first (an inline no-op in other builds) */
 
 #define ROWS_PER_HAND (MATRIX_ROWS)
-#ifndef MATRIX_IO_DELAY
-#    define MATRIX_IO_DELAY 30
-#endif
 #ifndef MATRIX_INPUT_PRESSED_STATE
 #    define MATRIX_INPUT_PRESSED_STATE 0
+#endif
+#if MATRIX_INPUT_PRESSED_STATE != 0
+#    error "rowisr.c reads the columns as two port words with a press low (the pull-ups, COL2ROW)"
+#endif
+#ifndef ROWISR_SETTLE_TICKS
+#    define ROWISR_SETTLE_TICKS 96u   /* the column settle after the row select, HCLK ticks: 2 us at 48 MHz (D3 step 3; Q1's sweep sets it) */
 #endif
 #if (DIODE_DIRECTION != COL2ROW)
 #    error "rowisr.c scans COL2ROW: a row driven low, the columns read"
@@ -275,6 +278,20 @@ static inline uint32_t usb_distance_ticks(uint32_t dext, uint32_t df) {
     if (d > USB_WRAP_X2 / 2u) d = USB_WRAP_X2 - d;
     return d >> 1;
 }
+
+/* FRMNO read until two consecutive reads agree, three reads at most: a read
+ * that lands on the counter's update can return a torn value (0x0FF read as
+ * 0x000 while the carry into bit 8 is in flight: the pairs of false
+ * rejections at spans 0/256 ms on the trim, 11-02, and the exit-only build,
+ * 11-03, one tear giving -255 then +256 from the adopted baseline). Two
+ * reads 11 cycles apart cannot both be torn, and a third, after a
+ * disagreement, is past the update. */
+static inline uint16_t frmno_read(void) {
+    uint16_t a = (uint16_t)(SN32_USB->FRMNO & USB_FRMNO_MASK);
+    uint16_t b = (uint16_t)(SN32_USB->FRMNO & USB_FRMNO_MASK);
+    if (a == b) return a;
+    return (uint16_t)(SN32_USB->FRMNO & USB_FRMNO_MASK);
+}
 static uint16_t frm_seen     = 0xFFFFu;
 static uint32_t frm_seen_ext = 0;
 static uint8_t  frm_pending  = 0;         /* a stale happened and no frame has moved since: the recovery (the fourth verify review's 1) */
@@ -290,7 +307,7 @@ static volatile uint16_t time_guard_rejects = 0;   /* the guard's rejections, wr
  * not fresh; only a frame seen moving after this restores the trust (a
  * movement inside a discarded gap cannot: the second verify review's 1). */
 static inline void frm_staleI(void) {
-    frm_seen     = (uint16_t)(SN32_USB->FRMNO & USB_FRMNO_MASK);
+    frm_seen     = frmno_read();
     frm_seen_ext = time_ext - USB_FRM_FRESH;
     frm_pending  = 1;
 }
@@ -356,7 +373,7 @@ static inline void time_invalidateI(bool stale_frames) {
  * otherwise return to an equal FRMNO; the verify review). I-class. */
 static inline void frm_trackI(void) {
     if (time_excl) return;   /* excluded: the extension is frozen, so a stamp now would read as no age at all (the third verify review's 1) */
-    uint16_t frm = (uint16_t)(SN32_USB->FRMNO & USB_FRMNO_MASK);
+    uint16_t frm = frmno_read();
     if (frm != frm_seen) {
         frm_seen     = frm;
         frm_seen_ext = time_ext;
@@ -629,7 +646,7 @@ void rowisr_record_usb(uint8_t *out28) {   /* op 28 sub 6: the frame counter's r
     uint32_t ldt_t = rec.usb_last_dt;
     uint16_t wm_t = rec.usb_worst, ldf = rec.usb_last_df, ug = usb_gen;
     uint8_t  rj = rec.usb_rejects, ev = rec.usb_events, uj = rec.usb_unjudged, tv = time_valid, tx = time_excl;
-    uint16_t frm = (uint16_t)(SN32_USB->FRMNO & USB_FRMNO_MASK);
+    uint16_t frm = frmno_read();
     uint8_t  st  = (uint8_t)USBD1.state;
     uint8_t  fresh = (time_ext - frm_seen_ext) < USB_FRM_FRESH ? 1u : 0u;
     uint8_t  live = (USBD1.state == USB_ACTIVE && (SN32_USB->CFG & USB_CFG_PHY_EN) != 0 &&
@@ -656,58 +673,105 @@ bool sn32f2xx_hw_fault(void) {
     return hw_fault;
 }
 
-/* ---- The key matrix's row helpers (the interim scanner, D1) ----------------
+/* ---- The key matrix's scan (stage 3, D3 step 3) ------------------------------
  *
- * From quantum/matrix.c, COL2ROW, with I-class locking. Each select or
- * unselect re-asserts output mode (a read-modify-write of the port's MODE,
- * idempotent on a pin that is already an output) and writes the level; the
- * clock chip's transaction holds this interrupt off for its own MODE writes
- * (rtc/rtc.c, sn32f2xx_row_irq_hold). Stage 3 removes the mode writes. */
-static inline void select_row(uint8_t row) {
-    chSysLockFromISR();
-    gpio_set_pin_output(key_row_pins[row]);
-    gpio_write_pin_low(key_row_pins[row]);
-    chSysUnlockFromISR();
+ * The key rows are push-pull outputs driven high and the columns inputs with
+ * their pull-ups from rowisr_hw_init() (deep sleep drives the rows low for
+ * its wake and high again at it, sleep.c, before the scan resumes), and the
+ * running handler never writes a port's MODE, CFG or whole DATA register:
+ * the select is one BCLR, the deselect one BSET. The interim scanner's
+ * select re-asserted output mode on every scan, a read-modify-write of the
+ * port's MODE, which is why rtc/rtc.c holds this interrupt off through the
+ * clock chip's transaction (its own MODE writes on the same port); the
+ * hold-off stays through stage 3 and D6 lifts it at stage 4. The columns
+ * are read as two port words, GPIO0 and GPIO2, and the 15 bits assembled in
+ * MATRIX_COL_PINS order (keyboard.json: A4, A5, C0-C3, A6, A7, C4-C7, C14,
+ * C8, C9; a press reads low, pulled through its diode into the driven-low
+ * row); rowisr_hw_init() checks the pin table against that order and op 28
+ * sub 2 reports a mismatch. The settle between the select and the read is
+ * timed on the scheduler's counter in HCLK ticks, ROWISR_SETTLE_TICKS (2 us)
+ * by default; a dev build sets it (sub 13) for Q1's sweep. No spin after the
+ * deselect: the PWM drives the columns next, and the next scan is three
+ * slots away. */
+static inline matrix_row_t columns_read(void) {
+    uint32_t a = ~palReadPort(GPIOA);   /* inverted: a set bit is a press */
+    uint32_t c = ~palReadPort(GPIOC);
+    return (matrix_row_t)(((a >> 4) & 0x3u) | ((c & 0xFu) << 2) | (((a >> 6) & 0x3u) << 6) | (((c >> 4) & 0xFu) << 8) |
+                          (((c >> 14) & 0x1u) << 12) | (((c >> 8) & 0x3u) << 13));
+}
+static const pin_t col_order[SN32F2XX_RGB_MATRIX_COLS] = {A4, A5, C0, C1, C2, C3, A6, A7, C4, C5, C6, C7, C14, C8, C9};   /* what columns_read() assembles */
+static bool col_map_fault = false;   /* MATRIX_COL_PINS is not col_order: columns_read() would assemble the wrong bits (op 28 sub 2, [31]) */
+bool sn32f2xx_col_map_fault(void) {
+    return col_map_fault;
 }
 
-static inline void unselect_row(uint8_t row) {   /* MATRIX_UNSELECT_DRIVE_HIGH: the shared columns */
-    chSysLockFromISR();
-    gpio_set_pin_output(key_row_pins[row]);
-    gpio_write_pin_high(key_row_pins[row]);
-    chSysUnlockFromISR();
+#ifdef AK820_DEV_HOOKS
+static volatile uint16_t settle_ticks = ROWISR_SETTLE_TICKS;   /* op 28 sub 13: Q1's sweep */
+uint16_t rowisr_settle_get(void) {
+    return settle_ticks;
+}
+void rowisr_settle_set(uint16_t ticks) {
+    settle_ticks = ticks > 4800u ? 4800u : ticks;   /* 100 us at most: a scan slot must still reach its arm */
+}
+#else
+#    define settle_ticks ROWISR_SETTLE_TICKS
+#endif
+static inline void scan_settle(void) {
+    uint32_t t0 = CT_REG(T_SCHED, CT_TC);
+    while ((CT_REG(T_SCHED, CT_TC) - t0) < settle_ticks) {}   /* the counter's reset inside (a slot boundary: the handler was late) reads as a huge gap and ends the wait */
 }
 
-static inline uint8_t read_matrix_pin(pin_t pin) {
-    return (gpio_read_pin(pin) == MATRIX_INPUT_PRESSED_STATE) ? 0 : 1;
-}
-
-/* The settle after a deselect, as the old driver had it: TIME_US2I(30)
- * iterations of a compiler barrier, about six. Q1's sweep sets stage 3's. */
-void matrix_output_unselect_delay(uint8_t line, bool key_pressed) {
-    (void)line;
-    (void)key_pressed;
-    for (int i = 0; i < TIME_US2I(MATRIX_IO_DELAY); ++i) {
-        __asm__ volatile("" ::: "memory");
+#ifdef AK820_DEV_HOOKS
+/* The rig's keys counted at the scan (stage 3; op 28 sub 12): the rising and
+ * falling edges on two positions, the presser's, and the rising edges on
+ * every other key, which are phantoms while only the presser presses.
+ * raw_edges, counted at the consume, cannot see a press and release inside
+ * one consume; these can. Set, read and zeroed off the handler. */
+static volatile uint8_t rig_row[2] = {0, 3}, rig_col[2] = {13, 14};   /* (0,13) Delete and (3,14) PgDn: the plugs of 11-03 */
+static uint16_t rig_press[2], rig_release[2], rig_other_press;
+static inline void rig_note(uint8_t row, matrix_row_t prev, matrix_row_t now) {
+    matrix_row_t rise = (matrix_row_t)(now & ~prev), fall = (matrix_row_t)(prev & ~now);
+    if ((rise | fall) == 0) return;   /* the common case: a few instructions on a scan slot */
+    for (uint8_t i = 0; i < 2u; i++) {
+        if (row != rig_row[i]) continue;
+        matrix_row_t m = (matrix_row_t)(1u << rig_col[i]);
+        if (rise & m) {
+            rig_press[i]++;
+            rise = (matrix_row_t)(rise & ~m);
+        }
+        if (fall & m) rig_release[i]++;
+    }
+    while (rise) {
+        rig_other_press += (uint16_t)(rise & 1u);
+        rise >>= 1;
     }
 }
-
-static void matrix_read_cols_on_row(matrix_row_t current_matrix[], uint8_t current_row_idx) {
-    matrix_row_t current_row_value = 0;
-    select_row(current_row_idx);
-    matrix_output_select_delay();   /* matrix_common.c: waitInputPinDelay(), 12 cycles */
-    matrix_row_t row_shifter = MATRIX_ROW_SHIFTER;
-    for (uint8_t col_index = 0; col_index < MATRIX_COLS; col_index++, row_shifter <<= 1) {
-        current_row_value |= read_matrix_pin(led_col_pins[col_index]) ? 0 : row_shifter;
-    }
-    unselect_row(current_row_idx);
-    matrix_output_unselect_delay(current_row_idx, current_row_value != 0);
-    current_matrix[current_row_idx] = current_row_value;
+void rowisr_rig_set(uint8_t r0, uint8_t c0, uint8_t r1, uint8_t c1) {   /* 0xFF keeps a position */
+    chSysLock();
+    if (r0 != 0xFFu && r0 < MATRIX_ROWS && c0 < MATRIX_COLS) { rig_row[0] = r0; rig_col[0] = c0; }
+    if (r1 != 0xFFu && r1 < MATRIX_ROWS && c1 < MATRIX_COLS) { rig_row[1] = r1; rig_col[1] = c1; }
+    chSysUnlock();
 }
+void rowisr_rig_read(uint8_t *out28) {   /* [0..1] presses and [2..3] releases on key 0, [4..7] key 1's, [8..9] presses elsewhere; [10..13] the positions; zeroed */
+    uint16_t p0, r0, p1, r1, o;
+    chSysLock();
+    p0 = rig_press[0]; r0 = rig_release[0]; p1 = rig_press[1]; r1 = rig_release[1]; o = rig_other_press;
+    rig_press[0] = rig_press[1] = rig_release[0] = rig_release[1] = rig_other_press = 0;
+    chSysUnlock();
+    out28[0] = p0 & 0xFF; out28[1] = p0 >> 8; out28[2] = r0 & 0xFF; out28[3] = r0 >> 8;
+    out28[4] = p1 & 0xFF; out28[5] = p1 >> 8; out28[6] = r1 & 0xFF; out28[7] = r1 >> 8;
+    out28[8] = o & 0xFF;  out28[9] = o >> 8;
+    out28[10] = rig_row[0]; out28[11] = rig_col[0]; out28[12] = rig_row[1]; out28[13] = rig_col[1];
+}
+#    define RIG_NOTE(r, p, n) rig_note((r), (p), (n))
+#else
+#    define RIG_NOTE(r, p, n) ((void)0)
+#endif
 
 /* Per-row input instrumentation (health.c defines the strong ones). */
 __attribute__((weak)) void input_note_row_scan(uint8_t row) { (void)row; }
-__attribute__((weak)) void input_note_consume(const matrix_row_t *raw, const matrix_row_t *fresh, uint8_t rows) {
-    (void)raw; (void)fresh; (void)rows;
+__attribute__((weak)) void input_note_consume(const matrix_row_t *diff, uint8_t rows) {
+    (void)diff; (void)rows;
 }
 /* The handler's bracket (health.c, page 4's callback metric, kept for the
  * before/after comparison; the record above is the stage-2 instrument). */
@@ -715,8 +779,15 @@ __attribute__((weak)) void sn32f2xx_isr_enter_hook(void) {}
 __attribute__((weak)) void sn32f2xx_isr_exit_hook(void) {}
 
 static void scan_key_row(uint8_t row) {
-    matrix_read_cols_on_row(shared_matrix, row);
+    const pin_t pin = key_row_pins[row];
+    palClearLine(pin);   /* select: one BCLR, the row driven low (push-pull from init) */
+    scan_settle();
+    matrix_row_t now = columns_read();
+    palSetLine(pin);     /* deselect: one BSET, the row back high */
     input_note_row_scan(row);
+    matrix_row_t prev  = shared_matrix[row];
+    shared_matrix[row] = now;
+    RIG_NOTE(row, prev, now);
     if (rows_seen != SHARED_MATRIX_ALL_ROWS) {
         rows_seen |= (uint8_t)(1u << row);
         if (rows_seen != SHARED_MATRIX_ALL_ROWS) return;   /* not complete yet */
@@ -831,9 +902,11 @@ static inline void service_commit(const snap_t *s1, bool valid1, uint32_t bounda
  * section (a late service across the slot's reset) is unwrapped by the
  * period. Early returns commit nothing. The warm windows of 11-02 put the
  * detector at 19 us a slot over stage 2 and the trim of its divides moved
- * nothing: these say where the time is. Dev builds only; the daily build
- * carries neither the stamps nor the sums. */
-#ifdef AK820_DEV_HOOKS
+ * nothing: these say where the time is. Opt-in (ROWISR_SECTIONS, rowisr.h),
+ * off even in the dev build JD runs: the commit after stamp 6 is ~6 us a
+ * slot, which page 4 sees and the stamps do not (the exit-only build's
+ * windows, 11-03); the daily build carries neither the stamps nor the sums. */
+#if defined(AK820_DEV_HOOKS) && ROWISR_SECTIONS
 #define SEC_N 6
 static uint32_t sec_sum[SEC_N];
 static uint32_t sec_count;
@@ -1102,7 +1175,7 @@ static void rowisr_slot(void) {
     snap_t sx;
     chSysLockFromISR();
     take_timeI(&sx);
-    uint16_t frm_x  = (uint16_t)(SN32_USB->FRMNO & USB_FRMNO_MASK);
+    uint16_t frm_x  = frmno_read();
     uint16_t ugen_x = usb_gen;
     chSysUnlockFromISR();
     SEC_STAMP(5);   /* section 4: the exit snapshot */
@@ -1252,6 +1325,9 @@ static void rowisr_hw_init(void) {
     }
     for (uint8_t x = 0; x < MATRIX_COLS; x++) {
         gpio_set_pin_input_high(led_col_pins[x]);
+    }
+    for (uint8_t x = 0; x < SN32F2XX_RGB_MATRIX_COLS; x++) {
+        if (led_col_pins[x] != col_order[x]) col_map_fault = true;   /* columns_read() assembles col_order: a changed pin table needs it rewritten */
     }
     /* The mux rows: outputs, off (active high) */
     for (uint8_t x = 0; x < SN32F2XX_RGB_MATRIX_ROWS_HW; x++) {
@@ -1493,21 +1569,27 @@ bool matrix_can_read(void) {
 bool matrix_scan_custom(matrix_row_t current_matrix[]) {
     if (!matrix_scanned) return false; /* Nothing to process until we have the matrix scanned */
 
-    /* Instrumentation first and UNLOCKED on purpose: it reads the timer, which
-     * must not be called inside chSysLock(). A torn read here only skews a
-     * counter, never behaviour. (It can also miss an ISR update that lands
-     * between it and the copy: raw_edges undercounts by design, BACKLOG.md;
-     * stage 3 makes the count exact.) */
-    input_note_consume(current_matrix, shared_matrix, MATRIX_ROWS);
-
-    /* The ISR writes shared_matrix on every key-row transition, so the
-     * compare/copy must exclude it or the loop can consume a matrix that is
-     * part new and part old -- the same hazard sn32f2xx_flush() locks against. */
+    /* The XOR of the very snapshot copied, taken under the lock with the copy
+     * (stage 3: the consume count made exact; before it the instrumentation
+     * compared unlocked and could miss a scan that landed between its read
+     * and the copy, raw_edges' undercount of one or two in a few hundred,
+     * BACKLOG.md), and counted off the lock. The ISR writes shared_matrix on
+     * every key-row sample, so the compare and copy exclude it or the loop
+     * can consume a matrix that is part new and part old, the hazard
+     * sn32f2xx_flush() locks against. */
+    matrix_row_t diff[MATRIX_ROWS];
+    bool         changed = false;
     chSysLock();
-    bool changed = memcmp(current_matrix, shared_matrix, sizeof(shared_matrix)) != 0;
-    if (changed) memcpy(current_matrix, shared_matrix, sizeof(shared_matrix));
+    for (uint8_t i = 0; i < MATRIX_ROWS; i++) {
+        diff[i] = (matrix_row_t)(current_matrix[i] ^ shared_matrix[i]);
+        if (diff[i]) {
+            current_matrix[i] = shared_matrix[i];
+            changed           = true;
+        }
+    }
     matrix_scanned = false;
     chSysUnlock();
+    input_note_consume(diff, MATRIX_ROWS);
 
     return changed;
 }

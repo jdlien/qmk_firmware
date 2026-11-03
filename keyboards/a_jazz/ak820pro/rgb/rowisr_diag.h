@@ -47,7 +47,9 @@
  *          completed (nothing runs, the columns released), [23] a silence
  *          of every interrupt is armed (sub 7), [24..25] its length in ms,
  *          [26..29] the last silence's measured length in CT16B5 ticks
- *          (5.33 us), [30] silences run (wrapping).
+ *          (5.33 us), [30] silences run (wrapping), [31] MATRIX_COL_PINS is not
+ *          the order the scan's two port reads assemble (stage 3: the
+ *          matrix would read wrong; rowisr.c, col_order).
  *   sub 3  one LED, one colour  [5] LED index 0..80 or 255 for off,
  *          [6..8] r, g, b
  *          Every other LED dark and that one at that colour, applied after
@@ -160,7 +162,31 @@
  *          1's checks and the frame counter's judgment, 2 steps 2 to 5 (the
  *          mux rows, the scan, the match registers), 3 step 6 (the arm), 4
  *          the exit snapshot, 5 the exit judgment and the record. Reset on
- *          read: a window is two reads.
+ *          read: a window is two reads. Only in a build with
+ *          ROWISR_SECTIONS=1 (rowisr.h): the commit costs ~6 us a slot
+ *          (11-03), so the dev build JD runs leaves it out and answers
+ *          unhandled.
+ *   sub 12 the rig's keys counted at the scan (stage 3): [5..8] the two
+ *          positions, row, col, row, col (0xFF keeps one; (0,13) and
+ *          (3,14) at boot, the presser's plugs of 11-03). Reply [4..5] the
+ *          presses (rising edges) and [6..7] the releases on the first,
+ *          [8..9] and [10..11] on the second, [12..13] presses on every
+ *          other key (phantoms while only the presser presses), [14..17]
+ *          the positions in force; the counts zeroed by the read. Unlike
+ *          raw_edges these see a press and release inside one consume.
+ *   sub 13 the column settle after the row select, HCLK ticks (48 MHz):
+ *          [5..6] a new value, 0..4800 (0xFFFF keeps). Reply [4..5] the
+ *          value in force. 96 (2 us) at boot; Q1's sweep: lower it with a
+ *          cross-row chord held and the presser's batches running, and
+ *          keep margin above the shortest setting that still counts exact.
+ *   sub 14 FRMNO read back to back: [5..6] ms to scan, 1..60000 (0 reads
+ *          the state without arming). The housekeeping task reads the
+ *          register in a tight loop 3 ms a pass until the time is spent,
+ *          every step between consecutive reads classed modulo 2,048.
+ *          Reply [4..7] reads, [8..11] steps of +1, [12..15] steps other
+ *          than 0 or +1, [16..17] ms left, [18] pairs kept (up to 3),
+ *          [19..30] those (previous, next) pairs. A torn read shows as
+ *          0x0FF -> 0x000 or the like; a preemption as a small step.
  */
 #pragma once
 

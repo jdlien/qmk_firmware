@@ -69,10 +69,20 @@ void rowisr_record_reset(void);
 void rowisr_record_fill(uint8_t *out28);        /* page 7's 28 bytes (health.h) */
 void rowisr_record_rows(uint8_t *out28);        /* op 28 sub 5 (rowisr_diag.h) */
 void rowisr_record_usb(uint8_t *out28);         /* op 28 sub 6: the frame counter's record (D3 case 5) and the clocks' state */
-#ifdef AK820_DEV_HOOKS
+#ifndef ROWISR_SECTIONS
+#    define ROWISR_SECTIONS 0                   /* the handler's sections stamped (op 28 sub 11): ~6 us a slot of commit, so opt-in even in a dev build */
+#endif
+#if defined(AK820_DEV_HOOKS) && ROWISR_SECTIONS
 void rowisr_record_sections(uint8_t *out28);    /* op 28 sub 11: the handler's sections, HCLK ticks summed; reset on read */
 #endif
+#ifdef AK820_DEV_HOOKS
+void     rowisr_rig_set(uint8_t r0, uint8_t c0, uint8_t r1, uint8_t c1);   /* op 28 sub 12: the two positions counted at the scan (0xFF keeps one) */
+void     rowisr_rig_read(uint8_t *out28);                                  /* their presses and releases, the presses elsewhere; zeroed on read */
+uint16_t rowisr_settle_get(void);                                          /* op 28 sub 13: the column settle after the row select, HCLK ticks */
+void     rowisr_settle_set(uint16_t ticks);
+#endif
 bool sn32f2xx_hw_fault(void);                   /* a timer's reset never completed at init: nothing runs, the columns released */
+bool sn32f2xx_col_map_fault(void);              /* MATRIX_COL_PINS is not the order the scan's port reads assemble (stage 3): the matrix would read wrong */
 
 /* rgb_matrix's driver entry points (rgb_matrix_driver, defined in rowisr.c).
  * Since stage 1 sn32f2xx_init() touches no hardware: the timers, the pins
@@ -181,8 +191,9 @@ extern volatile bool sn32f2xx_scan_skip;
 
 /* Health hooks (health.c defines them; weak no-ops here). The ISR pair brackets
  * the callback's body; input_note_row_scan() runs in the ISR on every key-row
- * sample; input_note_consume() in the main loop before the locked copy. */
+ * sample; input_note_consume() in the main loop after the locked copy, with
+ * the XOR per row of the snapshot it copied (stage 3: exact). */
 void sn32f2xx_isr_enter_hook(void);
 void sn32f2xx_isr_exit_hook(void);
 void input_note_row_scan(uint8_t row);
-void input_note_consume(const matrix_row_t *raw, const matrix_row_t *fresh, uint8_t rows);
+void input_note_consume(const matrix_row_t *diff, uint8_t rows);

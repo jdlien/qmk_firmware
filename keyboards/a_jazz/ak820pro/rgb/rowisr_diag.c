@@ -281,6 +281,59 @@ static void report_fill(uint8_t page, uint8_t *out) {   /* subs 8 and 9: out = &
     }
 }
 
+/* ---- sub 14: the frame counter read back to back ---------------------------- */
+/* FRMNO read in a tight loop from the housekeeping task, 3 ms a pass until
+ * the asked time is spent, every step between consecutive reads classed as
+ * 0, +1 or other (modulo 2,048), the first three others kept with their pair
+ * of values. A read torn by the counter's update shows as a pair like 0x0FF
+ * -> 0x000 (the trim's and the exit-only build's false rejections at spans
+ * 0/256 ms, 11-02/03); a preemption between two reads (a clock-chip
+ * transaction, a flash write) as a small step from a plausible value. Each
+ * slice starts afresh, so a step never spans two passes. */
+static uint32_t fscan_left_ms, fscan_reads, fscan_plus1, fscan_other;
+static uint16_t fscan_ex[3][2];
+static uint8_t  fscan_nex;
+static void fscan_slice(void) {
+    uint32_t t0   = timer_read32();
+    uint16_t prev = (uint16_t)(SN32_USB->FRMNO & 0x7FFu);
+    do {
+        for (uint16_t i = 0; i < 512u; i++) {
+            uint16_t f = (uint16_t)(SN32_USB->FRMNO & 0x7FFu);
+            uint16_t d = (uint16_t)((f - prev) & 0x7FFu);
+            if (d == 1u) {
+                fscan_plus1++;
+            } else if (d != 0u) {
+                fscan_other++;
+                if (fscan_nex < 3u) {
+                    fscan_ex[fscan_nex][0] = prev;
+                    fscan_ex[fscan_nex][1] = f;
+                    fscan_nex++;
+                }
+            }
+            prev = f;
+        }
+        fscan_reads += 512u;
+    } while (timer_elapsed32(t0) < 3u);
+    uint32_t spent = timer_elapsed32(t0);
+    fscan_left_ms  = fscan_left_ms > spent ? fscan_left_ms - spent : 0u;
+}
+static void fscan_fill(uint16_t arm_ms, uint8_t *out) {   /* out = &data[4], zeroed */
+    if (arm_ms != 0u) {
+        fscan_reads = fscan_plus1 = fscan_other = 0;
+        fscan_nex   = 0;
+        fscan_left_ms = arm_ms > 60000u ? 60000u : arm_ms;
+    }
+    put32(&out[0], fscan_reads);
+    put32(&out[4], fscan_plus1);
+    put32(&out[8], fscan_other);
+    put16(&out[12], (uint16_t)fscan_left_ms);
+    out[14] = fscan_nex;
+    for (uint8_t i = 0; i < 3u; i++) {
+        put16(&out[15 + 4 * i], fscan_ex[i][0]);
+        put16(&out[17 + 4 * i], fscan_ex[i][1]);
+    }
+}
+
 void rowisr_diag_cancelI(void) {   /* I-class: pwm_tick_stopI(), and the driver's deep-sleep entry */
     sil_us = 0;   /* a silence armed across a sleep would fire at the wake */
     if (hold_kind == 0) return;
@@ -298,6 +351,7 @@ void rowisr_diag_housekeeping(void) {
         chSysUnlock();
     }
     if (sil_us != 0 && (int32_t)(timer_read32() - sil_fire_ms) >= 0) silence_run();
+    if (fscan_left_ms != 0u) fscan_slice();
 }
 
 static void status_fill(uint8_t *out) {   /* out = &data[4], zeroed */
@@ -329,6 +383,7 @@ static void status_fill(uint8_t *out) {   /* out = &data[4], zeroed */
     put16(&out[20], (uint16_t)(sus / 1000u));  /* [24..25]: its length, ms */
     put32(&out[22], stk);                      /* [26..29]: the last silence's measured length, CT16B5 ticks */
     out[26] = sdn;                             /* [30]: silences run */
+    out[27] = sn32f2xx_col_map_fault() ? 1u : 0u;   /* [31]: MATRIX_COL_PINS is not the order the scan's port reads assemble (stage 3) */
 }
 
 /* ---- sub 3: one LED, one colour --------------------------------------------- */
@@ -407,10 +462,31 @@ bool rowisr_diag_op28(uint8_t *data) {
             put16(&data[12], read_trial(&read_sink));
             data[14] = 8; put16(&data[15], 256u);   /* trials, reads (codex on 95ef5cbc5d: the 256 sat one byte high) */
             return true;
-        case 11:   /* the handler's sections (rowisr.h) */
+#if ROWISR_SECTIONS
+        case 11:   /* the handler's sections (rowisr.h); unhandled when not compiled in */
             memset(&data[4], 0, 28);
             rowisr_record_sections(&data[4]);
             return true;
+#endif
+        case 12:   /* the rig's keys counted at the scan: [5..8] the two positions to set (row, col, row, col; 0xFF keeps); the reply zeroes the counts */
+            rowisr_rig_set(data[5], data[6], data[7], data[8]);
+            memset(&data[4], 0, 28);
+            rowisr_rig_read(&data[4]);
+            return true;
+        case 13: {   /* the column settle, HCLK ticks: [5..6] a new value (0xFFFF keeps); the reply [4..5] the value in force */
+            uint16_t t = (uint16_t)(data[5] | (data[6] << 8));
+            if (t != 0xFFFFu) rowisr_settle_set(t);
+            memset(&data[4], 0, 28);
+            put16(&data[4], rowisr_settle_get());
+            return true;
+        }
+        case 14: {   /* FRMNO read back to back: [5..6] ms to scan (0 reads the state); the reply [4..7] reads, [8..11] steps of +1, [12..15] other
+                      * steps, [16..17] ms left, [18] pairs kept, [19..30] three (prev, next) pairs */
+            uint16_t ms = (uint16_t)(data[5] | (data[6] << 8));
+            memset(&data[4], 0, 28);
+            fscan_fill(ms, &data[4]);
+            return true;
+        }
         default:
             return false;
     }
