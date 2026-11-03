@@ -1084,30 +1084,35 @@ static void rowisr_slot(void) {
     /* The exit snapshot: the handler's elapsed time, entry snapshot to exit
      * snapshot (the port's prologue and epilogue, the health hooks and this
      * accounting lie outside it: page 4's hooks bracket the whole handler
-     * at 5.33 us resolution), both ends VALID in one generation. */
+     * at 5.33 us resolution), both ends VALID in one generation. The
+     * exit's snapshot is time only since 11-03 (the cost diagnostic put the
+     * full snapshot and the exit's verdict at 14.5 us a slot): an aliasing
+     * silence inside the handler is judged at the next entry as before, and
+     * the one elapsed sample it would spoil is kept out by the frame
+     * counter alone, one read: more than two frames across a handler the
+     * extension read as under a slot is a wrap lost inside it (off USB the
+     * frames stand still and the check is void, the declared blind spot; a
+     * bus event inside resets or stops them and the sample is dropped,
+     * conservatively). The sample is reconstructed signed and dropped when
+     * negative (codex on 1d73bf3ed5: six wraps and a short phase could
+     * underflow it). */
     SEC_STAMP(4);   /* section 3: step 6, the arm */
     snap_t sx;
     chSysLockFromISR();
-    take_snapI(&sx);
+    take_timeI(&sx);
+    uint16_t frm_x = (uint16_t)(SN32_USB->FRMNO & USB_FRMNO_MASK);
     chSysUnlockFromISR();
     SEC_STAMP(5);   /* section 4: the exit snapshot */
-    bool dur_ok = s1.valid && sx.valid && sx.gen == s1.gen;
-    if (dur_ok && s1.bus && (s1.fresh || s1.pending)) {   /* an aliasing interruption inside the handler is judged at the next entry; this span too, before its sample is taken (the verify review's 4) */
-        if (!sx.bus || !sx.fresh || sx.ugen != s1.ugen) {
-            dur_ok = false;
-        } else {
-            uint32_t dext = sx.ext - s1.ext;
-            uint32_t diff = usb_distance_ticks(dext, (uint32_t)(sx.frm - s1.frm) & USB_FRMNO_MASK);
-            if (diff > USB_TOL_TICKS + (dext >> 9)) dur_ok = false;
-        }
-    }
+    bool dur_ok = s1.valid && sx.valid && sx.gen == s1.gen && (((uint32_t)(frm_x - s1.frm) & USB_FRMNO_MASK) <= 2u);
     if (dur_ok) {
         uint32_t b2 = boundaries_between(&s1, &sx);
-        uint32_t el = b2 * slot_ticks + (uint32_t)((int32_t)sx.tc - (int32_t)s1.tc);
-        rec.elapsed_sum += el;
-        rec.elapsed_samples++;
-        if (el > rec.elapsed_max) rec.elapsed_max = el > 0xFFFFu ? 0xFFFFu : (uint16_t)el;
-        if (el < rec.elapsed_min) rec.elapsed_min = (uint16_t)el;
+        int32_t  el = (int32_t)(b2 * slot_ticks) + ((int32_t)sx.tc - (int32_t)s1.tc);
+        if (el >= 0) {
+            rec.elapsed_sum += (uint32_t)el;
+            rec.elapsed_samples++;
+            if ((uint32_t)el > rec.elapsed_max) rec.elapsed_max = (uint32_t)el > 0xFFFFu ? 0xFFFFu : (uint16_t)el;
+            if ((uint32_t)el < rec.elapsed_min) rec.elapsed_min = (uint16_t)el;
+        }
     }
     SEC_STAMP(6);   /* section 5: the exit judgment and the record */
     sec_commit();

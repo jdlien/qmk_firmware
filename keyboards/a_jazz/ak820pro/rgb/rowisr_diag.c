@@ -405,7 +405,7 @@ bool rowisr_diag_op28(uint8_t *data) {
             put16(&data[8],  read_trial(&SN32_USB->CFG));
             put16(&data[10], read_trial((volatile const uint32_t *)0x4000A004u));
             put16(&data[12], read_trial(&read_sink));
-            data[14] = 8; data[15] = 0; data[16] = 0; data[17] = 1;   /* trials, reads (256, little-endian) */
+            data[14] = 8; put16(&data[15], 256u);   /* trials, reads (codex on 95ef5cbc5d: the 256 sat one byte high) */
             return true;
         case 11:   /* the handler's sections (rowisr.h) */
             memset(&data[4], 0, 28);
