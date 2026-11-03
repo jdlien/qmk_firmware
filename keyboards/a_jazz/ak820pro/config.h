@@ -491,3 +491,9 @@
 // 5%"): 5 for both, the charging light's from 0.
 #define INDICATOR_BRIGHTNESS_DEFAULT 5
 #define CHARGING_LED_BRIGHTNESS      5
+
+// The row ISR's cadence (rgb/rowisr.c, plans/ROW-ISR-PLAN.md D2/D4, stage 5):
+// the slot in microseconds, 267 (stages 2-4, the measured stage-0 slot) or
+// 125 (stage 5: a 444 Hz field, the pulse window and the scale halved with
+// it). 11-03: 125, stage 5b, on white for its gates.
+#define ROWISR_CADENCE_US 125u
