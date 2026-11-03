@@ -22,9 +22,9 @@
  *   timers in a row, inside one short critical section after the admission
  *   check (D3 step 6).
  * - The columns' duties are the bytes scaled (D4, D8): MR = byte x k, k a
- *   fixed-point constant per cadence (10 at 267 us, 4.84375 at 125, the same
- *   light; stage 2 calibrated 10 against the stage-0 holds, stage 5 checks
- *   125's against the logger); a multiply and a shift, not the flash table
+ *   fixed-point constant per cadence (10 at 267 us, 4.6875 at 125, the same
+ *   duty; stage 2 calibrated 10 against the stage-0 holds, stage 5 checks
+ *   125's against the logger), rounded; a multiply and a shift, not the flash table
  *   stages 2-4 carried (stage 5a: a flash load a column). The nine positions
  *   with no LED get an explicit zero (F-033). A match of 0 is a constant
  *   inactive level (docs/sn32f299.md, "PWM behaviour").
@@ -130,7 +130,7 @@
 #if ROWISR_CADENCE_US == 125u
 #    define ROWISR_SLOT_US    125u
 #    define ROWISR_TERMINAL   2047u                              /* the pulse timers' terminal match: a 42.7 us window */
-#    define ROWISR_K_Q6       310u                               /* 4.84375 ticks a unit: the same light as 10 at 267 us (D4) */
+#    define ROWISR_K_Q6       300u                               /* 4.6875 ticks a unit: the measured 267 us duty at k = 10 scaled by 125/267 (4.6817; D4's 4.845 came from the stage-0 slot and field), the logger's hold the arbiter (stage 5's gate; codex on 4294a3befd) */
 #elif ROWISR_CADENCE_US == 267u
 #    define ROWISR_SLOT_US    267u
 #    define ROWISR_TERMINAL   4095u                              /* an 85.3 us window */
@@ -142,7 +142,7 @@
 #define ROWISR_WINDOW_TICKS   (ROWISR_TERMINAL + 1u)             /* a counter runs to its terminal whatever the duties */
 #define ROWISR_ARM_MARGIN     120u                               /* the three arms' skew, the tail and the guard: 2.5 us */
 #define ROWISR_ARM_DEADLINE   (ROWISR_SLOT_TICKS - ROWISR_WINDOW_TICKS - ROWISR_ARM_MARGIN)   /* 8,600 ticks (179 us in) at 267 us; 3,832 (80 us) at 125 */
-#define ROWISR_WIDTH(b)       (((uint32_t)(b) * ROWISR_K_Q6) >> 6)   /* a byte's pulse width, ticks */
+#define ROWISR_WIDTH(b)       (((uint32_t)(b) * ROWISR_K_Q6 + 32u) >> 6)   /* a byte's pulse width, ticks, rounded (D4: floored, byte 1 was 20% under; exact at 640/64) */
 #define SYS_TICK_HCLK         256u                               /* one CT16B5 tick in HCLK ticks (5.33 us) */
 #define EPOCH_INVALID_GAP     1500u                              /* 8 ms of CT16B5 ticks: an observation gap this long is abnormal */
 #define EPOCH_CONSUMER_MAX    (3600UL * 187500UL)                /* an hour: the supported consumer interval */
@@ -207,7 +207,7 @@ static const col_mr_t col_mr[SN32F2XX_RGB_MATRIX_COLS] = {
 
 /* The scale (D8): MR = ROWISR_WIDTH(byte), linear; every width strictly
  * below the terminal (D2). Stage 6's curve brings a table back. */
-#if ((255u * ROWISR_K_Q6) >> 6) >= ROWISR_TERMINAL   /* the preprocessor cannot see ROWISR_WIDTH()'s cast */
+#if ((255u * ROWISR_K_Q6 + 32u) >> 6) >= ROWISR_TERMINAL   /* the preprocessor cannot see ROWISR_WIDTH()'s cast */
 #    error "every channel match must stay strictly below the terminal (D2)"
 #endif
 
@@ -601,6 +601,7 @@ static struct {
     uint32_t elapsed_samples;  /* the population of elapsed_sum */
     uint16_t elapsed_min, elapsed_max;   /* the maximum clips at 0xFFFF (1,365 us) */
     uint16_t latency_max;      /* entry TC, services with exactly one boundary crossed */
+    uint16_t elapsed_crossed;  /* services whose elapsed sample was dropped for a boundary inside the handler (stage 5a), wrapping */
     uint16_t omit_run, omit_run_max;
     uint8_t  epoch_losses;     /* generation changes the handler saw, saturating */
     uint8_t  invalid_services; /* services whose interval was INVALID, saturating */
@@ -653,8 +654,7 @@ void rowisr_record_fill(uint8_t *out28) {   /* page 7: the totals (health.h) */
 
 void rowisr_record_rows(uint8_t *out28) {   /* op 28 sub 5: the rest (rowisr_diag.h) */
     chSysLock();
-    uint16_t orm = rec.omit_run_max, emn = rec.elapsed_min;
-    uint32_t sv  = rec.serviced;
+    uint16_t orm = rec.omit_run_max, emn = rec.elapsed_min, ecr = rec.elapsed_crossed;
     uint8_t  sp = rec.spurious, lo = rec.late_omit, el = rec.epoch_losses, iv = rec.invalid_services;
     uint8_t  rows[SN32F2XX_RGB_MATRIX_ROWS_HW];
     memcpy(rows, rec.omit_row, sizeof(rows));
@@ -664,7 +664,7 @@ void rowisr_record_rows(uint8_t *out28) {   /* op 28 sub 5: the rest (rowisr_dia
     emn = emn == 0xFFFFu ? 0u : emn;
     out28[6] = emn & 0xFF; out28[7] = emn >> 8;
     memcpy(&out28[8], rows, SN32F2XX_RGB_MATRIX_ROWS_HW);          /* 8..25 */
-    out28[26] = sv & 0xFF; out28[27] = (sv >> 8) & 0xFF;            /* every service, low 16 bits */
+    out28[26] = ecr & 0xFF; out28[27] = ecr >> 8;                   /* the elapsed samples dropped for a boundary inside the handler (stage 5a; page 7 has the services) */
 }
 
 void rowisr_record_usb(uint8_t *out28) {   /* op 28 sub 6: the frame counter's record and the clocks' state (rowisr_diag.h) */
@@ -749,7 +749,7 @@ static inline void scan_settle(void) {
         int32_t d = (int32_t)CT_REG(T_SCHED, CT_TC) - (int32_t)t0;
         if (d < 0) d += (int32_t)slot_ticks;   /* the counter's reset at the slot boundary (a late scan): the elapsed time modulo the period in force, so the
                                                 * wait is never cut short (codex's P1 on cf7b61560d: an unsigned difference across the reset ended it at once) */
-        if ((uint32_t)d >= settle_ticks) break;   /* settle_ticks is bounded under every period (4,800 at most against 12,816 and scan-only's), so this ends */
+        if ((uint32_t)d >= settle_ticks) break;   /* settle_ticks is bounded under every period (half the arm deadline at most, against the slot and scan-only's), so this ends */
     }
 }
 
@@ -1198,14 +1198,19 @@ static void rowisr_slot(void) {
     }
 
     /* The handler's elapsed time: the scheduler's counter at the exit against
-     * step 1's, at 48 MHz, kept when no boundary passed inside the handler
-     * (the flag clear and the counter not reset under it); a service that
-     * spanned a boundary is the one step 6 counted as crossed, and its
-     * sample would be a slot's length, not the handler's. Stage 5a: the
-     * exit's extension snapshot and its verdict by the two spans (14.5 us a
-     * slot by the cost diagnostic, 6.6 of it taken back on 11-03) are gone
-     * with the reconstruction they protected; page 4's hooks keep the coarse
-     * whole-handler figure, the port's prologue and epilogue included. */
+     * step 1's, at 48 MHz, a sample kept when no boundary passed between the
+     * two reads (the flag clear at the exit and the counter not reset under
+     * it), preemption between them included. So the population is the
+     * boundary-free services: a service that ran across a boundary, before
+     * the arm (step 6 counts it crossed) or after it (armed, nothing counts
+     * it), drops its sample and is counted here instead (elapsed_crossed,
+     * op 28 sub 5); the mean and the maximum describe the kept population
+     * only, and at 125 us the maximum is under a slot by construction. Page
+     * 4's hooks time the handler inclusively, preemption and all, between
+     * the port's prologue and epilogue (not the wrapper or the exception
+     * return: D10's separate bound). Stage 5a: the exit's extension snapshot
+     * and its verdict by the two spans are gone with the reconstruction they
+     * protected (codex on 4294a3befd). */
     SEC_STAMP(4);   /* section 3: step 6, the arm */
     uint16_t tc_x = (uint16_t)CT_REG(T_SCHED, CT_TC);
     if (tc_x >= s1.tc && (CT_REG(T_SCHED, CT_RIS) & RIS_MR9) == 0) {
@@ -1214,6 +1219,8 @@ static void rowisr_slot(void) {
         rec.elapsed_samples++;
         if (el > rec.elapsed_max) rec.elapsed_max = (uint16_t)el;
         if (el < rec.elapsed_min) rec.elapsed_min = (uint16_t)el;
+    } else {
+        rec.elapsed_crossed++;
     }
     SEC_STAMP(5);   /* section 4: the exit (the elapsed sample) */
     SEC_STAMP(6);   /* section 5: the exit judgment and the record */

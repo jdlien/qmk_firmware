@@ -75,7 +75,7 @@
  *          interval was INVALID (each saturating at 255), [10..11] the
  *          handler's shortest elapsed time in 48 MHz ticks, [12..29]
  *          omissions per mux row, 18 bytes saturating at 255, [30..31]
- *          every service's count, low 16 bits. Reset with the health
+ *          the elapsed samples dropped for a boundary inside the handler (stage 5a; page 7 has every service's count). Reset with the health
  *          counters.
  *   sub 6  the USB frame counter's record (D3 case 5) and the clocks' state:
  *          [4..7] intervals the frame counter judged (VALID, the driver
@@ -175,7 +175,7 @@
  *          the positions in force; the counts zeroed by the read. Unlike
  *          raw_edges these see a press and release inside one consume.
  *   sub 13 the column settle after the row select, HCLK ticks (48 MHz):
- *          [5..6] a new value, 0..4800 (0xFFFF keeps). Reply [4..5] the
+ *          [5..6] a new value, 0..half the arm deadline, 1,916 at 125 us (0xFFFF keeps). Reply [4..5] the
  *          value in force. 96 (2 us) at boot; Q1's sweep: lower it with a
  *          cross-row chord held and the presser's batches running, and
  *          keep margin above the shortest setting that still counts exact.
