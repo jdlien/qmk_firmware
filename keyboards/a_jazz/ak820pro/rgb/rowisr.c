@@ -279,19 +279,26 @@ static inline uint32_t usb_distance_ticks(uint32_t dext, uint32_t df) {
     return d >> 1;
 }
 
-/* FRMNO read twice, and a third time if the two differ: a bounded retry
- * against a read that lands on the register's update and returns a torn
- * value (our reading of the pairs of false rejections at spans 0/256 ms on
- * the trim, 11-02, and the exit-only build, 11-03: 0x0FF read as 0x000
- * while the carry into bit 8 is in flight gives -255, then +256 from the
- * torn baseline the rejection path commits). It rests on the update being
- * shorter than the reads' spacing, which the manual does not state and the
- * back-to-back scan (op 28 sub 14) is to qualify; a mitigation until then,
- * not a proof (codex on cf7b61560d). */
+/* FRMNO read twice at least twelve cycles apart, and a third time if the
+ * two differ: the register updates in two steps at a byte carry, the low
+ * byte first (0x7FF reads 0x700 then 0x000, 0x1FF reads 0x100 then 0x200:
+ * the back-to-back scan of 11-03, op 28 sub 14, 48 torn reads in 16.8
+ * million over 92 carries, a torn state lasting 4-6 HCLK cycles, about one
+ * 12 MHz USB clock), and a torn value in the detector's snapshot gave the
+ * pairs of false rejections at spans 0/256 ms (the trim, the exit-only
+ * build, and once on stage 3 with two reads back to back, which can both
+ * land inside the torn state). The spacing puts the second read past any
+ * torn state the first was in; two reads that agree are then a settled
+ * value, and a third, spaced again, is past a step that fell between the
+ * first two. A mitigation measured on this unit, not a datasheet figure
+ * (codex on cf7b61560d). */
+#define FRMNO_SPACE() __asm__ volatile("nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop")
 static inline uint16_t frmno_read(void) {
     uint16_t a = (uint16_t)(SN32_USB->FRMNO & USB_FRMNO_MASK);
+    FRMNO_SPACE();
     uint16_t b = (uint16_t)(SN32_USB->FRMNO & USB_FRMNO_MASK);
     if (a == b) return a;
+    FRMNO_SPACE();
     return (uint16_t)(SN32_USB->FRMNO & USB_FRMNO_MASK);
 }
 static uint16_t frm_seen     = 0xFFFFu;
