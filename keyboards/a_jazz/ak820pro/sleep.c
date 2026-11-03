@@ -344,6 +344,14 @@ static uint8_t  rc_timed_out;
 static uint16_t ka_rate_pm = KA_RATE_PM;
 static uint32_t ka_asleep_s;       /* slept since the last input, sleep by sleep */
 static uint32_t rc_absent_s;       /* the same at the last wake: the "use left" notice's */
+/* QMK's last input time as the wake found it, before recovery_begin's own
+ * trigger: any input since (the trigger of a key or knob wake included)
+ * changes it. A timestamp compared, not an elapsed time: a trigger in the
+ * wake's own millisecond is still input (codex, P2), and no 64-bit divide. */
+static uint32_t rc_input_t0;
+/* A keep-alive's wake ended an absence long enough for "use left": given at
+ * the first input before the board sleeps again (codex, P3). */
+static bool     ka_notice_owed;
 
 /* A wake's slept seconds (the PCF's, or the counted ones if it failed): the
  * absence and, from a PCF-timed sleep, the rate. ds_secs is at most the
@@ -361,7 +369,8 @@ static void ka_slept(uint32_t s, bool pcf) {
  * since the last wake (a key wake's own included, recovery_begin) starts the
  * absence over. A link down, on 2.4G or none: the backstop, as before. */
 static uint32_t ka_cap(bool *ka) {
-    if (last_input_activity_elapsed() < timer_elapsed32(rc_woke_at)) ka_asleep_s = 0;
+    if (last_input_activity_time() != rc_input_t0) ka_asleep_s = 0;
+    ka_notice_owed = false;
     *ka = ka_asleep_s + KA_REAL_S <= KA_FOR_S && !ch582_is_usb() && !ch582_is_24g() &&
           ch582_get_conn_state() == CH582_CONN_CONNECTED;
     return *ka ? (uint32_t)KA_REAL_S * ka_rate_pm / 1000u : DS_BACKSTOP_S;
@@ -736,6 +745,8 @@ static bool deep_sleep(uint32_t cap_s, bool no_feed, uint32_t preset_s, bool kee
 enum { UR_NONE = 0, UR_WAIT, UR_OFF, UR_DONE };
 
 static void recovery_begin(uint8_t reason) {
+    rc_input_t0    = last_input_activity_time();   /* before the triggers below */
+    ka_notice_owed = false;
     rc_active    = true;
     rc_open      = SLEEP_RC_INPUT | SLEEP_RC_CLOCK | SLEEP_RC_GAUGE | SLEEP_RC_RADIO | SLEEP_RC_SUPPLY |
               SLEEP_RC_USB | SLEEP_RC_DISPLAY;
@@ -913,9 +924,12 @@ static void recovery_task(void) {
             if (!painted) rc_timed_out |= SLEEP_RC_DISPLAY;
             display_wake_release();
             rc_close(SLEEP_RC_DISPLAY);
-            /* "6h use left", if it matters: after the whole absence, never at a
-             * keep-alive's wake, whose sleeps alone never reach it. */
-            if (ds_reason != SLEEP_WAKE_KEEPALIVE && rc_absent_s >= RC_LONG_SLEEP_S) power_wake_notice();
+            /* "6h use left", if it matters: after the whole absence; at a
+             * keep-alive's wake only once someone types (sleep_task). */
+            if (rc_absent_s >= RC_LONG_SLEEP_S) {
+                if (ds_reason != SLEEP_WAKE_KEEPALIVE) power_wake_notice();
+                else ka_notice_owed = true;
+            }
         }
     }
     if (rc_open == 0) rc_active = false;
@@ -1035,6 +1049,10 @@ void sleep_deep_record(uint8_t *o) { memset(o, 0, SLEEP_RECORD_SIZE); }
 void sleep_task(void) {
     usb_watch();
     recovery_task();
+    if (ka_notice_owed && last_input_activity_time() != rc_input_t0) {
+        ka_notice_owed = false;
+        power_wake_notice();
+    }
 #ifdef AK820_DEV_HOOKS
     arm_task();
     light_task();
