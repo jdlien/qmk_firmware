@@ -168,8 +168,10 @@ bool sn32f2xx_scan_only_active(void);
 void sn32f2xx_sleep_enterI(void);
 void sn32f2xx_sleep_exitI(void);
 
-/* The row interrupt's NVIC line, for the callers that hold it off: the clock
- * chip's transaction (rtc/rtc.c) and the dev hold-off (rowisr_diag.c). The
+/* The row interrupt's line held off and released, nesting: the dev hold-off
+ * (rowisr_diag.c) since stage 4 of the rewrite (11-03); until then the clock
+ * chip's transaction (rtc/rtc.c) held it too, for the port MODE writes the
+ * interim scanner made, which stage 3's scan does not. The
  * vector is CT16B4's since stage 2 (D2), and nothing outside this driver
  * names it. Holds NEST: the first hold disables the line and
  * remembers whether it was enabled, the last release puts that back, so two

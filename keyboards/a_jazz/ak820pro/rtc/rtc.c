@@ -36,8 +36,11 @@
 /* 20 ms normally; 5 ms for the deep sleep's transactions (the pre-sleep read
  * and the wake's recovery: plans/DEEP-SLEEP-BUILD-PLAN.md, section 4, "The
  * budget"). The software I2C applies it as a deadline from the transaction's
- * start; with rtc.c's 15-NOP bit delay a whole read is well under 1 ms, so 5
- * bounds only a stuck bus. */
+ * start. A calendar read is ~2.6 ms of bit-banging, and since stage 4 of the
+ * row ISR rewrite (11-03) the row handler runs through it, so the read
+ * stretches by the handler's share: ~3.6 ms at stage 3's 27% occupancy
+ * (codex on 8a82367958), measured as i2c_max_cycles (page 2) and op 22's
+ * whole-call spans; the 5 ms paths' margin is the measurement, not a given. */
 static bool pcf_short_timeout = false;
 #define PCF8563_I2C_TIMEOUT     (pcf_short_timeout ? TIME_MS2I(5) : TIME_MS2I(10))
 
@@ -1496,7 +1499,8 @@ static int64_t ps_boundary_ms = 0;                /* the true boundary we aimed 
 static int16_t pcf_boundary_err_ms = 0;           /* measured PCF increment - intended boundary */
 static uint16_t pcf_brk_width_ms = 0;             /* the last bracket's width: the two reads around the increment, ms (stage 4's gate, Q3) */
 static uint8_t  pcf_brk_fails    = 0;             /* brackets that never saw the increment, saturating */
-static int64_t ps_brk_prev_t = 0;                 /* bracket: previous read stamp */
+static int64_t ps_brk_prev_t = 0;                 /* bracket: previous read stamp (its midpoint) */
+static int64_t ps_brk_prev_start = 0;             /* bracket: the previous read's start (the width's conservative end, stage 4) */
 static int16_t ps_brk_prev_sec = -1;
 #define PCF_WRITE_MS        1       /* one 1-byte write on this bus (T0.4) */
 #define PCF_LATE_MS         10      /* missed the release window: restart */
@@ -1756,7 +1760,9 @@ static void pcf_machine_step(void)
         }
         if (ps_brk_prev_sec >= 0 && sec != ps_brk_prev_sec) {
             int64_t edge = (ps_brk_prev_t + t_after) / 2;
-            int64_t w    = t_after - ps_brk_prev_t;              /* the bracket's width: the edge lies inside it */
+            int64_t w    = t_after - ps_brk_prev_start;          /* the bracket's width, the previous read's start to this read's end: the
+                                                                  * conservative span the increment fell in (the estimator keeps its midpoints;
+                                                                  * codex on 8a82367958: midpoint-to-end was not a bound) */
             pcf_brk_width_ms = (uint16_t)(w < 0 ? 0 : w > 65535 ? 65535 : w);
             int64_t err  = edge - ps_boundary_ms;              /* + = PCF late */
             pcf_boundary_err_ms = (int16_t)(err > 32767 ? 32767 : err < -32768 ? -32768 : err);
@@ -1772,7 +1778,7 @@ static void pcf_machine_step(void)
 #endif
             return;
         }
-        ps_brk_prev_sec = sec; ps_brk_prev_t = (now_ms + t_after) / 2;
+        ps_brk_prev_sec = sec; ps_brk_prev_t = (now_ms + t_after) / 2; ps_brk_prev_start = now_ms;
         return;
     }
     case PS_RECOVER: {

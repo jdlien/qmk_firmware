@@ -1262,10 +1262,10 @@ void sn32f2xx_sleep_exitI(void) {
 }
 
 /* ---- The row interrupt's line ---------------------------------------------- */
-/* Holds nest: the clock chip's transaction and a dev hold-off (op 28) can
- * overlap, and the line comes back only when the last holder releases it, to
- * the state the first holder found. Every caller holds the system lock or runs
- * I-class, so the depth needs no lock of its own. */
+/* Holds nest: two holders could overlap when the clock chip's transaction
+ * held the line too (until stage 4, 11-03; the dev hold-off, op 28 sub 1, is
+ * the one holder since), so the first hold remembers the line's state and
+ * the last release puts it back. */
 static uint8_t row_hold_depth  = 0;
 static bool    row_hold_was_on = false;
 
