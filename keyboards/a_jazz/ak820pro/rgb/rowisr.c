@@ -765,7 +765,7 @@ void rowisr_rig_read(uint8_t *out28) {   /* [0..1] presses and [2..3] releases o
 }
 #    define RIG_NOTE(r, p, n) rig_note((r), (p), (n))
 #else
-#    define RIG_NOTE(r, p, n) ((void)0)
+#    define RIG_NOTE(r, p, n) ((void)(r), (void)(p), (void)(n))   /* the daily build: prev is otherwise unused (-Werror) */
 #endif
 
 /* Per-row input instrumentation (health.c defines the strong ones). */
