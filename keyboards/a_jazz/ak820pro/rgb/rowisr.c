@@ -21,10 +21,13 @@
  *   slot's restart writes TC = 0 and then TMRCTRL with CEN, for the three
  *   timers in a row, inside one short critical section after the admission
  *   check (D3 step 6).
- * - The columns' duties come through a scale table (D4, D8): MR = scale_lut[byte],
- *   k = 10 at this cadence, calibrated against the stage-0 holds; the nine
- *   positions with no LED get an explicit zero (F-033). A match of 0 is a
- *   constant inactive level (docs/sn32f299.md, "PWM behaviour").
+ * - The columns' duties are the bytes scaled (D4, D8): MR = byte x k, k a
+ *   fixed-point constant per cadence (10 at 267 us, 4.84375 at 125, the same
+ *   light; stage 2 calibrated 10 against the stage-0 holds, stage 5 checks
+ *   125's against the logger); a multiply and a shift, not the flash table
+ *   stages 2-4 carried (stage 5a: a flash load a column). The nine positions
+ *   with no LED get an explicit zero (F-033). A match of 0 is a constant
+ *   inactive level (docs/sn32f299.md, "PWM behaviour").
  * - The mux rows are plain GPIO through BSET and BCLR (D3): four stores
  *   deselect every row, one store selects the next.
  * - The key scan is the interim scanner of stage 1 (D1): quantum/matrix.c's
@@ -46,6 +49,7 @@
  * interrupt's line (now CT16B4's), the quiesce on every bootloader route, the
  * flash-program guard, scan-only for light sleep's sizing.
  */
+#include <stddef.h>
 #include <string.h>
 #include <hal.h>
 #include "gpio.h"
@@ -113,13 +117,32 @@
 #define SCHED_PRIO  3u   /* as the old row ISR (SN32_PWM_CT16B1_IRQ_PRIORITY), below the 20 kHz tick's 2 */
 
 #define HCLK_HZ               48000000UL
-#define ROWISR_SLOT_US        267u                               /* the measured stage-0 slot (11-01) */
-#define ROWISR_SLOT_TICKS     (ROWISR_SLOT_US * 48u)             /* 12,816 at HCLK */
-#define ROWISR_TERMINAL       4095u                              /* the pulse timers' terminal match */
-#define ROWISR_WINDOW_TICKS   (ROWISR_TERMINAL + 1u)             /* 85.3 us: a counter runs to its terminal whatever the duties */
+/* The cadence (D2, D4; stage 5): the slot, the pulse timers' terminal and the
+ * scale go together. 267 us is the measured stage-0 slot (11-01), stages 2-4's;
+ * 125 us is stage 5's, a 444 Hz field: the window halves with the slot (the
+ * literal terminal 2,047, 42.7 us, an arm deadline ~80 us in) and the scale
+ * follows the field so the light is the same (D4: w(c) = round(4.845 c);
+ * here 310/64 = 4.84375, checked against the logger at stage 5's gate). The
+ * scale is Q6 fixed point: ticks = (byte x ROWISR_K_Q6) >> 6. */
+#ifndef ROWISR_CADENCE_US
+#    define ROWISR_CADENCE_US 267u
+#endif
+#if ROWISR_CADENCE_US == 125u
+#    define ROWISR_SLOT_US    125u
+#    define ROWISR_TERMINAL   2047u                              /* the pulse timers' terminal match: a 42.7 us window */
+#    define ROWISR_K_Q6       310u                               /* 4.84375 ticks a unit: the same light as 10 at 267 us (D4) */
+#elif ROWISR_CADENCE_US == 267u
+#    define ROWISR_SLOT_US    267u
+#    define ROWISR_TERMINAL   4095u                              /* an 85.3 us window */
+#    define ROWISR_K_Q6       640u                               /* 10 ticks a unit (stage 2's calibration) */
+#else
+#    error "ROWISR_CADENCE_US: 267 or 125 (D2's cadences; 62.5 is the experiment, not provided)"
+#endif
+#define ROWISR_SLOT_TICKS     (ROWISR_SLOT_US * 48u)             /* 12,816 or 6,000 at HCLK */
+#define ROWISR_WINDOW_TICKS   (ROWISR_TERMINAL + 1u)             /* a counter runs to its terminal whatever the duties */
 #define ROWISR_ARM_MARGIN     120u                               /* the three arms' skew, the tail and the guard: 2.5 us */
-#define ROWISR_ARM_DEADLINE   (ROWISR_SLOT_TICKS - ROWISR_WINDOW_TICKS - ROWISR_ARM_MARGIN)   /* 8,600 ticks, 179 us into the slot */
-#define ROWISR_K              10u                                /* the scale: ticks per unit of byte (D4; calibrated, stage 2's gate) */
+#define ROWISR_ARM_DEADLINE   (ROWISR_SLOT_TICKS - ROWISR_WINDOW_TICKS - ROWISR_ARM_MARGIN)   /* 8,600 ticks (179 us in) at 267 us; 3,832 (80 us) at 125 */
+#define ROWISR_WIDTH(b)       (((uint32_t)(b) * ROWISR_K_Q6) >> 6)   /* a byte's pulse width, ticks */
 #define SYS_TICK_HCLK         256u                               /* one CT16B5 tick in HCLK ticks (5.33 us) */
 #define EPOCH_INVALID_GAP     1500u                              /* 8 ms of CT16B5 ticks: an observation gap this long is abnormal */
 #define EPOCH_CONSUMER_MAX    (3600UL * 187500UL)                /* an hour: the supported consumer interval */
@@ -182,14 +205,9 @@ static const col_mr_t col_mr[SN32F2XX_RGB_MATRIX_COLS] = {
     COLMR(T_B1, 6), COLMR(T_B1, 7), COLMR(T_B1, 9), COLMR(T_B0, 1), COLMR(T_B0, 0), COLMR(T_B1, 10),
     COLMR(T_B0, 3), COLMR(T_B0, 2), COLMR(T_B1, 11)};
 
-/* The scale table (D8): MR = scale_lut[byte], linear at k = ROWISR_K at this
- * cadence, 256 x 16 bits in flash; every entry strictly below the terminal. */
-#define S1(i) (uint16_t)(ROWISR_K * (i))
-#define S4(i) S1(i), S1((i) + 1), S1((i) + 2), S1((i) + 3)
-#define S16(i) S4(i), S4((i) + 4), S4((i) + 8), S4((i) + 12)
-#define S64(i) S16(i), S16((i) + 16), S16((i) + 32), S16((i) + 48)
-static const uint16_t scale_lut[256] = {S64(0), S64(64), S64(128), S64(192)};
-#if (ROWISR_K * 255u) >= ROWISR_TERMINAL
+/* The scale (D8): MR = ROWISR_WIDTH(byte), linear; every width strictly
+ * below the terminal (D2). Stage 6's curve brings a table back. */
+#if ((255u * ROWISR_K_Q6) >> 6) >= ROWISR_TERMINAL   /* the preprocessor cannot see ROWISR_WIDTH()'s cast */
 #    error "every channel match must stay strictly below the terminal (D2)"
 #endif
 
@@ -720,7 +738,7 @@ uint16_t rowisr_settle_get(void) {
     return settle_ticks;
 }
 void rowisr_settle_set(uint16_t ticks) {
-    settle_ticks = ticks > 4800u ? 4800u : ticks;   /* 100 us at most: a scan slot must still reach its arm */
+    settle_ticks = ticks > ROWISR_ARM_DEADLINE / 2u ? (uint16_t)(ROWISR_ARM_DEADLINE / 2u) : ticks;   /* half the arm deadline at most (89 us at 267, 40 at 125): a scan slot must still reach its arm */
 }
 #else
 #    define settle_ticks ROWISR_SETTLE_TICKS
@@ -1111,14 +1129,18 @@ static void rowisr_slot(void) {
      * table, zeros for the nine holes. The sum of the widths feeds D8. */
     uint32_t width_sum = 0;
 #ifdef RGB_MATRIX_ENABLE
-    const uint8_t *co = g_led_config.matrix_co[key_row];
+    /* Stage 5a: the colour's byte plane chosen once (the pins' R, B, G against
+     * the struct's r, g, b), the width a multiply and a shift, the fifteen
+     * columns unrolled so each match register's address and key are the
+     * compiler's constants: the loop was the handler's largest block (section
+     * 2 of the cost diagnostic, 11-03). */
+    const uint8_t *co    = g_led_config.matrix_co[key_row];
+    const uint8_t *plane = (const uint8_t *)led_state + (colour == 0 ? offsetof(RGB, r) : (colour == 1 ? offsetof(RGB, b) : offsetof(RGB, g)));
+#pragma GCC unroll 15
     for (uint8_t c = 0; c < SN32F2XX_RGB_MATRIX_COLS; c++) {
         uint8_t  li = co[c];
         uint32_t w  = 0;
-        if (li < SN32F2XX_LED_COUNT) {
-            uint8_t b = (colour == 0) ? led_state[li].r : (colour == 1) ? led_state[li].b : led_state[li].g;
-            w         = scale_lut[b];
-        }
+        if (li < SN32F2XX_LED_COUNT) w = ROWISR_WIDTH(plane[(uint32_t)li * sizeof(RGB)]);
         *col_mr[c].mr = col_mr[c].key | w;
         width_sum += w;
     }
@@ -1141,12 +1163,16 @@ static void rowisr_slot(void) {
      * serviced epoch committed here, at the decision. */
     bool armed = false, crossed;
     chSysLockFromISR();
-    snap_t s6;
-    take_timeI(&s6);
-    crossed = (CT_REG(T_SCHED, CT_RIS) & RIS_MR9) != 0;
-    if (!crossed && s1.valid && s6.valid && s6.gen == s1.gen && crossed_between(&s1, &s6)) crossed = true;
+    /* Stage 5a: the boundary since step 1 read off the hardware, the flag (set
+     * at every match, cleared at step 1) and the counter (reset at the match,
+     * so a value below step 1's is a reset under us), not the extension's
+     * reconstruction (crossed_between: an observation, a difference and the
+     * validity rules, ~5 us a slot by the cost diagnostic). Either read
+     * catches a boundary that falls between the two. */
+    uint16_t tc6 = (uint16_t)CT_REG(T_SCHED, CT_TC);
+    crossed      = (CT_REG(T_SCHED, CT_RIS) & RIS_MR9) != 0 || tc6 < s1.tc;
     if (!crossed) {
-        if (width_sum && s6.tc <= ROWISR_ARM_DEADLINE) {
+        if (width_sum && tc6 <= ROWISR_ARM_DEADLINE) {
             pulse_arm_all();
             armed = true;
         }
@@ -1171,47 +1197,25 @@ static void rowisr_slot(void) {
         }
     }
 
-    /* The exit snapshot: the handler's elapsed time, entry snapshot to exit
-     * snapshot (the port's prologue and epilogue, the health hooks and this
-     * accounting lie outside it: page 4's hooks bracket the whole handler
-     * at 5.33 us resolution), both ends VALID in one generation. The
-     * exit's snapshot is time only since 11-03 (the cost diagnostic put the
-     * full snapshot and the exit's verdict at 14.5 us a slot), plus the two
-     * loads the verdict on this one sample needs: FRMNO and the bus-event
-     * generation. An aliasing silence inside the handler is judged at the
-     * next entry as before; the elapsed sample it would spoil is kept out
-     * by the same modular comparison of the two spans the entry uses (a
-     * wrap lost inside the handler leaves the frames' span 349.5 ms past
-     * the extension's), and by a bus event serviced inside (a suspend
-     * stops the frames with the extension running, a reset zeroes them:
-     * codex on 5bf8de959a). Off USB the spans are not compared, as the
-     * entry does not judge there: the declared blind spot, as before. The sample is reconstructed signed and dropped when negative
-     * (codex on 1d73bf3ed5: six wraps and a short phase could underflow
-     * it). */
+    /* The handler's elapsed time: the scheduler's counter at the exit against
+     * step 1's, at 48 MHz, kept when no boundary passed inside the handler
+     * (the flag clear and the counter not reset under it); a service that
+     * spanned a boundary is the one step 6 counted as crossed, and its
+     * sample would be a slot's length, not the handler's. Stage 5a: the
+     * exit's extension snapshot and its verdict by the two spans (14.5 us a
+     * slot by the cost diagnostic, 6.6 of it taken back on 11-03) are gone
+     * with the reconstruction they protected; page 4's hooks keep the coarse
+     * whole-handler figure, the port's prologue and epilogue included. */
     SEC_STAMP(4);   /* section 3: step 6, the arm */
-    snap_t sx;
-    chSysLockFromISR();
-    take_timeI(&sx);
-    uint16_t frm_x  = frmno_read();
-    uint16_t ugen_x = usb_gen;
-    chSysUnlockFromISR();
-    SEC_STAMP(5);   /* section 4: the exit snapshot */
-    bool dur_ok = s1.valid && sx.valid && sx.gen == s1.gen && ugen_x == s1.ugen;
-    if (dur_ok && s1.bus) {   /* the spans compared only with the bus up at the entry, as the entry judges: off USB the frames stand
-                               * still and a healthy handler past 3 ms would fail the comparison (codex's verify of 7e438dc9b5) */
-        uint32_t dext = sx.ext - s1.ext;
-        if (usb_distance_ticks(dext, (uint32_t)(frm_x - s1.frm) & USB_FRMNO_MASK) > USB_TOL_TICKS + (dext >> 9)) dur_ok = false;
+    uint16_t tc_x = (uint16_t)CT_REG(T_SCHED, CT_TC);
+    if (tc_x >= s1.tc && (CT_REG(T_SCHED, CT_RIS) & RIS_MR9) == 0) {
+        uint32_t el = (uint32_t)(tc_x - s1.tc);
+        rec.elapsed_sum += el;
+        rec.elapsed_samples++;
+        if (el > rec.elapsed_max) rec.elapsed_max = (uint16_t)el;
+        if (el < rec.elapsed_min) rec.elapsed_min = (uint16_t)el;
     }
-    if (dur_ok) {
-        uint32_t b2 = boundaries_between(&s1, &sx);
-        int32_t  el = (int32_t)(b2 * slot_ticks) + ((int32_t)sx.tc - (int32_t)s1.tc);
-        if (el >= 0) {
-            rec.elapsed_sum += (uint32_t)el;
-            rec.elapsed_samples++;
-            if ((uint32_t)el > rec.elapsed_max) rec.elapsed_max = (uint32_t)el > 0xFFFFu ? 0xFFFFu : (uint16_t)el;
-            if ((uint32_t)el < rec.elapsed_min) rec.elapsed_min = (uint16_t)el;
-        }
-    }
+    SEC_STAMP(5);   /* section 4: the exit (the elapsed sample) */
     SEC_STAMP(6);   /* section 5: the exit judgment and the record */
     sec_commit();
     sn32f2xx_isr_exit_hook();
@@ -1454,7 +1458,7 @@ static uint32_t drive_since  = 0;     /* when the frame was committed, ms */
 static uint32_t drive_lit    = 0;     /* ms with any channel lit, since the last take */
 static uint64_t drive_rem[3] = {0};   /* the conversion's remainder, ticks x us */
 static uint8_t  commits      = 0;     /* flushes, wrapping (sn32f2xx_led_commits()) */
-#define FIELD_US (SN32F2XX_RGB_MATRIX_ROWS_HW * ROWISR_SLOT_US)   /* 4,806 us */
+#define FIELD_US (SN32F2XX_RGB_MATRIX_ROWS_HW * ROWISR_SLOT_US)   /* 4,806 us at 267; 2,250 at 125 */
 
 static void drive_close(uint32_t now) {
     uint32_t dt = now - drive_since;
@@ -1473,9 +1477,9 @@ uint64_t sn32f2xx_led_drive_take(uint32_t now_ms, uint32_t *lit_ms, uint64_t rgb
     drive_close(now_ms);
     uint64_t total = 0;
     for (uint8_t k = 0; k < 3; k++) {
-        uint64_t num = acc[k] * FIELD_US + drive_rem[k];   /* ticks x us */
-        uint64_t q   = num / (1000ULL * ROWISR_K);           /* value x ms */
-        drive_rem[k] = num - q * (1000ULL * ROWISR_K);
+        uint64_t num = acc[k] * FIELD_US * 64u + drive_rem[k];   /* ticks x us x 64: the scale is Q6 (D8: rgb_ms = sum of ticks x T_field / k) */
+        uint64_t q   = num / (1000ULL * ROWISR_K_Q6);             /* value x ms */
+        drive_rem[k] = num - q * (1000ULL * ROWISR_K_Q6);
         if (rgb_ms) rgb_ms[k] = q;
         total += q;
     }
