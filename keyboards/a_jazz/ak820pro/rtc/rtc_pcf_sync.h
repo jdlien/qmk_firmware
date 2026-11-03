@@ -101,10 +101,13 @@ static inline bool pcf_sync_retry_due(const pcf_sync_t *s, uint32_t now_s) {
 }
 
 /* May the writer start? Only where nobody is watching the LEDs (10-27): each
- * PCF transaction holds the row ISR off (rtc.c, ak820_i2c_xfer_begin()), the
- * LEDs are off for it, up to 3.4 ms, and a write is three bursts over a
- * second, which JD saw after every 5-minute sync and filmed at 240 fps
- * (docs/leds.md, "The other flicker"). So it starts once the committed frame
+ * PCF transaction held the row ISR off until stage 4 of the row ISR rewrite
+ * (11-03; rtc.c, ak820_i2c_xfer_begin()), the LEDs off for it, up to
+ * 3.4 ms, and a write is three bursts over a second, which JD saw after
+ * every 5-minute sync and filmed at 240 fps (docs/leds.md, "The other
+ * flicker"). Stage 4 lets the scan run through the transaction; this
+ * deferral stays until the camera shows nothing at a forced write on it,
+ * then a follow-up retires it (plans/ROW-ISR-PLAN.md, D6). So it starts once the committed frame
  * is dark (every deep sleep comes after the dark, and waits on `pending`) or
  * after PCF_SYNC_UNSEEN_IDLE_MS without a key or the knob. The writer plans
  * from the board's clock when it starts, so a late write is as accurate as an

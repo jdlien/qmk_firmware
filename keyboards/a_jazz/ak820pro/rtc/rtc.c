@@ -276,29 +276,31 @@ static void i2c_note(msg_t r, uint32_t sc0, uint32_t c0) {
 }
 
 /* The fallback LLD's transfer hooks (halconf.h): the transfer runs with the
- * system lock released and only the row ISR's interrupt held off, CT16B1 in
- * the NVIC (plans/UART-LATENCY-PLAN.md, fix 1). The lock was there for the
- * pin modes: SDA's input/output switches are read-modify-writes of port A's
- * MODE, and the row ISR writes the same register for A18/A19; no other
- * interrupt changes a pin mode. HAL's own state update stays under its lock:
- * begin is entered with it held and end returns with it held. Only the row
- * line's enable bit is saved and put back, so a pending row interrupt fires
- * once at the release (late, as under the old lock) and a disabled one stays
- * disabled. NVIC_DisableIRQ has its barriers; never ChibiOS's vector
- * helpers, which clear the pending state. Dev builds can keep the old lock
- * (or the per-byte release) for the A/B. */
-/* The row line's enable state is the driver's business since stage 1 of the
- * row ISR rewrite (rgb/rowisr.h): holds nest there, so a dev hold-off
- * overlapping this transaction cannot re-enable the line inside it. */
+ * system lock released (plans/UART-LATENCY-PLAN.md, fix 1). The lock was
+ * there for the pin modes: SDA's input/output switches are read-modify-writes
+ * of port A's MODE, and until stage 3 of the row ISR rewrite the row ISR
+ * wrote the same register on every scan (the interim scanner's select
+ * re-asserted output mode on A18/A19), so from fix 1 to stage 3 the row
+ * ISR's interrupt was held off through the transfer and the board went dark
+ * for its 2.6 ms (docs/leds.md, "The other flicker"). Since stage 3 (11-03)
+ * the running handler never writes a port's MODE, CFG or whole DATA
+ * register (rgb/rowisr.c: the scan by BSET and BCLR alone; the 20 kHz tick
+ * writes pins by BSET and BCLR too, indicators.c; sleep's entry runs locked;
+ * no other interrupt changes a pin mode), so stage 4 (the plan's D6) lets
+ * the handler run through the transfer: the board stays lit, and the
+ * transfer grows by the handler's share, 2.6 ms to about 3.3 ms at a 20%
+ * occupancy, against the 10 ms deadline and the 5 ms one around deep sleep
+ * (i2c_max_cycles and the bracket's width, status page 4, are the gate).
+ * HAL's own state update stays under its lock: begin is entered with it
+ * held and end returns with it held. The dev-build accounting (od_*) stays. */
 
 void ak820_i2c_xfer_begin(void)
 {
 #ifdef AK820_DEV_HOOKS
     if (od_lock_mode() != OD_LOCK_UNLOCKED) return;
     od_mask_end();   /* the opening stretch, closed before the unlock: a partial
-                      * span, excluding the NVIC writes and HAL's own state update */
+                      * span, excluding HAL's own state update */
 #endif
-    sn32f2xx_row_irq_hold();   /* the row ISR's line, wherever its vector is (rgb/rowisr.h) */
     chSysUnlock();
 }
 
@@ -308,9 +310,8 @@ void ak820_i2c_xfer_end(void)
     if (od_lock_mode() != OD_LOCK_UNLOCKED) return;
 #endif
     chSysLock();
-    sn32f2xx_row_irq_release();
 #ifdef AK820_DEV_HOOKS
-    od_mask_begin();   /* the closing stretch, from after the row IRQ's restore */
+    od_mask_begin();   /* the closing stretch */
 #endif
 }
 
@@ -1493,6 +1494,8 @@ static bool pcf_reg_write_raw(uint8_t reg, uint8_t v) {
 static int32_t pcf_d_first_ms = PCF_D_FIRST_MS;   /* adapted from the bracket measurement below */
 static int64_t ps_boundary_ms = 0;                /* the true boundary we aimed the increment at */
 static int16_t pcf_boundary_err_ms = 0;           /* measured PCF increment - intended boundary */
+static uint16_t pcf_brk_width_ms = 0;             /* the last bracket's width: the two reads around the increment, ms (stage 4's gate, Q3) */
+static uint8_t  pcf_brk_fails    = 0;             /* brackets that never saw the increment, saturating */
 static int64_t ps_brk_prev_t = 0;                 /* bracket: previous read stamp */
 static int16_t ps_brk_prev_sec = -1;
 #define PCF_WRITE_MS        1       /* one 1-byte write on this bus (T0.4) */
@@ -1737,6 +1740,7 @@ static void pcf_machine_step(void)
         if (now_ms < ps_boundary_ms - 60) return;
         if (now_ms > ps_boundary_ms + 400) {                  /* no increment seen: give up quietly */
             ps_state = PS_IDLE; ps_brk_prev_sec = -1;
+            if (pcf_brk_fails < 255u) pcf_brk_fails++;
 #ifdef CONSOLE_ENABLE
             printf("[rtc] pcf set S: release err %d ms, increment NOT seen\n", pcf_release_err_ms);
 #endif
@@ -1752,6 +1756,8 @@ static void pcf_machine_step(void)
         }
         if (ps_brk_prev_sec >= 0 && sec != ps_brk_prev_sec) {
             int64_t edge = (ps_brk_prev_t + t_after) / 2;
+            int64_t w    = t_after - ps_brk_prev_t;              /* the bracket's width: the edge lies inside it */
+            pcf_brk_width_ms = (uint16_t)(w < 0 ? 0 : w > 65535 ? 65535 : w);
             int64_t err  = edge - ps_boundary_ms;              /* + = PCF late */
             pcf_boundary_err_ms = (int16_t)(err > 32767 ? 32767 : err < -32768 ? -32768 : err);
             /* Adapt the lead: PCF late -> release earlier next time. */
@@ -2376,6 +2382,7 @@ void rtc_status_fill_page4(uint8_t *out)
     out[15] = ref_state; put16(&out[16], slew_count); put16(&out[18], reload_writes);
     put16(&out[20], (uint16_t)pcf_boundary_err_ms); put16(&out[22], (uint16_t)pcf_d_first_ms);
     out[24] = pcfs.stale;
+    put16(&out[25], pcf_brk_width_ms); out[27] = pcf_brk_fails;   /* stage 4: the bracket's width and its misses */
 }
 
 

@@ -27,9 +27,11 @@
  * (87 us; history/overrun-depth-20261019/). The lock was there for the pin
  * modes: the I2C's SDA switches are read-modify-writes of port A's MODE, as
  * are the row ISR's, and nothing else changes a pin mode from an interrupt.
- * So the transfer runs unlocked with only the row ISR's interrupt held off
- * (rtc.c's ak820_i2c_xfer_begin/end; plans/UART-LATENCY-PLAN.md, fix 1).
- * Every build. */
+ * So the transfer runs unlocked (rtc.c's ak820_i2c_xfer_begin/end;
+ * plans/UART-LATENCY-PLAN.md, fix 1), and until stage 4 of the row ISR
+ * rewrite (11-03) with the row ISR's interrupt held off too; stage 3's scan
+ * writes no MODE, so the handler now runs through the transfer. Every
+ * build. */
 #if !defined(_FROM_ASM_) && !defined(__ASSEMBLER__)
 void ak820_i2c_xfer_begin(void);
 void ak820_i2c_xfer_end(void);
