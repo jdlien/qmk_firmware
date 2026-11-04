@@ -1267,8 +1267,9 @@ static void rowisr_slot(void) {
 #endif
 
     if (EFLD1.state == FLASH_PGM && !sn32f2xx_pgm_scan) {
-        /* The 09-01 guard, only where sn32f2xx_pgm_scan is false (a dev
-         * build's write test): a program in progress, the board dark for it
+        /* The 09-01 guard, only where sn32f2xx_pgm_scan is false (nothing
+         * sets it so since the dev Write test page went, 11-04): a program
+         * in progress, the board dark for it
          * (the rows are deselected above and nothing is armed). */
         service_commit(&s1, valid1, boundaries);
         sn32f2xx_isr_exit_hook();

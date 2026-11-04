@@ -127,9 +127,10 @@ uint8_t sn32f2xx_led_commits(void);
  * FLASH_PGM). true (the default): the scan runs straight through, as between
  * programs; interrupts are masked only for each line's 10-20 us window, so a
  * row is at most that late. false: every mux row de-selected, the board dark
- * for the program's length (the 09-01 guard). A dev build's write test
- * switches it at run time to compare the two by eye (plans/BACKLOG.md, "The
- * LED blink at an internal-flash write"). What scanning leaves is the erase,
+ * for the program's length (the 09-01 guard). A dev build's Write test page
+ * switched it at run time to compare the two by eye (10-27 to 11-04;
+ * plans/BACKLOG.md, "The LED blink at an internal-flash write"); nothing
+ * sets it now. What scanning leaves is the erase,
  * which neither changes: the CPU, the ISR with it, stalls for each page
  * (docs/sn32f299.md, section 10). */
 extern volatile bool sn32f2xx_pgm_scan;

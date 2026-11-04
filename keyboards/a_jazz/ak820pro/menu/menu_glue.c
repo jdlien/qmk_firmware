@@ -21,7 +21,7 @@
 #include "bluetooth/ch582f_ajazz.h"
 #include "bt_ui.h"
 #include "rgb_effects.h"
-#include "rgb/rowisr.h"   /* sn32f2xx_pgm_scan, sn32f2xx_led_commits (the dev Write test); the custom driver's header is not pulled in by rgb_matrix.h */
+#include "rgb/rowisr_diag.h"   /* rowisr_diag_pattern (the dev Floor probe) */
 #include "indicators.h"
 #include "indicator_levels.h"
 #include "sleep.h"
@@ -248,28 +248,12 @@ void env_defaults(env_defaults_t *d) {
 }
 
 #ifdef AK820_DEV_HOOKS
-/* 10-27: the write test's (menu_env.h). Its write goes to the byte before
- * the last of VIA's macro buffer, past the sixteen macros' terminators: a
- * byte no macro reads, toggled so the wear-leveling layer writes it (an
- * unchanged byte is skipped); refused when the macros reach it. Never the
- * last byte: QMK reads a non-zero one there as a macro write interrupted and
- * sends no macro (dynamic_keymap.c, codex). */
-bool env_wt_scan(void) { return sn32f2xx_pgm_scan; }
-void env_wt_set_scan(bool on) { sn32f2xx_pgm_scan = on; }
-uint8_t env_wt_write(void) {
-    uint8_t buf[DYNAMIC_KEYMAP_MACRO_EEPROM_SIZE], nul = 0, i = 0;
-    eeprom_read_block(buf, (const void *)(uintptr_t)PROF_MACRO_ADDR, sizeof buf);
-    while (i < sizeof buf && nul < DYNAMIC_KEYMAP_MACRO_COUNT)
-        if (buf[i++] == 0u) nul++;
-    if (nul < DYNAMIC_KEYMAP_MACRO_COUNT || i > sizeof buf - 2u) return ENV_WT_NONE;   /* no spare byte before the last */
-    uint8_t v = buf[sizeof buf - 2u] == 0x55u ? 0x00u : 0x55u;
-    return env_prof_write((uint16_t)(PROF_MACRO_ADDR + sizeof buf - 2u), &v, 1);
-}
-bool env_wt_cleanup(void) { return wear_leveling_consolidate() != WEAR_LEVELING_FAILED; }
-void env_wt_dim(bool on) { power_force_stage(on ? (uint8_t)POWER_STAGE_DIM : 0xFFu); }
-bool env_wt_dimmed(void) { return power_forced_stage() == (uint8_t)POWER_STAGE_DIM; }
-bool env_wt_dim_applied(void) { return env_wt_dimmed() && power_val_cap() <= 64u; }   /* power.c's DIM_VAL */
-uint8_t env_wt_frames(void) { return sn32f2xx_led_commits(); }
+/* 11-04: the Floor probe's (menu_env.h): dev op 28 sub 3's pattern, every
+ * LED (index 254) at the bytes, as the menu's; the release is of the menu's
+ * own, so a pattern the host's `led` command set after it stands
+ * (rowisr_diag.c; codex). */
+void env_probe(uint8_t r, uint8_t g, uint8_t b) { rowisr_diag_pattern(ROWISR_PAT_MENU, 0xFEu, r, g, b); }
+void env_probe_off(void) { (void)rowisr_diag_pattern_release(ROWISR_PAT_MENU); }
 #endif
 /* False when any write to the store has failed since the boot, these or an
  * earlier one: the EEPROM driver drops wear_leveling_write()'s status, and a

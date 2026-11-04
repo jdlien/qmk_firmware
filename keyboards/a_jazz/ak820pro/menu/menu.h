@@ -27,7 +27,7 @@ void          menu_invalidate(void);                      /* a loss under the me
 menu_result_t menu_input(int8_t turns, mi_latch_t latch, uint32_t now);
 void          menu_tick(uint32_t now, uint32_t idle_ms);  /* each pass: the latched model and the title */
 #if defined(AK820_DEV_HOOKS) || defined(MENU_HOST_TEST)
-void          menu_wtest_closed(void);   /* 10-27, dev: no session open: the write test's dim released, if its */
+void          menu_probe_closed(void);   /* 11-04, dev: no session open: the Floor probe's pattern released, if its */
 #endif
 uint8_t       menu_screen_id(void);                       /* op 27 sub 5, byte 14: 16 + the node showing */
 uint8_t       menu_cursor(void);                          /* byte 15: the cursor, a topic's top line, the confirm's page */

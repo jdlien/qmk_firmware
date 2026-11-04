@@ -141,7 +141,7 @@ void menu_ops_task(uint32_t now) {
     op27_poll();
     if (po_session() == SESSION_NONE) menu_kind = MK_NONE;   /* closed, or a PENDING cancelled */
 #if defined(AK820_DEV_HOOKS) || defined(MENU_HOST_TEST)
-    if (po_session() != SESSION_OPEN) menu_wtest_closed();   /* 10-27: the write test's dim never outlives it */
+    if (po_session() != SESSION_OPEN) menu_probe_closed();   /* 11-04: the Floor probe's pattern never outlives it */
 #endif
     if (po_session() != SESSION_OPEN) return;
 

@@ -407,6 +407,26 @@ static void status_fill(uint8_t *out) {   /* out = &data[4], zeroed */
 
 #ifdef RGB_MATRIX_ENABLE
 static uint8_t pat_led = 0xFFu, pat_r = 0, pat_g = 0, pat_b = 0;
+static uint8_t pat_owner;   /* who set the pattern standing (ROWISR_PAT_*), 0 none */
+
+/* The pattern, from the host (sub 3) or the firmware (the menu's Floor
+ * probe, 11-04): led 0..80 one LED, 254 every LED, 255 off; an index out of
+ * range is off. The owner is the last setter's, so the menu's release leaves
+ * a pattern the host set after it (codex, 11-04). Thread context, as the
+ * hook's. */
+void rowisr_diag_pattern(uint8_t owner, uint8_t led, uint8_t r, uint8_t g, uint8_t b) {
+    if (led != 0xFEu && led != 0xFFu && led >= RGB_MATRIX_LED_COUNT) led = 0xFFu;
+    pat_r     = r;
+    pat_g     = g;
+    pat_b     = b;
+    pat_led   = led;
+    pat_owner = led == 0xFFu ? 0u : owner;
+}
+bool rowisr_diag_pattern_release(uint8_t owner) {
+    if (pat_owner != owner) return false;
+    rowisr_diag_pattern(owner, 0xFFu, 0, 0, 0);
+    return true;
+}
 
 bool rgb_matrix_indicators_kb(void) {
     if (pat_led == 0xFEu) {
@@ -417,6 +437,9 @@ bool rgb_matrix_indicators_kb(void) {
     }
     return rgb_matrix_indicators_user();
 }
+#else
+void rowisr_diag_pattern(uint8_t owner, uint8_t led, uint8_t r, uint8_t g, uint8_t b) { (void)owner; (void)led; (void)r; (void)g; (void)b; }
+bool rowisr_diag_pattern_release(uint8_t owner) { (void)owner; return false; }
 #endif
 
 /* ---- op 28 ------------------------------------------------------------------- */
@@ -444,8 +467,7 @@ bool rowisr_diag_op28(uint8_t *data) {
         case 3: {
             uint8_t led = data[5];
             if (led != 0xFFu && led != 0xFEu && led >= RGB_MATRIX_LED_COUNT) return false;
-            pat_r = data[6]; pat_g = data[7]; pat_b = data[8];
-            pat_led = led;
+            rowisr_diag_pattern(ROWISR_PAT_HOST, led, data[6], data[7], data[8]);   /* the host's off releases anyone's */
             memset(&data[4], 0, 28);
             data[4] = led; data[5] = pat_r; data[6] = pat_g; data[7] = pat_b;
             return true;

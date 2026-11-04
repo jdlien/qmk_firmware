@@ -5,6 +5,7 @@
  * session goes through po_event(); nothing else writes them. */
 #include "panel_owner.h"
 #include "menu_edit.h"
+#include "menu.h"   /* menu_probe_closed() (dev builds): the Floor probe's pattern released at the close, 11-04 */
 
 static panel_owner_t   owner;
 static menu_session_t  session;
@@ -97,6 +98,13 @@ static uint16_t do_open(void) {
  * rollback restores values and nothing else; with no edit it does nothing. */
 static uint16_t do_close(void) {
     menu_edit_rollback();
+#if defined(AK820_DEV_HOOKS) || defined(MENU_HOST_TEST)
+    /* 11-04: the Floor probe's pattern goes with the session, here, not at
+     * the next pass's check (menu_ops.c): two opener reports in one pass
+     * close and reopen before it, and menu_open() would start a session
+     * with the old page's pattern standing (codex). */
+    menu_probe_closed();
+#endif
     uint16_t a = (uint16_t)(PO_ACT_EDIT_CANCEL | PO_ACT_INPUT_CLEAR | PO_ACT_OVERLAYS_REPRIME);
     a |= set_owner(PANEL_DASH);
     session          = SESSION_NONE;

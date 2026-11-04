@@ -12,8 +12,9 @@
  * when the log fills the write that overflowed it consolidates: the 2 KB
  * backing store erased and the 1 KB cache written back, ~58 ms in one pass.
  * That is the blink JD sees ("the board flickers once in a while"; on the
- * dev Write test page, One write and Ten writes show nothing, Cleanup is "a
- * very noticeable flicker"), and it comes mid-use, at whatever save filled
+ * dev Write test page of 10-27, retired 11-04, One write and Ten writes
+ * showed nothing, Cleanup "a very noticeable flicker"), and it comes
+ * mid-use, at whatever save filled
  * the log.
  *
  * So the board consolidates first, once the log is half full, at a moment

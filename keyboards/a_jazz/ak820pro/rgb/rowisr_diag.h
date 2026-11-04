@@ -218,6 +218,14 @@ bool rowisr_diag_op28(uint8_t *data);   /* data[4] = sub; false = RTC_UNHANDLED 
 void rowisr_diag_tick(void);            /* from the 20 kHz tick's handler */
 void rowisr_diag_cancelI(void);         /* from pwm_tick_stopI(): a hold or skip the tick can no longer end */
 void rowisr_diag_housekeeping(void);    /* the backstop, once a pass */
+/* Sub 3's pattern (11-04): led 0..80 one LED (every other dark), 254 every
+ * LED, 255 off; r, g, b raw. The owner tags the pattern standing, so a
+ * release by one owner leaves the other's: the host's `led` command sets as
+ * ROWISR_PAT_HOST (its off unconditional), the menu's Floor probe as
+ * ROWISR_PAT_MENU and releases its own only (true when it did). */
+enum { ROWISR_PAT_HOST = 1, ROWISR_PAT_MENU = 2 };
+void rowisr_diag_pattern(uint8_t owner, uint8_t led, uint8_t r, uint8_t g, uint8_t b);
+bool rowisr_diag_pattern_release(uint8_t owner);
 #else
 static inline void rowisr_diag_tick(void) {}
 static inline void rowisr_diag_cancelI(void) {}
