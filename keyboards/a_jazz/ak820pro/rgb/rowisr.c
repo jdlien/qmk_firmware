@@ -131,14 +131,16 @@
 #if ROWISR_CADENCE_US == 125u
 #    define ROWISR_SLOT_US    125u
 #    define ROWISR_TERMINAL   1535u                              /* the pulse timers' terminal match: a 32 us window (stage 5d: 2,047's 80 us arm deadline omitted 0.29% of the scan slots on white, every one by the deadline, 12:49-12:54 11-03; 1,535 keeps 1.28x headroom over the full width, 1,195, and puts the deadline at 90.5 us) */
-#    ifndef ROWISR_K_Q6   /* the floor probe gives 64 on the command line (build.sh devprobe): a byte is its width in ticks, the board at 21% of its light, for stage 6's first measurement (plans/ROW-ISR-PLAN.md, "The floor is measured first"); the drive accounting then reads the byte as the value, 4.7x the light's */
-#        define ROWISR_K_Q6   300u                               /* 4.6875 ticks a unit: the measured 267 us duty at k = 10 scaled by 125/267 (4.6817; D4's 4.845 came from the stage-0 slot and field), the logger's hold the arbiter (stage 5's gate; codex on 4294a3befd) */
+#    define ROWISR_K_REF_Q6   300u                             /* 4.6875 ticks a unit: the measured 267 us duty at k = 10 scaled by 125/267 (4.6817; D4's 4.845 came from the stage-0 slot and field), the logger's hold the arbiter (stage 5's gate; codex on 4294a3befd); the drive accounting's unit (D8) whatever scale is in force */
+#    ifndef ROWISR_K_Q6   /* the floor probe gives 64 on the command line (build.sh devprobe): a byte is its width in ticks, the board at 21% of its light, for stage 6's first measurement (plans/ROW-ISR-PLAN.md, "The floor is measured first"); the accounting keeps the reference unit, so the power model reads the light emitted (codex's P2 on a1a0c783d5) */
+#        define ROWISR_K_Q6   ROWISR_K_REF_Q6
 #    endif
 #elif ROWISR_CADENCE_US == 267u
 #    define ROWISR_SLOT_US    267u
 #    define ROWISR_TERMINAL   4095u                              /* an 85.3 us window */
+#    define ROWISR_K_REF_Q6   640u                             /* 10 ticks a unit (stage 2's calibration) */
 #    ifndef ROWISR_K_Q6
-#        define ROWISR_K_Q6   640u                               /* 10 ticks a unit (stage 2's calibration) */
+#        define ROWISR_K_Q6   ROWISR_K_REF_Q6
 #    endif
 #else
 #    error "ROWISR_CADENCE_US: 267 or 125 (D2's cadences; 62.5 is the experiment, not provided)"
@@ -1208,8 +1210,8 @@ static void rowisr_slot(void) {
      * a tick's invalidation, re-primed or not, is that observer's loss,
      * counted once at the next entry by the generation check, and this
      * baseline is not adopted, since its time predates a gap the tick
-     * discarded; the review's P2 4). The snapshot stays as taken, so step 6
-     * sees the generation moved and measures nothing across it. */
+     * discarded; the review's P2 4). The snapshot stays as taken and this
+     * service commits invalid, no statistics; the next observation re-primes. */
     if (valid1) {
         usb_verdict_t v = usb_judge(&last_snap, &s1);
         if (v == USB_REJECT) {
@@ -1624,9 +1626,9 @@ uint64_t sn32f2xx_led_drive_take(uint32_t now_ms, uint32_t *lit_ms, uint64_t rgb
     drive_close(now_ms);
     uint64_t total = 0;
     for (uint8_t k = 0; k < 3; k++) {
-        uint64_t num = acc[k] * FIELD_US * 64u + drive_rem[k];   /* ticks x us x 64: the scale is Q6 (D8: rgb_ms = sum of ticks x T_field / k) */
-        uint64_t q   = num / (1000ULL * ROWISR_K_Q6);             /* value x ms */
-        drive_rem[k] = num - q * (1000ULL * ROWISR_K_Q6);
+        uint64_t num = acc[k] * FIELD_US * 64u + drive_rem[k];   /* ticks x us x 64: the scale is Q6 (D8: rgb_ms = sum of ticks x T_field / k, k the calibrated reference, so a probe's scale changes the light and the figure alike, not the unit) */
+        uint64_t q   = num / (1000ULL * ROWISR_K_REF_Q6);         /* value x ms */
+        drive_rem[k] = num - q * (1000ULL * ROWISR_K_REF_Q6);
         if (rgb_ms) rgb_ms[k] = q;
         total += q;
     }

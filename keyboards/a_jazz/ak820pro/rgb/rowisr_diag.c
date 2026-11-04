@@ -263,8 +263,8 @@ static void silence_run(void) {   /* the housekeeping task: thread context */
         wait_ms(1);
         waited++;
     }
-    uint16_t dj = (uint16_t)(rowisr_usb_judge_seq() - jseq0);   /* before the copy: the services the copy reflects (under two, the first service after the
-                                                                 * silence had not run at the copy, a hold on the row ISR outlasting the wait; the host says so) */
+    uint16_t dj = (uint16_t)(rowisr_usb_judge_seq() - jseq0);   /* before the copy: a lower bound of the services the copy reflects (under two the verdict may
+                                                                 * not be in, a hold on the row ISR outlasting the wait: PENDING is the conservative reading) */
     rowisr_time_read(&sil_rep.t1);
     sil_rep.judged = dj > 255u ? 255u : (uint8_t)dj; sil_rep.waited_ms = waited;
     sil_us = 0;

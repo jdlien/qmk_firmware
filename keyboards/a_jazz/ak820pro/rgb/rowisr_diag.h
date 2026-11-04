@@ -135,7 +135,9 @@
  *          each on its own pin: the ordering case. Reply as sub 2's.
  *   sub 8  the last silence's report: [4..7] its length as requested, us,
  *          [8..11] as the spin measured it, CT16B5 ticks (5.33 us), [12..15]
- *          the extension's time before it and [16..19] 2 ms after it,
+ *          the extension's time before it and [16..19] after it, once two
+ *          of the row ISR's services have entered since the mask or 20 ms
+ *          have passed (sub 9's [16..17]),
  *          [20..21] the loss generation before and [22..23] after (low 16
  *          bits), [24..25] CT16B5's TC at the rising edge and [26..27] at the
  *          falling edge, [28] the extension VALID before and [29] after, [30]
@@ -144,12 +146,14 @@
  *          and [6..7] after, [8..9] the last gap the 8 ms guard rejected,
  *          before and [10..11] after (CT16B5 ticks), [12..13] the guard's
  *          rejection count before and [14..15] after (wrapping), [16] the
- *          row ISR's services between the two copies, each judging the
- *          interval just ended, and [17] the ms the second copy waited for
- *          two of them (2 to 20, so the copy follows the verdict; under
- *          two, the first service after the silence had not run at the
- *          copy, a hold on the row ISR outlasting the wait, and the host
- *          says so), [18]
+ *          row ISR's services entered between the two copies, saturating
+ *          at 255, a lower bound of what the second copy reflects (an
+ *          entry counts whether it judged or not: one the generation had
+ *          invalidated, or a build without the detector), and [17] the ms
+ *          the second copy waited for two of them (2 to 20); under two
+ *          the frame counter's verdict may not be in (a hold on the row
+ *          ISR outlasting the wait), PENDING being the conservative
+ *          reading, and the host says so, [18]
  *          the silences run, as sub 8's [31]: the two pages belong to one
  *          silence only when they agree (a silence can finish between the
  *          two reads; the host re-reads until they do). The
