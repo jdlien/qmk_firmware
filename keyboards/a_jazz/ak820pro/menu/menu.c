@@ -401,7 +401,7 @@ static union {
     struct {                /* 11-04, dev: the Floor probe's */
         uint8_t colour;     /* 0 red, 1 green, 2 blue */
         uint8_t ticks;      /* the byte every LED gets on that colour (devprobe: its pulse width in ticks) */
-        uint8_t editing;    /* Ticks has the knob */
+        uint8_t editing;    /* the row that has the knob, PR_COLOUR or PR_TICKS; 0 none */
     } pr;
 } pg;
 enum { CK_OK = 1, CK_JUMP = 2 };   /* set; a read that wasn't the last's time on, for menu_tick() */
@@ -485,7 +485,7 @@ static uint8_t pfs_saved(void);
 static uint8_t pfs_nth(uint8_t k);
 #ifdef MENU_PROBE
 enum { PR_COLOUR = 1, PR_TICKS, PR_ROWS };
-static const char *const pr_labels[PR_ROWS] = {"", "Colour", "Ticks"};
+static const char *const pr_labels[PR_ROWS] = {"", "Color", "Ticks"};   /* the screen's American, as the other labels */
 static const char *const pr_colours[3]      = {"Red", "Green", "Blue"};
 static void pr_leave(void);   /* with the page's other functions, before activate() */
 #endif
@@ -1133,10 +1133,10 @@ static row_t row_at(uint8_t r) {
         x.bullet = pfs_active() == val;
     } else if (x.node == N_PNEW) x.val = pfs_saved() >= PROF_USER ? 1u : 0u;   /* P5d: 1 every slot saved, greyed */
 #ifdef MENU_PROBE
-    else if (x.node == N_PROW) {   /* 11-04: its index in val, the colour or the ticks in line, Ticks' capture in bullet (row_sig) */
+    else if (x.node == N_PROW) {   /* 11-04: its index in val, the colour or the ticks in line, the row's capture in bullet (row_sig) */
         x.val    = val;
         x.line   = val == PR_COLOUR ? pg.pr.colour : pg.pr.ticks;
-        x.bullet = val == PR_TICKS && pg.pr.editing;
+        x.bullet = pg.pr.editing == val;
     }
 #endif
     else if (x.node == N_EFFOPT || x.node == N_LTSOPT || x.node == N_FOPT) x.val = val;
@@ -1460,10 +1460,11 @@ static void row_text(const row_t *x, char *out) {
     else if (x->node == N_PSLOT) value = MT_TRI_R;                        /* a saved slot opens its page */
     else if (x->node == N_PNEW) value = x->val ? "Full" : "";            /* P5d */
 #ifdef MENU_PROBE
-    else if (x->node == N_PROW) {   /* 11-04: the colour's name; the ticks, in angle brackets while the knob is theirs */
-        if (x->val == PR_COLOUR) value = pr_colours[x->line % 3u];
+    else if (x->node == N_PROW) {   /* 11-04: the colour's name, or the ticks, in angle brackets while the knob is that row's */
+        if (x->val == PR_COLOUR && !x->bullet) value = pr_colours[x->line % 3u];
         else {
-            snprintf(buf, sizeof buf, x->bullet ? "<%u>" : "%u", (unsigned)x->line);
+            if (x->val == PR_COLOUR) snprintf(buf, sizeof buf, "<%s>", pr_colours[x->line % 3u]);
+            else snprintf(buf, sizeof buf, x->bullet ? "<%u>" : "%u", (unsigned)x->line);
             value = buf;
         }
     }
@@ -2438,9 +2439,12 @@ static void edit_turn(int8_t turns, uint32_t now) {
  * the ticks shown, the bytes raw to the driver (env_probe(): dev op 28 sub
  * 3's pattern, index 254, past the CIE table and the value; on the devprobe
  * flavour a byte is its pulse width in ticks, on dev the usual 4.6875).
- * Colour's click cycles red, green, blue. Ticks' click takes the knob, the
- * value in angle brackets: a turn is a tick, 0 to 255 without wrapping, and
- * a click gives the knob back. The page opens dark (red at 0), and leaving
+ * A row's click takes the knob, its value in angle brackets, and a click
+ * gives the knob back: Color's turns go round red, green, blue (JD, 12:3x
+ * 11-04: a colour change without a click, since a held key brightens the
+ * LEDs above and below it in its column, the scan's microsecond on the
+ * deselected rail, and the click is a key); Ticks' turns are a tick each, 0
+ * to 255 without wrapping. The page opens dark (red at 0), and leaving
  * it, or the session closing (menu_probe_closed(): at panel_owner.c's
  * do_close(), at menu_open() and at Fn+D's return as backstops, and each
  * pass without a session in menu_ops.c), releases the pattern to the
@@ -2464,15 +2468,17 @@ void menu_probe_closed(void) {
     env_probe_off();
     pr_live = false;
 }
-static void pr_click(uint8_t i) {
-    if (i == PR_COLOUR) {
-        pg.pr.colour = (uint8_t)((pg.pr.colour + 1u) % 3u);
-        pr_apply();
-    } else if (i == PR_TICKS) pg.pr.editing = (uint8_t)!pg.pr.editing;
+static void pr_click(uint8_t i) {   /* the row's click takes the knob, or gives it back */
+    pg.pr.editing = pg.pr.editing == i ? 0u : i;
 }
-static void pr_turn(int8_t turns) {
-    int16_t t   = (int16_t)(pg.pr.ticks + turns);
-    pg.pr.ticks = (uint8_t)(t < 0 ? 0 : t > 255 ? 255 : t);
+static void pr_turn(int8_t turns) {   /* the captured row's: the colour round, the ticks clamped */
+    if (pg.pr.editing == PR_COLOUR) {
+        int16_t c    = (int16_t)((pg.pr.colour + turns) % 3);
+        pg.pr.colour = (uint8_t)(c < 0 ? c + 3 : c);
+    } else {
+        int16_t t   = (int16_t)(pg.pr.ticks + turns);
+        pg.pr.ticks = (uint8_t)(t < 0 ? 0 : t > 255 ? 255 : t);
+    }
     pr_apply();
 }
 #endif
@@ -2808,7 +2814,7 @@ menu_result_t menu_input(int8_t turns, mi_latch_t latch, uint32_t now) {
     frame_t *f = cur();
     if (turns) {
 #ifdef MENU_PROBE
-        if (f->node == N_PROBE && pg.pr.editing) pr_turn(turns);   /* 11-04: Ticks has the knob (its row's signature repaints it) */
+        if (f->node == N_PROBE && pg.pr.editing) pr_turn(turns);   /* 11-04: a row has the knob (its row's signature repaints it) */
         else
 #endif
         if (is_editor(f->node))
