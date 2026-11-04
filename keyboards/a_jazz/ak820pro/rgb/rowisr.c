@@ -549,10 +549,17 @@ static inline void time_excludeI(uint8_t bit, bool on) {
  * stopped again its interval is unjudgeable (both ends without a frame)
  * and an alias inside it, with the frames moving through it, would be
  * lost; the per-slot judgment compared that pair at its fresh end. Declared
- * and given up: two
- * aliasing silences inside one judged interval are one rejected interval
- * and one loss where the per-slot judgment counted two; the detector's
- * count is of rejected intervals. */
+ * and given up (codex's third round, 20:18): two aliasing silences inside
+ * one judged interval are one rejected interval and one loss where the
+ * per-slot judgment counted two, the detector's count being of rejected
+ * intervals; and a pause of the host's SOFs of 4 ms straddling a fresh
+ * baseline, no bus event, the frames resuming inside the interval with the
+ * host's count, is no longer counted (the per-slot rejected the first stale
+ * entry as an event: a conservative loss for something that is not a
+ * silence of this MCU; a pause that does not resume with the host's count
+ * still fails the spans). A rejected interval's attribution is one verdict
+ * for the whole (an alias followed by the frames stopping is one event
+ * rejection), and its drop covers the healthy services inside it. */
 #ifndef USB_JUDGE_EVERY
 #    define USB_JUDGE_EVERY 8u
 #endif
