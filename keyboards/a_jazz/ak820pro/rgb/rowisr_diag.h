@@ -50,15 +50,18 @@
  *          (5.33 us), [30] silences run (wrapping), [31] MATRIX_COL_PINS is not
  *          the order the scan's two port reads assemble (stage 3: the
  *          matrix would read wrong; rowisr.c, col_order).
- *   sub 3  one LED, one colour  [5] LED index 0..80 or 255 for off,
- *          [6..8] r, g, b
- *          Every other LED dark and that one at that colour, applied after
- *          each render (rgb_matrix_indicators_kb) until turned off, through
- *          the power scale as any frame is; it needs an effect rendering
- *          (RGB on, not NONE, not suspended), since it rides the render. For
- *          Q6 (which physical LED each mux pin drives) with a slow tagged
- *          slot sequence on the witness. Reply: the four bytes echoed at
- *          [4..7].
+ *   sub 3  one LED, one colour  [5] LED index 0..80, 254 for every LED, or
+ *          255 for off, [6..8] r, g, b
+ *          Every other LED dark and that one at that colour (or every LED at
+ *          it), applied after each render (rgb_matrix_indicators_kb) until
+ *          turned off, through the power scale as any frame is; it needs an
+ *          effect rendering (RGB on, not NONE, not suspended), since it
+ *          rides the render. The bytes go to the driver as they are, past
+ *          the CIE table and the value: on the devprobe build a byte is its
+ *          pulse width in ticks. For Q6 (which physical LED each mux pin
+ *          drives) with a slow tagged slot sequence on the witness, and for
+ *          stage 6's floor per colour (every LED at N ticks: the eye, the
+ *          camera, the logger). Reply: the four bytes echoed at [4..7].
  *   sub 4  a scan skip  [5..6] ms, 1..10000
  *          The callback does its LED work and skips the key scan for that
  *          long (the matrix unsampled meanwhile), timed and cancelled as the

@@ -403,13 +403,15 @@ static void status_fill(uint8_t *out) {   /* out = &data[4], zeroed */
     out[27] = sn32f2xx_col_map_fault() ? 1u : 0u;   /* [31]: MATRIX_COL_PINS is not the order the scan's port reads assemble (stage 3) */
 }
 
-/* ---- sub 3: one LED, one colour --------------------------------------------- */
+/* ---- sub 3: one LED (or every LED), one colour ------------------------------ */
 
 #ifdef RGB_MATRIX_ENABLE
 static uint8_t pat_led = 0xFFu, pat_r = 0, pat_g = 0, pat_b = 0;
 
 bool rgb_matrix_indicators_kb(void) {
-    if (pat_led != 0xFFu) {
+    if (pat_led == 0xFEu) {
+        rgb_matrix_set_color_all(pat_r, pat_g, pat_b);   /* every LED at that colour: stage 6's floor probe, where the logger needs the sum */
+    } else if (pat_led != 0xFFu) {
         rgb_matrix_set_color_all(0, 0, 0);
         if (pat_led < RGB_MATRIX_LED_COUNT) rgb_matrix_set_color(pat_led, pat_r, pat_g, pat_b);
     }
@@ -441,7 +443,7 @@ bool rowisr_diag_op28(uint8_t *data) {
 #ifdef RGB_MATRIX_ENABLE
         case 3: {
             uint8_t led = data[5];
-            if (led != 0xFFu && led >= RGB_MATRIX_LED_COUNT) return false;
+            if (led != 0xFFu && led != 0xFEu && led >= RGB_MATRIX_LED_COUNT) return false;
             pat_r = data[6]; pat_g = data[7]; pat_b = data[8];
             pat_led = led;
             memset(&data[4], 0, 28);
