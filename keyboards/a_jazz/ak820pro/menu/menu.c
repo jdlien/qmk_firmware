@@ -1620,10 +1620,19 @@ static uint16_t row_sig(const row_t *x) {
     if (x->kind == RK_ITEM && clk_row(x->node) >= 0 && clk_row(x->node) < 5) return clock_sig(x, (uint8_t)clk_row(x->node));
 #ifdef MENU_PROBE
     /* 11-04: the Floor probe's rows, exact, in 0x0400-0x0FFF (no other
-     * kind's; never 0, the index being 1 or 2): the index, the colour or the
-     * ticks (line), Ticks' capture (bullet) and the lit bit. */
-    if (x->kind == RK_ITEM && x->node == N_PROW)
-        return (uint16_t)(((uint16_t)(x->val & 3u) << 10) | ((uint16_t)x->line << 2) | (x->bullet ? 2u : 0u) | (x->lit ? 1u : 0u));
+     * kind's; never 0): the two ticks rows with bit 11 set, bit 10 which of
+     * them, the ticks in bits 2-9; the colour rows and Split with bit 11
+     * clear, bit 10 set, the row (1, 2, 3) in bits 8-9, the colour or the
+     * switch in bits 2-3; the capture (bullet) and the lit bit in 1-0. Each
+     * row's values are its own (codex, the split's review: two index bits
+     * had Ticks R at 0 share the blank row's 0 and Split share Color's). */
+    if (x->kind == RK_ITEM && x->node == N_PROW) {
+        uint16_t bits = (uint16_t)((x->bullet ? 2u : 0u) | (x->lit ? 1u : 0u));
+        if (x->val == PR_TICKS || x->val == PR_TICKS2)
+            return (uint16_t)(0x0800u | (x->val == PR_TICKS2 ? 0x0400u : 0u) | ((uint16_t)x->line << 2) | bits);
+        uint16_t code = x->val == PR_COLOUR ? 1u : x->val == PR_COLOUR2 ? 2u : 3u;
+        return (uint16_t)(0x0400u | (code << 8) | ((uint16_t)(x->line & 3u) << 2) | bits);
+    }
 #endif
     switch (x->kind) {
         case RK_ITEM:   /* bit 2: P5b's `*` (line, 0 on every other item) */

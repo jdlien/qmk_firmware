@@ -63,7 +63,8 @@
  *          pulse width in ticks. For Q6 (which physical LED each mux pin
  *          drives) with a slow tagged slot sequence on the witness, and for
  *          stage 6's floor per colour (every LED at N ticks: the eye, the
- *          camera, the logger). Reply: the four bytes echoed at [4..7].
+ *          camera, the logger). Reply: the four bytes echoed at [4..7],
+ *          and the split's second colour at [8..10].
  *   sub 4  a scan skip  [5..6] ms, 1..10000
  *          The callback does its LED work and skips the key scan for that
  *          long (the matrix unsampled meanwhile), timed and cancelled as the
