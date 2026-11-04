@@ -78,10 +78,10 @@
  *          the elapsed samples dropped for a boundary inside the handler (stage 5a; the services' low word it replaced is gone: page 7 carries the valid services, not every service). Reset with the health
  *          counters.
  *   sub 6  the USB frame counter's record (D3 case 5) and the clocks' state
- *          (since 5g an interval is up to eight services, 1 ms at the
- *          125 us slot, the judgment's cadence, or the stretch to a
- *          discontinuity, judged at the service that finds it: rowisr.c,
- *          "The cadence"; the counts are of those intervals):
+ *          (an interval is one service's, the last serviced entry to this
+ *          one, judged at every service; in a build without the detector,
+ *          ROWISR_USB_DETECT 0, the frame counter's bytes read zero and
+ *          the clocks' state stands):
  *          [4..7] intervals the frame counter judged (VALID, the driver
  *          ACTIVE at both ends, no bus event), [8] intervals it rejected for
  *          a disagreement of the spans, [9] intervals rejected for a bus
@@ -144,11 +144,12 @@
  *          and [6..7] after, [8..9] the last gap the 8 ms guard rejected,
  *          before and [10..11] after (CT16B5 ticks), [12..13] the guard's
  *          rejection count before and [14..15] after (wrapping), [16] the
- *          frame counter's judging opportunities between the two copies
- *          and [17] the ms the second copy waited for two of them (2 to
- *          20; since 5g, so the copy follows the verdict; under two, the
- *          frame counter's verdict was still pending at the copy, a hold
- *          on the row ISR outlasting the wait, and the host says so), [18]
+ *          row ISR's services between the two copies, each judging the
+ *          interval just ended, and [17] the ms the second copy waited for
+ *          two of them (2 to 20, so the copy follows the verdict; under
+ *          two, the first service after the silence had not run at the
+ *          copy, a hold on the row ISR outlasting the wait, and the host
+ *          says so), [18]
  *          the silences run, as sub 8's [31]: the two pages belong to one
  *          silence only when they agree (a silence can finish between the
  *          two reads; the host re-reads until they do). The

@@ -498,6 +498,23 @@
 // it). 11-03: 125, stage 5b, on white for its gates.
 #define ROWISR_CADENCE_US 125u
 
+// The USB frame counter's silence detector (rgb/rowisr.c, "The USB frame
+// counter", D3 case 5): the handler's entry snapshot reads the frame counter
+// and the bus state (six register reads, ~7 us of the slot's ~52 at full
+// white) and judges each interval's two spans, catching a silence of every
+// observer that aliases the 20 kHz tick's 349.5 ms wrap, on USB only. A
+// bench instrument: the dev build carries it (op 28 subs 6-9, the silence
+// set), the released builds leave it out and keep the time; the limit
+// without it on USB is the one declared off USB. Stage 5g's every-eighth
+// judgment (11-03) saved 0.2 us of the 7, so this flag is the saving.
+#ifndef ROWISR_USB_DETECT
+#    ifdef AK820_DEV_HOOKS
+#        define ROWISR_USB_DETECT 1
+#    else
+#        define ROWISR_USB_DETECT 0
+#    endif
+#endif
+
 // The row ISR's hot section (the scan, the match registers, the mux select)
 // run from SRAM (rgb/rowisr.c, rowisr_hot; .ramtext as sleep.c's WFI): the
 // trial of 11-03, stage 5f, after codex's ranking of 13:21. Costs ~600 B of

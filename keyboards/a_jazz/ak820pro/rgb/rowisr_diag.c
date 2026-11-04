@@ -190,7 +190,7 @@ static struct {                             /* the last silence's report (subs 8
     uint32_t      us, ticks;
     uint16_t      tc0, tc1;                 /* CT16B5 at the marker's edges */
     rowisr_time_t t0, t1;                   /* the extension before, and after the frame counter's next judgments */
-    uint8_t       judged, waited_ms;        /* judging opportunities between the two copies, and the ms waited for them (5g) */
+    uint8_t       judged, waited_ms;        /* the services entered between the two copies (each judges the interval just ended), and the ms waited for two */
 } sil_rep;
 
 /* The masked part on its own, so the rising edge follows the mask by the
@@ -255,16 +255,16 @@ static void silence_run(void) {   /* the housekeeping task: thread context */
     sil_rep.us = us; sil_rep.ticks = acc; sil_rep.tc0 = tc0; sil_rep.tc1 = tc1; sil_rep.t0 = t0;
     wait_ms(2);   /* the observers' first passes after the unmask: the tick's within 50 us, scan-only's slots within 625 us; the guard's verdict and the re-prime */
     uint8_t waited = 2;
-    while ((uint16_t)(rowisr_usb_judge_seq() - jseq0) < 2u && waited < 20u) {   /* the frame counter's verdict too (5g): its judgment runs every eighth
-                                                                                  * service (1 ms at the 125 us slot, 5 ms in scan-only) or at the first
-                                                                                  * service after the guard's verdict, so two opportunities since before
-                                                                                  * the silence put one after it; 20 ms bounds the wait (codex's P2 on
+    while ((uint16_t)(rowisr_usb_judge_seq() - jseq0) < 2u && waited < 20u) {   /* the frame counter's verdict too: the first service after the silence
+                                                                                  * judges it at its entry, and two services since before the silence put
+                                                                                  * one after it (the row ISR may be held off past the unmask: a row-only
+                                                                                  * hold, scan-only's 625 us slots); 20 ms bounds the wait (codex's P2 on
                                                                                   * 1d73bf3ed5: the fixed 2 ms could copy the state before the verdict) */
         wait_ms(1);
         waited++;
     }
-    uint16_t dj = (uint16_t)(rowisr_usb_judge_seq() - jseq0);   /* before the copy: a lower bound of the judgments the copy reflects (under two, the
-                                                                 * verdict may still be pending: a hold on the row ISR outlasting the wait; the host says so) */
+    uint16_t dj = (uint16_t)(rowisr_usb_judge_seq() - jseq0);   /* before the copy: the services the copy reflects (under two, the first service after the
+                                                                 * silence had not run at the copy, a hold on the row ISR outlasting the wait; the host says so) */
     rowisr_time_read(&sil_rep.t1);
     sil_rep.judged = dj > 255u ? 255u : (uint8_t)dj; sil_rep.waited_ms = waited;
     sil_us = 0;
