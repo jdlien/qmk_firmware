@@ -214,12 +214,12 @@ static const col_mr_t col_mr[SN32F2XX_RGB_MATRIX_COLS] = {
     COLMR(T_B1, 6), COLMR(T_B1, 7), COLMR(T_B1, 9), COLMR(T_B0, 1), COLMR(T_B0, 0), COLMR(T_B1, 10),
     COLMR(T_B0, 3), COLMR(T_B0, 2), COLMR(T_B1, 11)};
 
-/* The scale (D8): MR = width_lut[byte], the rounded linear formula
- * ROWISR_WIDTH() tabulated in flash (512 B): on this core the compiler
- * expands the multiply by 300 into five shift-adds a column, and a halfword
- * load with its wait states is cheaper (codex's judgment, 11-03 13:21;
- * stage 5e). Every width strictly below the terminal (D2). Stage 6's curve
- * replaces the table's contents, not its shape. */
+/* The scale (D8): a byte's width is width_lut[byte], the rounded linear
+ * formula ROWISR_WIDTH() tabulated in flash (512 B). Until D9 (11-04) the
+ * handler loaded it a column; since D9 the flush does, for the byte path
+ * (the effects whose value varies per LED, and raw patterns), and the wide
+ * path uses curve_q6[] (curve12.h) instead; the handler reads the widths
+ * themselves. Every width strictly below the terminal (D2). */
 #if ((255u * ROWISR_K_Q6 + 32u) >> 6) >= ROWISR_TERMINAL   /* the preprocessor cannot see ROWISR_WIDTH()'s cast */
 #    error "every channel match must stay strictly below the terminal (D2)"
 #endif
@@ -1700,7 +1700,7 @@ uint8_t sn32f2xx_led_commits(void) {
  * a multiply and a shift, rounded to a tick, and under a tick a dithered
  * tick (0.5 and up every second field, 0.25 and up every fourth) or dark. */
 static inline uint16_t wide_width(uint8_t chroma, uint32_t recip) {
-    uint32_t q8 = ((uint32_t)chroma * recip + 128u) >> 8;   /* Q8 ticks: chroma (8 bits) x recip (under 2^19) fits */
+    uint32_t q8 = ((uint32_t)chroma * recip + 128u) >> 8;   /* Q8 ticks: chroma (8 bits) x recip (under 2^20 at the 267 us cadence's k = 640) stays under 2^28 */
     uint32_t w  = q8 >> 8, frac = q8 & 0xFFu;
     if (w == 0u) return frac >= 128u ? DITHER_HALF : (frac >= 64u ? DITHER_QUARTER : 0u);
     return (uint16_t)(w + (frac >= 128u ? 1u : 0u));
@@ -1728,14 +1728,15 @@ void sn32f2xx_flush(void) {
     last_v                        = v;
     /* The conversion into the live frame, unmasked (D9 revised): a halfword
      * store is atomic on this core and the handler reads one channel of one
-     * LED at a time, so a field may show a frame half old and half new,
-     * which these effects never show at 444 Hz; the masked 243 B memcpy of
-     * the byte frame is gone with it. ~100 us of main-loop time a changed
-     * frame. */
+     * LED at a time, so no width tears, but a field can mix old and new
+     * LEDs across a hue or brightness change: D8's coherent-frame invariant
+     * is relaxed deliberately (codex, 11-04), to be seen by camera at the
+     * transitions; the masked 243 B memcpy of the byte frame is gone with
+     * it. ~100 us of main-loop time a changed frame. */
     uint32_t sr = 0, sg = 0, sb = 0;
     if (wide) {
         uint32_t full_q8 = ((uint32_t)curve_q6[v] * ROWISR_K_Q6) >> 4;   /* Q6 x Q6 >> 4: Q8 ticks at full chroma, 1,195.3 at the reference's top (16,320 x 640 >> 4 at the 267 us cadence: under 2^20) */
-        uint32_t recip   = (full_q8 * 256u + 127u) / 255u;                    /* Q8 of a chroma unit's ticks in Q8 (full_q8 x 256 under 2^27) */
+        uint32_t recip   = (full_q8 * 256u + 127u) / 255u;                    /* Q8 of a chroma unit's ticks in Q8 (full_q8 x 256 under 2^28: 652,800 x 256 at k = 640) */
         for (int i = 0; i < SN32F2XX_LED_COUNT; i++) {
             uint16_t wr = wide_width(led_state_buf[i].r, recip);
             uint16_t wb = wide_width(led_state_buf[i].b, recip);
