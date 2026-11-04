@@ -189,7 +189,8 @@ static uint8_t           sil_done = 0, sil_lost = 0;   /* run; not run at the fi
 static struct {                             /* the last silence's report (subs 8 and 9) */
     uint32_t      us, ticks;
     uint16_t      tc0, tc1;                 /* CT16B5 at the marker's edges */
-    rowisr_time_t t0, t1;                   /* the extension before, and 2 ms after */
+    rowisr_time_t t0, t1;                   /* the extension before, and after the frame counter's next judgments */
+    uint8_t       judged, waited_ms;        /* judging opportunities between the two copies, and the ms waited for them (5g) */
 } sil_rep;
 
 /* The masked part on its own, so the rising edge follows the mask by the
@@ -243,6 +244,7 @@ static void silence_run(void) {   /* the housekeeping task: thread context */
     rowisr_time_t t0;
     rowisr_time_read(&t0);
     uint16_t tc0 = 0, tc1 = 0;
+    uint16_t jseq0 = rowisr_usb_judge_seq();
     uint32_t acc = silence_masked(want, &tc0, &tc1);
     if (acc == 0) {
         sil_us = 0;
@@ -252,7 +254,18 @@ static void silence_run(void) {   /* the housekeeping task: thread context */
     indicators_out_resync();
     sil_rep.us = us; sil_rep.ticks = acc; sil_rep.tc0 = tc0; sil_rep.tc1 = tc1; sil_rep.t0 = t0;
     wait_ms(2);   /* the observers' first passes after the unmask: the tick's within 50 us, scan-only's slots within 625 us; the guard's verdict and the re-prime */
+    uint8_t waited = 2;
+    while ((uint16_t)(rowisr_usb_judge_seq() - jseq0) < 2u && waited < 20u) {   /* the frame counter's verdict too (5g): its judgment runs every eighth
+                                                                                  * service (1 ms at the 125 us slot, 5 ms in scan-only) or at the first
+                                                                                  * service after the guard's verdict, so two opportunities since before
+                                                                                  * the silence put one after it; 20 ms bounds the wait (codex's P2 on
+                                                                                  * 1d73bf3ed5: the fixed 2 ms could copy the state before the verdict) */
+        wait_ms(1);
+        waited++;
+    }
     rowisr_time_read(&sil_rep.t1);
+    uint16_t dj = (uint16_t)(rowisr_usb_judge_seq() - jseq0);
+    sil_rep.judged = dj > 255u ? 255u : (uint8_t)dj; sil_rep.waited_ms = waited;
     sil_us = 0;
     sil_done++;
 }
@@ -278,6 +291,7 @@ static void report_fill(uint8_t page, uint8_t *out) {   /* subs 8 and 9: out = &
         put16(&out[6], sil_rep.t1.last_gap);
         put16(&out[8], sil_rep.t0.guard_rejects);
         put16(&out[10], sil_rep.t1.guard_rejects);
+        out[12] = sil_rep.judged; out[13] = sil_rep.waited_ms;   /* 5g */
     }
 }
 

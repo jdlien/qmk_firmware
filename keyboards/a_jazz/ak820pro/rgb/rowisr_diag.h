@@ -77,7 +77,11 @@
  *          omissions per mux row, 18 bytes saturating at 255, [30..31]
  *          the elapsed samples dropped for a boundary inside the handler (stage 5a; the services' low word it replaced is gone: page 7 carries the valid services, not every service). Reset with the health
  *          counters.
- *   sub 6  the USB frame counter's record (D3 case 5) and the clocks' state:
+ *   sub 6  the USB frame counter's record (D3 case 5) and the clocks' state
+ *          (since 5g an interval is up to eight services, 1 ms at the
+ *          125 us slot, the judgment's cadence, or the stretch to a
+ *          discontinuity, judged at the service that finds it: rowisr.c,
+ *          "The cadence"; the counts are of those intervals):
  *          [4..7] intervals the frame counter judged (VALID, the driver
  *          ACTIVE at both ends, no bus event), [8] intervals it rejected for
  *          a disagreement of the spans, [9] intervals rejected for a bus
@@ -139,7 +143,10 @@
  *   sub 9  its second page: [4..5] the last observer's CT16B5 stamp before
  *          and [6..7] after, [8..9] the last gap the 8 ms guard rejected,
  *          before and [10..11] after (CT16B5 ticks), [12..13] the guard's
- *          rejection count before and [14..15] after (wrapping). The
+ *          rejection count before and [14..15] after (wrapping), [16] the
+ *          frame counter's judging opportunities between the two copies
+ *          and [17] the ms the second copy waited for two of them (2 to
+ *          20; since 5g, so the copy follows the verdict). The
  *          extension's state is copied at each end, not observed. Read with
  *          sub 6's counts: a generation moved across the silence is one
  *          loss, the guard's if its count moved too, the frame counter's if

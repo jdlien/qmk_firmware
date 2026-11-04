@@ -507,7 +507,34 @@ static inline void time_excludeI(uint8_t bit, bool on) {
  * the plan: SOFs that stop with no flag raised inside the 4 ms before a
  * silence that aliases the guard. The proof's scope is 13 s (the plan, D3):
  * past it the check still runs, and the two moduli can come within the
- * tolerance. */
+ * tolerance.
+ *
+ * The cadence (stage 5g, 11-03): the judgment runs every eighth counted
+ * service, on the interval since the last judging one, against its own
+ * baseline (usb_base, that service's snapshot); every service still takes
+ * the full snapshot, which is the evidence. A discontinuity found at any
+ * service (the generation moved, or the extension INVALID) first judges the
+ * baseline's interval to the last committed service in its generation, from
+ * the snapshots kept (usb_base, last_snap), before the baseline is given
+ * up, and the baseline is taken anew at the first VALID service after: no
+ * stretch of continuous time goes unjudged, and none waits on a baseline
+ * (codex's P1 on the first cadence, 1d73bf3ed5, 11-03 00:22: a generation
+ * change between two judging services hid an aliasing silence on either
+ * side of it). The verdict is a function of the two snapshots alone
+ * (usb_judge), so an interval judged late is judged as it would have been
+ * at its end; what differs is the loss accounting: a rejection at a judging
+ * service invalidates the extension as before, a deferred one counts its
+ * loss and moves nothing, the generation having moved already. The
+ * services' interval statistics (slots_elapsed, serviced_valid,
+ * latency_max) wait on the verdict of the interval they lie in: folded into
+ * the record when it is kept, dropped when it is rejected or unjudged, as
+ * the per-slot judgment dropped its one service (codex's P2 there: an
+ * aliasing silence's phantom boundaries, the wrap's remainder, entered the
+ * record before the rejection). An alias is attributed to within eight
+ * services (1 ms at the 125 us slot) instead of one. */
+#ifndef USB_JUDGE_EVERY
+#    define USB_JUDGE_EVERY 8u
+#endif
 static volatile uint16_t usb_gen = 0;   /* bus events the USB handler serviced: reset, suspend, wakeup */
 #define USB_INSTS_WAKEUP  (1UL << 25)
 #define USB_INSTS_RESUME  (1UL << 29)
@@ -635,13 +662,74 @@ static uint64_t width_acc[3] = {0};   /* emitted width sums per colour, ticks: r
 
 static snap_t  last_snap;          /* the last serviced invocation's step-1 pair */
 static bool    have_last = false;
+static snap_t  usb_base;           /* the last judging service's snapshot: the frame counter's baseline (the cadence, 5g) */
+static bool    have_usb_base = false;
+static uint8_t usb_phase = 0;      /* counted services since the last judging one */
+static volatile uint16_t usb_judge_seq = 0;   /* judging opportunities, whatever the verdict: the silence report waits on it (rowisr_diag.c) */
+static uint32_t pend_slots = 0, pend_valid = 0;   /* the services' interval statistics since the baseline, pending the verdict */
+static uint16_t pend_latency = 0;
 static bool     adopt_pending = false;   /* a frame-counter rejection's generation, for the committed baseline (this invocation only) */
 static uint32_t adopt_gen     = 0;
+
+static inline void pend_fold(void) {   /* the pending services' statistics into the record: their interval kept */
+    rec.slots_elapsed  += pend_slots;
+    rec.serviced_valid += pend_valid;
+    if (pend_latency > rec.latency_max) rec.latency_max = pend_latency;
+    pend_slots = 0; pend_valid = 0; pend_latency = 0;
+}
+static inline void pend_drop(void) {   /* their interval rejected or unjudged: dropped, as the per-slot judgment dropped its one service */
+    pend_slots = 0; pend_valid = 0; pend_latency = 0;
+}
+
+/* D3 case 5: the frame counter's verdict on the interval a to b, a function
+ * of the two snapshots alone (the record's counts aside), so the judging
+ * service and the discontinuity's deferred judgment share it. Judged when
+ * the interval began with the frames expected: trusted (fresh), or inside a
+ * stale's recovery (the start's FRMNO is real either way: the stale took it
+ * from the hardware); not judged (UNTRUSTED) when the bus is down or the
+ * frames are known stopped at the start, the declared blind spot. */
+typedef enum { USB_UNTRUSTED = 0, USB_KEPT, USB_REJECT, USB_UNJUDGED } usb_verdict_t;
+static usb_verdict_t usb_judge(const snap_t *a, const snap_t *b) {
+    if (!(a->bus && (a->fresh || a->pending))) return USB_UNTRUSTED;
+    bool     reject = false;
+    uint32_t dext   = b->ext - a->ext;                                 /* the extension's span, 5.33 us ticks; under an hour */
+    uint32_t df     = (uint32_t)(b->frm - a->frm) & USB_FRMNO_MASK;    /* the frame counter's, frames, modulo 2,048 */
+    if (!b->bus || b->ugen != a->ugen) {   /* the bus down at the end, or a bus event serviced inside: never healthy */
+        sat8(&rec.usb_events);
+        reject = true;
+    } else if (!b->fresh) {
+        if (a->fresh) {   /* moving at the start, not within 4 ms of the end: the frames stopped inside, no flag raised */
+            sat8(&rec.usb_events);
+            reject = true;
+        } else {          /* both ends inside the recovery with no frame yet (its first slots, or a bus that never
+                           * sends one): unjudgeable, excluded without a loss of its own, the stale's loss covers it;
+                           * a silence inside is excluded with it, never healthy (the fourth verify review's 1) */
+            if (rec.usb_unjudged < 127u) rec.usb_unjudged++;   /* seven bits on the wire: bit 7 is the recovery flag */
+            return USB_UNJUDGED;
+        }
+    } else {
+        uint32_t diff = usb_distance_ticks(dext, df);             /* the modular distance, ticks, no divide */
+        rec.usb_checked++;
+        reject = diff > USB_TOL_TICKS + (dext >> 9);              /* 3 ms plus the span / 512, about 0.2% */
+        if (reject) sat8(&rec.usb_rejects);
+        else if (diff > rec.usb_worst) rec.usb_worst = diff > 0xFFFFu ? 0xFFFFu : (uint16_t)diff;   /* under the tolerance, which grows with
+                                                                                                    * the span: saturated for a span past 3 min */
+    }
+    if (!reject) return USB_KEPT;
+    rec.usb_last_dt = dext;
+    rec.usb_last_df = (uint16_t)df;
+    return USB_REJECT;
+}
+
+uint16_t rowisr_usb_judge_seq(void) {   /* thread context: a volatile halfword, one load */
+    return usb_judge_seq;
+}
 
 void rowisr_record_reset(void) {
     chSysLock();
     memset(&rec, 0, sizeof(rec));
     rec.elapsed_min = 0xFFFFu;
+    pend_slots = 0; pend_valid = 0; pend_latency = 0;
     chSysUnlock();
 }
 
@@ -931,7 +1019,7 @@ static inline void sched_set_period(uint32_t ticks) {   /* I-class; MR9 = ticks 
  * that depend on the interval's validity are taken only now (codex, P2 4
  * and 6). Called under the lock from step 6, unlocked on the paths that
  * arm nothing (the record's reader masks this handler). */
-static inline void service_commit(const snap_t *s1, bool valid1, uint32_t boundaries) {
+static inline void service_commit(const snap_t *s1, bool valid1, uint32_t boundaries, bool direct) {
     last_snap = *s1;
     if (adopt_pending) {   /* the frame counter rejected this interval and bumped the generation itself: the baseline takes it, so the next
                             * interval starts fresh and is judged as any other (the frames were not staled by the rejection, so it cannot be a
@@ -941,9 +1029,15 @@ static inline void service_commit(const snap_t *s1, bool valid1, uint32_t bounda
     }
     have_last = true;
     if (valid1) {
-        rec.slots_elapsed += boundaries;
-        rec.serviced_valid++;
-        if (boundaries == 1 && s1->tc > rec.latency_max) rec.latency_max = s1->tc;
+        if (direct) {   /* the interval ending here was judged here and kept */
+            rec.slots_elapsed += boundaries;
+            rec.serviced_valid++;
+            if (boundaries == 1 && s1->tc > rec.latency_max) rec.latency_max = s1->tc;
+        } else {        /* pending the verdict on the interval it lies in (the cadence, 5g): folded or dropped at the judgment */
+            pend_slots += boundaries;
+            pend_valid++;
+            if (boundaries == 1 && s1->tc > pend_latency) pend_latency = s1->tc;
+        }
     }
 }
 
@@ -1096,46 +1190,55 @@ static void rowisr_slot(void) {
             return;
         }
     }
-    if (valid1 && last_snap.bus && (last_snap.fresh || last_snap.pending)) {
-        /* D3 case 5: the frame counter's verdict on an interval that began with
-         * the frames expected: trusted (fresh), or inside a stale's recovery
-         * (the start's FRMNO is real either way: the stale took it from the
-         * hardware). Not judged when the bus is down or the frames are known
-         * stopped at the start: the declared blind spot. */
-        bool     reject  = false, unjudged = false;
-        uint32_t dext  = s1.ext - last_snap.ext;                      /* the extension's span, 5.33 us ticks; under an hour */
-        uint32_t df    = (uint32_t)(s1.frm - last_snap.frm) & USB_FRMNO_MASK;   /* the frame counter's, frames, modulo 2,048 */
-        if (!s1.bus || s1.ugen != last_snap.ugen) {   /* the bus down at the end, or a bus event serviced inside: never healthy */
-            sat8(&rec.usb_events);
-            reject = true;
-        } else if (!s1.fresh) {
-            if (last_snap.fresh) {   /* moving at the start, not within 4 ms of the end: the frames stopped inside, no flag raised */
-                sat8(&rec.usb_events);
-                reject = true;
-            } else {                 /* both ends inside the recovery with no frame yet (its first slots, or a bus that never
-                                      * sends one): unjudgeable, excluded without a loss of its own, the stale's loss covers it;
-                                      * a silence inside is excluded with it, never healthy (the fourth verify review's 1) */
-                unjudged = true;
+    /* The frame counter's judgment (D3 case 5), decimated: every
+     * USB_JUDGE_EVERY-th counted service judges the interval since the
+     * baseline; a discontinuity found at any service judges the baseline's
+     * pending interval first, from the snapshots kept, and the baseline is
+     * taken anew at the first VALID service after (the design's comment,
+     * "The cadence"). A spurious invocation returned above, so it counts
+     * for nothing here. */
+    bool direct = false;   /* this service's interval statistics to the record (its interval judged here and kept), else pending */
+    if (have_usb_base && (!s1.valid || s1.gen != usb_base.gen || (s1.ext - usb_base.ext) > EPOCH_CONSUMER_MAX)) {
+        if (last_snap.valid && last_snap.gen == usb_base.gen && last_snap.ext != usb_base.ext &&
+            (last_snap.ext - usb_base.ext) <= EPOCH_CONSUMER_MAX) {   /* a pending interval: the baseline to the last committed service in
+                                                                       * its generation (a crossed service commits nothing; one before the
+                                                                       * baseline fails the span check by the wrap) */
+            usb_judge_seq++;
+            usb_verdict_t v = usb_judge(&usb_base, &last_snap);
+            if (v == USB_REJECT) {
+                sat8(&rec.epoch_losses);   /* the alias's own loss, beside the generation's move counted above: two silences, two losses;
+                                            * nothing invalidated, the extension having moved on without this interval */
+                pend_drop();
+            } else if (v == USB_UNJUDGED) {
+                pend_drop();
+            } else {
+                pend_fold();
             }
         } else {
-            uint32_t diff = usb_distance_ticks(dext, df);             /* the modular distance, ticks, no divide */
-            rec.usb_checked++;
-            reject = diff > USB_TOL_TICKS + (dext >> 9);              /* 3 ms plus the span / 512, about 0.2% */
-            if (reject) sat8(&rec.usb_rejects);
-            else if (diff > rec.usb_worst) rec.usb_worst = diff > 0xFFFFu ? 0xFFFFu : (uint16_t)diff;   /* under the tolerance, which grows with
-                                                                                                    * the span: saturated for a span past 3 min */
+            pend_fold();   /* nothing judgeable pending: the sums, if any, are of services whose own intervals were VALID */
         }
-        if (reject) {
-            rec.usb_last_dt = dext;
-            rec.usb_last_df = (uint16_t)df;
+        have_usb_base = false;
+    }
+    if (!have_usb_base) {
+        if (s1.valid) {   /* the baseline at once, at the first VALID service: no interval waits on one */
+            usb_base      = s1;
+            have_usb_base = true;
+            usb_phase     = 0;
+            pend_drop();
+        }
+    } else if (++usb_phase >= USB_JUDGE_EVERY) {
+        usb_phase = 0;
+        usb_judge_seq++;
+        usb_verdict_t v = usb_judge(&usb_base, &s1);
+        if (v == USB_REJECT) {
             /* INVALID with one loss, as the guard's. The generation is bumped
              * only if no other observer has since the snapshot (the generation
              * unchanged: a tick's invalidation, re-primed or not, is that
              * observer's loss, counted once at the next entry by the
              * generation check, and this baseline is not adopted, since its
              * time predates a gap the tick discarded; the review's P2 4). The
-             * snapshot stays as taken, so step 6 and the exit see the
-             * generation moved and measure nothing across it. */
+             * snapshot stays as taken, so step 6 sees the generation moved
+             * and measures nothing across it. */
             chSysLockFromISR();
             bool fresh = time_valid != 0 && time_gen == s1.gen;   /* no other observer invalidated since the snapshot, re-primed or not */
             if (fresh) {
@@ -1149,10 +1252,17 @@ static void rowisr_slot(void) {
                 sat8(&rec.epoch_losses);
             }
             valid1 = false;   /* an invalid service below; the next observation re-primes */
-        } else if (unjudged) {
-            if (rec.usb_unjudged < 127u) rec.usb_unjudged++;   /* seven bits on the wire: bit 7 is the recovery flag */
+            pend_drop();
+        } else if (v == USB_UNJUDGED) {
             valid1 = false;   /* excluded: an invalid service below, no loss, nothing adopted; the baseline moves on */
+            pend_drop();
+        } else {
+            pend_fold();
+            direct = true;
         }
+        usb_base = s1;   /* the baseline moves to this service whatever the verdict; after its own rejection it takes the generation the
+                          * committed baseline takes (service_commit), so the next interval starts fresh and is judged as any other */
+        if (adopt_pending) usb_base.gen = adopt_gen;
     }
     if (!valid1 && have_last) sat8(&rec.invalid_services);
 
@@ -1169,7 +1279,7 @@ static void rowisr_slot(void) {
         scan_only = scan_only_req;
         chSysLockFromISR();
         sched_set_period(scan_only ? SN32F2XX_SCAN_ONLY_TICKS : ROWISR_SLOT_TICKS);
-        have_last = false;
+        have_last = false;   /* the frame counter's baseline is kept: its judgment is of time, not slots, and the generation does not move here (5g) */
         chSysUnlockFromISR();
         if (scan_only) columns_release(); else columns_active();
         sn32f2xx_isr_exit_hook();
@@ -1180,7 +1290,7 @@ static void rowisr_slot(void) {
             if (++scan_only_row >= ROWS_PER_HAND) scan_only_row = 0;
             scan_key_row(scan_only_row);
         }
-        service_commit(&s1, valid1, boundaries);
+        service_commit(&s1, valid1, boundaries, direct);
         sn32f2xx_isr_exit_hook();
         return;
     }
@@ -1190,7 +1300,7 @@ static void rowisr_slot(void) {
         /* The 09-01 guard, only where sn32f2xx_pgm_scan is false (a dev
          * build's write test): a program in progress, the board dark for it
          * (the rows are deselected above and nothing is armed). */
-        service_commit(&s1, valid1, boundaries);
+        service_commit(&s1, valid1, boundaries, direct);
         sn32f2xx_isr_exit_hook();
         return;
     }
@@ -1237,7 +1347,7 @@ static void rowisr_slot(void) {
             pulse_arm_all();
             armed = true;
         }
-        service_commit(&s1, valid1, boundaries);
+        service_commit(&s1, valid1, boundaries, direct);
     }
     chSysUnlockFromISR();
 
@@ -1318,7 +1428,8 @@ void sn32f2xx_sleep_enterI(void) {
     pulse_park(T_B1);
     pulse_park(T_B2);
     time_excludeI(ROWISR_EXCL_SLEEP, true);
-    have_last = false;
+    have_last = false;   /* the frame counter's baseline and last_snap are kept through the sleep: the first service after the wake finds the
+                          * generation moved, judges the pending interval before the sleep from them, and takes a new baseline (5g) */
 }
 
 void sn32f2xx_sleep_exitI(void) {
@@ -1330,7 +1441,7 @@ void sn32f2xx_sleep_exitI(void) {
     CT_REG(T_SCHED, CT_IC) = RIS_ALL;
     NVIC_ClearPendingIRQ(SCHED_IRQn);
     time_excludeI(ROWISR_EXCL_SLEEP, false);   /* the first tick after the wake re-primes */
-    have_last = false;
+    have_last = false;   /* usb_base kept (the entry's comment) */
     CT_REG(T_SCHED, CT_TMRCTRL) = CT_CEN;
     NVIC_EnableIRQ(SCHED_IRQn);
 }
