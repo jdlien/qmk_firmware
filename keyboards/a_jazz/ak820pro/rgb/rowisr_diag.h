@@ -148,7 +148,10 @@
  *          and [17] the ms the second copy waited for two of them (2 to
  *          20; since 5g, so the copy follows the verdict; under two, the
  *          frame counter's verdict was still pending at the copy, a hold
- *          on the row ISR outlasting the wait, and the host says so). The
+ *          on the row ISR outlasting the wait, and the host says so), [18]
+ *          the silences run, as sub 8's [31]: the two pages belong to one
+ *          silence only when they agree (a silence can finish between the
+ *          two reads; the host re-reads until they do). The
  *          extension's state is copied at each end, not observed. Read with
  *          sub 6's counts: a generation moved across the silence is one
  *          loss, the guard's if its count moved too, the frame counter's if

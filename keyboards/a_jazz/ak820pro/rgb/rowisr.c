@@ -517,8 +517,8 @@ static inline void time_excludeI(uint8_t bit, bool on) {
  * baseline (usb_base, that service's snapshot); every service still takes
  * the full snapshot, which is the evidence. A discontinuity found at any
  * service (the generation moved, or the extension INVALID) first judges the
- * baseline's interval to the last committed service in its generation, from
- * the snapshots kept (usb_base, last_snap), before the baseline is given
+ * baseline's interval to the last counted service in its generation, from
+ * the snapshots kept (usb_base, usb_last), before the baseline is given
  * up, and the baseline is taken anew at the first VALID service after: no
  * stretch of continuous time goes unjudged, and none waits on a baseline
  * (codex's P1 on the first cadence, 1d73bf3ed5, 11-03 00:22: a generation
@@ -536,14 +536,20 @@ static inline void time_excludeI(uint8_t bit, bool on) {
  * record before the rejection). An alias is attributed to within eight
  * services (1 ms at the 125 us slot) instead of one.
  *
- * Two rules keep the per-slot coverage (codex's two P1s on 1dfa597991):
- * the pending interval ends at the last counted service's ENTRY snapshot
- * (usb_last), not at the committed last_snap, since a service that crosses
- * a boundary commits nothing yet its entry may carry the alias; and a
- * baseline taken untrusted (the bus down, or the frames known stopped) is
- * retaken at the first trusted service inside the generation, since a
- * judgment from an untrusted start judges nothing and the per-slot one
- * judged every pair from a trusted service on. Declared and given up: two
+ * Three rules keep the per-slot coverage (codex's P1s on 1dfa597991 and
+ * 0b5e547705): the pending interval ends at the last counted service's
+ * ENTRY snapshot (usb_last), not at the committed last_snap, since a
+ * service that crosses a boundary commits nothing yet its entry may carry
+ * the alias; a baseline taken untrusted (the bus down, or the frames known
+ * stopped) is retaken at the first trusted service inside the generation,
+ * since a judgment from an untrusted start judges nothing and the per-slot
+ * one judged every pair from a trusted service on; and a baseline taken in
+ * a stale's recovery (pending, no frame seen yet) is judged at the first
+ * fresh entry, as a judging service, since judged later with the frames
+ * stopped again its interval is unjudgeable (both ends without a frame)
+ * and an alias inside it, with the frames moving through it, would be
+ * lost; the per-slot judgment compared that pair at its fresh end. Declared
+ * and given up: two
  * aliasing silences inside one judged interval are one rejected interval
  * and one loss where the per-slot judgment counted two; the detector's
  * count is of rejected intervals. */
@@ -1263,7 +1269,12 @@ static void rowisr_slot(void) {
         }
     } else {
         usb_last = s1;   /* this service's entry: the pending interval's end, should a discontinuity follow */
-        if (++usb_phase >= USB_JUDGE_EVERY) {
+        /* A judging service: every USB_JUDGE_EVERY-th counted one, or the
+         * first fresh entry after a baseline taken in a stale's recovery
+         * (pending, no frame yet): judged while its end is fresh, since an
+         * end with the frames stopped again is unjudgeable and would hide
+         * an alias the frames counted (codex's P1 on 0b5e547705). */
+        if (++usb_phase >= USB_JUDGE_EVERY || (!usb_base.fresh && usb_base.pending && s1.fresh)) {
             usb_phase = 0;
             usb_judge_seq++;
             usb_verdict_t v = usb_judge(&usb_base, &s1);
@@ -1301,6 +1312,7 @@ static void rowisr_slot(void) {
                                       * the committed baseline takes (service_commit), so the next interval starts fresh and is judged as any other */
             usb_base_trusted = snap_trusted(&s1);
             if (adopt_pending) usb_base.gen = adopt_gen;
+            usb_last = usb_base;   /* the end with the baseline, generation and all (equal extensions exclude the empty interval anyway) */
         }
     }
     if (!valid1 && have_last) sat8(&rec.invalid_services);

@@ -293,6 +293,7 @@ static void report_fill(uint8_t page, uint8_t *out) {   /* subs 8 and 9: out = &
         put16(&out[8], sil_rep.t0.guard_rejects);
         put16(&out[10], sil_rep.t1.guard_rejects);
         out[12] = sil_rep.judged; out[13] = sil_rep.waited_ms;   /* 5g */
+        out[14] = sil_done;   /* the run count, as page 0's [27]: the host pairs the two pages by it (a silence can finish between the reads) */
     }
 }
 
