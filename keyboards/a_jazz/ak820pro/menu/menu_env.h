@@ -118,6 +118,7 @@ void     env_defaults(env_defaults_t *d);
  * the host set after it (the host's own off is unconditional). It rides
  * the render: an effect must be rendering. */
 void     env_probe(uint8_t r, uint8_t g, uint8_t b);
+void     env_probe_split(uint8_t r, uint8_t g, uint8_t b, uint8_t r2, uint8_t g2, uint8_t b2);   /* the left half at r, g, b, the right at r2, g2, b2 (sub 3's 253): the per-colour gain by eye */
 void     env_probe_off(void);
 #endif
 /* P5c, Rename's capture: the debounced matrix idle (the knob masked) and

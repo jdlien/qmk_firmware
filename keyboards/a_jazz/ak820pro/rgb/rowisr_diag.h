@@ -50,8 +50,10 @@
  *          (5.33 us), [30] silences run (wrapping), [31] MATRIX_COL_PINS is not
  *          the order the scan's two port reads assemble (stage 3: the
  *          matrix would read wrong; rowisr.c, col_order).
- *   sub 3  one LED, one colour  [5] LED index 0..80, 254 for every LED, or
- *          255 for off, [6..8] r, g, b
+ *   sub 3  one LED, one colour  [5] LED index 0..80, 254 for every LED, 253
+ *          for the split (the left half of the board, columns 0-7, at
+ *          [6..8] and the right half, 8-14, at [9..11] r2, g2, b2), or 255
+ *          for off, [6..8] r, g, b
  *          Every other LED dark and that one at that colour (or every LED at
  *          it), applied after each render (rgb_matrix_indicators_kb) until
  *          turned off, through the power scale as any frame is; it needs an
@@ -225,6 +227,10 @@ void rowisr_diag_housekeeping(void);    /* the backstop, once a pass */
  * ROWISR_PAT_MENU and releases its own only (true when it did). */
 enum { ROWISR_PAT_HOST = 1, ROWISR_PAT_MENU = 2 };
 void rowisr_diag_pattern(uint8_t owner, uint8_t led, uint8_t r, uint8_t g, uint8_t b);
+/* The split (11-04, the per-colour gain by eye): the left half of the board
+ * (columns 0-7) at r, g, b and the right half (8-14) at r2, g2, b2, two
+ * fields abutting for a match; index 253 on the wire. */
+void rowisr_diag_pattern_split(uint8_t owner, uint8_t r, uint8_t g, uint8_t b, uint8_t r2, uint8_t g2, uint8_t b2);
 bool rowisr_diag_pattern_release(uint8_t owner);
 #else
 static inline void rowisr_diag_tick(void) {}

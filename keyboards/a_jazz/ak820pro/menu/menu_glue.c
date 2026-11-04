@@ -253,6 +253,7 @@ void env_defaults(env_defaults_t *d) {
  * own, so a pattern the host's `led` command set after it stands
  * (rowisr_diag.c; codex). */
 void env_probe(uint8_t r, uint8_t g, uint8_t b) { rowisr_diag_pattern(ROWISR_PAT_MENU, 0xFEu, r, g, b); }
+void env_probe_split(uint8_t r, uint8_t g, uint8_t b, uint8_t r2, uint8_t g2, uint8_t b2) { rowisr_diag_pattern_split(ROWISR_PAT_MENU, r, g, b, r2, g2, b2); }
 void env_probe_off(void) { (void)rowisr_diag_pattern_release(ROWISR_PAT_MENU); }
 #endif
 /* False when any write to the store has failed since the boot, these or an

@@ -401,7 +401,10 @@ static union {
     struct {                /* 11-04, dev: the Floor probe's */
         uint8_t colour;     /* 0 red, 1 green, 2 blue */
         uint8_t ticks;      /* the byte every LED gets on that colour (devprobe: its pulse width in ticks) */
-        uint8_t editing;    /* the row that has the knob, PR_COLOUR or PR_TICKS; 0 none */
+        uint8_t colour2;    /* the right half's, under Split */
+        uint8_t ticks2;
+        uint8_t split;      /* 1: the left half at colour/ticks, the right at colour2/ticks2 (the per-colour gain by eye) */
+        uint8_t editing;    /* the row that has the knob, PR_COLOUR..PR_TICKS2; 0 none */
     } pr;
 } pg;
 enum { CK_OK = 1, CK_JUMP = 2 };   /* set; a read that wasn't the last's time on, for menu_tick() */
@@ -484,8 +487,8 @@ static uint8_t effects(void) {
 static uint8_t pfs_saved(void);
 static uint8_t pfs_nth(uint8_t k);
 #ifdef MENU_PROBE
-enum { PR_COLOUR = 1, PR_TICKS, PR_ROWS };
-static const char *const pr_labels[PR_ROWS] = {"", "Color", "Ticks"};   /* the screen's American, as the other labels */
+enum { PR_COLOUR = 1, PR_TICKS, PR_COLOUR2, PR_TICKS2, PR_SPLIT, PR_ROWS };
+static const char *const pr_labels[PR_ROWS] = {"", "Color", "Ticks", "Color R", "Ticks R", "Split"};   /* the screen's American, as the other labels */
 static const char *const pr_colours[3]      = {"Red", "Green", "Blue"};
 static void pr_leave(void);   /* with the page's other functions, before activate() */
 #endif
@@ -1135,7 +1138,8 @@ static row_t row_at(uint8_t r) {
 #ifdef MENU_PROBE
     else if (x.node == N_PROW) {   /* 11-04: its index in val, the colour or the ticks in line, the row's capture in bullet (row_sig) */
         x.val    = val;
-        x.line   = val == PR_COLOUR ? pg.pr.colour : pg.pr.ticks;
+        x.line   = val == PR_COLOUR ? pg.pr.colour : val == PR_TICKS ? pg.pr.ticks : val == PR_COLOUR2 ? pg.pr.colour2
+                 : val == PR_TICKS2 ? pg.pr.ticks2 : pg.pr.split;
         x.bullet = pg.pr.editing == val;
     }
 #endif
@@ -1460,10 +1464,12 @@ static void row_text(const row_t *x, char *out) {
     else if (x->node == N_PSLOT) value = MT_TRI_R;                        /* a saved slot opens its page */
     else if (x->node == N_PNEW) value = x->val ? "Full" : "";            /* P5d */
 #ifdef MENU_PROBE
-    else if (x->node == N_PROW) {   /* 11-04: the colour's name, or the ticks, in angle brackets while the knob is that row's */
-        if (x->val == PR_COLOUR && !x->bullet) value = pr_colours[x->line % 3u];
+    else if (x->node == N_PROW) {   /* 11-04: the colour's name, or the ticks, in angle brackets while the knob is that row's; Split's On/Off */
+        bool colour = x->val == PR_COLOUR || x->val == PR_COLOUR2;
+        if (x->val == PR_SPLIT) value = x->line ? "On" : "Off";
+        else if (colour && !x->bullet) value = pr_colours[x->line % 3u];
         else {
-            if (x->val == PR_COLOUR) snprintf(buf, sizeof buf, "<%s>", pr_colours[x->line % 3u]);
+            if (colour) snprintf(buf, sizeof buf, "<%s>", pr_colours[x->line % 3u]);
             else snprintf(buf, sizeof buf, x->bullet ? "<%u>" : "%u", (unsigned)x->line);
             value = buf;
         }
@@ -2444,7 +2450,11 @@ static void edit_turn(int8_t turns, uint32_t now) {
  * 11-04: a colour change without a click, since a held key brightens the
  * LEDs above and below it in its column, the scan's microsecond on the
  * deselected rail, and the click is a key); Ticks' turns are a tick each, 0
- * to 255 without wrapping. The page opens dark (red at 0), and leaving
+ * to 255 without wrapping. Split's click (14:0x) turns the split on: the
+ * left half of the board (columns 0-7) at Color and Ticks, the right half
+ * (8-14) at Color R and Ticks R, two fields abutting for the per-colour
+ * gain by eye (one side's ticks turned until the halves match); off, every
+ * LED at Color and Ticks. The page opens dark (red at 0), and leaving
  * it, or the session closing (menu_probe_closed(): at panel_owner.c's
  * do_close(), at menu_open() and at Fn+D's return as backstops, and each
  * pass without a session in menu_ops.c), releases the pattern to the
@@ -2454,9 +2464,11 @@ static void edit_turn(int8_t turns, uint32_t now) {
  * had these slots until 11-04. */
 static bool pr_live;   /* the pattern is this page's: released on every way out */
 static void pr_apply(void) {
-    uint8_t c[3] = {0, 0, 0};
-    c[pg.pr.colour % 3u] = pg.pr.ticks;
-    env_probe(c[0], c[1], c[2]);
+    uint8_t c[3] = {0, 0, 0}, d[3] = {0, 0, 0};
+    c[pg.pr.colour % 3u]  = pg.pr.ticks;
+    d[pg.pr.colour2 % 3u] = pg.pr.ticks2;
+    if (pg.pr.split) env_probe_split(c[0], c[1], c[2], d[0], d[1], d[2]);
+    else env_probe(c[0], c[1], c[2]);
     pr_live = true;
 }
 static void pr_leave(void) {
@@ -2468,16 +2480,25 @@ void menu_probe_closed(void) {
     env_probe_off();
     pr_live = false;
 }
-static void pr_click(uint8_t i) {   /* the row's click takes the knob, or gives it back */
-    pg.pr.editing = pg.pr.editing == i ? 0u : i;
-}
-static void pr_turn(int8_t turns) {   /* the captured row's: the colour round, the ticks clamped */
-    if (pg.pr.editing == PR_COLOUR) {
-        int16_t c    = (int16_t)((pg.pr.colour + turns) % 3);
-        pg.pr.colour = (uint8_t)(c < 0 ? c + 3 : c);
+static void pr_click(uint8_t i) {   /* the row's click takes the knob, or gives it back; Split's toggles it */
+    if (i == PR_SPLIT) {
+        pg.pr.split = (uint8_t)!pg.pr.split;
+        pr_apply();
     } else {
-        int16_t t   = (int16_t)(pg.pr.ticks + turns);
-        pg.pr.ticks = (uint8_t)(t < 0 ? 0 : t > 255 ? 255 : t);
+        pg.pr.editing = pg.pr.editing == i ? 0u : i;
+    }
+}
+static void pr_turn(int8_t turns) {   /* the captured row's: a colour round, ticks clamped */
+    uint8_t *colour = pg.pr.editing == PR_COLOUR ? &pg.pr.colour : pg.pr.editing == PR_COLOUR2 ? &pg.pr.colour2 : NULL;
+    uint8_t *ticks  = pg.pr.editing == PR_TICKS ? &pg.pr.ticks : pg.pr.editing == PR_TICKS2 ? &pg.pr.ticks2 : NULL;
+    if (colour) {
+        int16_t c = (int16_t)((*colour + turns) % 3);
+        *colour   = (uint8_t)(c < 0 ? c + 3 : c);
+    } else if (ticks) {
+        int16_t t = (int16_t)(*ticks + turns);
+        *ticks    = (uint8_t)(t < 0 ? 0 : t > 255 ? 255 : t);
+    } else {
+        return;
     }
     pr_apply();
 }

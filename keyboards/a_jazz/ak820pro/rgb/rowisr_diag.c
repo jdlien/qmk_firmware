@@ -407,6 +407,7 @@ static void status_fill(uint8_t *out) {   /* out = &data[4], zeroed */
 
 #ifdef RGB_MATRIX_ENABLE
 static uint8_t pat_led = 0xFFu, pat_r = 0, pat_g = 0, pat_b = 0;
+static uint8_t pat_r2 = 0, pat_g2 = 0, pat_b2 = 0;   /* the split's right half (253) */
 static uint8_t pat_owner;   /* who set the pattern standing (ROWISR_PAT_*), 0 none */
 
 /* The pattern, from the host (sub 3) or the firmware (the menu's Floor
@@ -422,6 +423,16 @@ void rowisr_diag_pattern(uint8_t owner, uint8_t led, uint8_t r, uint8_t g, uint8
     pat_led   = led;
     pat_owner = led == 0xFFu ? 0u : owner;
 }
+void rowisr_diag_pattern_split(uint8_t owner, uint8_t r, uint8_t g, uint8_t b, uint8_t r2, uint8_t g2, uint8_t b2) {
+    pat_r2    = r2;
+    pat_g2    = g2;
+    pat_b2    = b2;
+    pat_r     = r;
+    pat_g     = g;
+    pat_b     = b;
+    pat_led   = 0xFDu;
+    pat_owner = owner;
+}
 bool rowisr_diag_pattern_release(uint8_t owner) {
     if (pat_owner != owner) return false;
     rowisr_diag_pattern(owner, 0xFFu, 0, 0, 0);
@@ -431,6 +442,14 @@ bool rowisr_diag_pattern_release(uint8_t owner) {
 bool rgb_matrix_indicators_kb(void) {
     if (pat_led == 0xFEu) {
         rgb_matrix_set_color_all(pat_r, pat_g, pat_b);   /* every LED at that colour: stage 6's floor probe, where the logger needs the sum */
+    } else if (pat_led == 0xFDu) {   /* the split: the left half's colour and the right's, by the LED's column */
+        for (uint8_t row = 0; row < MATRIX_ROWS; row++)
+            for (uint8_t col = 0; col < MATRIX_COLS; col++) {
+                uint8_t li = g_led_config.matrix_co[row][col];
+                if (li >= RGB_MATRIX_LED_COUNT) continue;
+                if (col < 8u) rgb_matrix_set_color(li, pat_r, pat_g, pat_b);
+                else          rgb_matrix_set_color(li, pat_r2, pat_g2, pat_b2);
+            }
     } else if (pat_led != 0xFFu) {
         rgb_matrix_set_color_all(0, 0, 0);
         if (pat_led < RGB_MATRIX_LED_COUNT) rgb_matrix_set_color(pat_led, pat_r, pat_g, pat_b);
@@ -439,6 +458,7 @@ bool rgb_matrix_indicators_kb(void) {
 }
 #else
 void rowisr_diag_pattern(uint8_t owner, uint8_t led, uint8_t r, uint8_t g, uint8_t b) { (void)owner; (void)led; (void)r; (void)g; (void)b; }
+void rowisr_diag_pattern_split(uint8_t owner, uint8_t r, uint8_t g, uint8_t b, uint8_t r2, uint8_t g2, uint8_t b2) { (void)owner; (void)r; (void)g; (void)b; (void)r2; (void)g2; (void)b2; }
 bool rowisr_diag_pattern_release(uint8_t owner) { (void)owner; return false; }
 #endif
 
@@ -466,10 +486,11 @@ bool rowisr_diag_op28(uint8_t *data) {
 #ifdef RGB_MATRIX_ENABLE
         case 3: {
             uint8_t led = data[5];
-            if (led != 0xFFu && led != 0xFEu && led >= RGB_MATRIX_LED_COUNT) return false;
-            rowisr_diag_pattern(ROWISR_PAT_HOST, led, data[6], data[7], data[8]);   /* the host's off releases anyone's */
+            if (led != 0xFFu && led != 0xFEu && led != 0xFDu && led >= RGB_MATRIX_LED_COUNT) return false;
+            if (led == 0xFDu) rowisr_diag_pattern_split(ROWISR_PAT_HOST, data[6], data[7], data[8], data[9], data[10], data[11]);
+            else rowisr_diag_pattern(ROWISR_PAT_HOST, led, data[6], data[7], data[8]);   /* the host's off releases anyone's */
             memset(&data[4], 0, 28);
-            data[4] = led; data[5] = pat_r; data[6] = pat_g; data[7] = pat_b;
+            data[4] = led; data[5] = pat_r; data[6] = pat_g; data[7] = pat_b; data[8] = pat_r2; data[9] = pat_g2; data[10] = pat_b2;
             return true;
         }
 #endif
