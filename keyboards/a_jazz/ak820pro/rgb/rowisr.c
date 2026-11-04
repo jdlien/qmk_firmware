@@ -676,9 +676,10 @@ static uint64_t width_acc[3] = {0};   /* emitted width sums per colour, ticks: r
 
 static snap_t  last_snap;          /* the last serviced invocation's step-1 pair */
 static bool    have_last = false;
-static volatile uint16_t usb_judge_seq = 0;   /* the services entered past the spurious check, wrapping: with the detector each judges the interval
-                                               * just ended, so two of them bound the verdict of the first service after a silence; the silence
-                                               * report waits on it (rowisr_diag.c); counted in every build so that wait holds without the detector */
+static volatile uint16_t usb_judge_seq = 0;   /* the services entered past the spurious check, wrapping, an entry counted whether it judged or not
+                                               * (one the generation had invalidated judges nothing): with the detector, two of them since before a
+                                               * silence put one after it, which judges it if anything does; the silence report waits on it
+                                               * (rowisr_diag.c); counted in every build so that wait holds without the detector */
 #if ROWISR_USB_DETECT
 static bool     adopt_pending = false;   /* a frame-counter rejection's generation, for the committed baseline (this invocation only) */
 static uint32_t adopt_gen     = 0;
@@ -1600,8 +1601,10 @@ void sn32f2xx_blank(void) {
  * lit_ms (elapsed time with any committed channel non-zero, its present
  * meaning); the drive itself is what was emitted: width_acc[], ticks per
  * colour, converted here to the model's unit (value x ms): a LED at byte b
- * emits k.b ticks once per field, so ticks x T_field / k is b x ms. The
- * remainder is carried into the next take. */
+ * emits k.b ticks once per field at the calibrated scale k (the reference,
+ * ROWISR_K_REF_Q6), so ticks x T_field / k is b x ms; under a probe's
+ * scale it is b x k_probe / k x ms, the light emitted in the reference's
+ * unit. The remainder is carried into the next take. */
 static uint32_t drive_now[3] = {0};   /* r, g, b */
 static uint32_t drive_since  = 0;     /* when the frame was committed, ms */
 static uint32_t drive_lit    = 0;     /* ms with any channel lit, since the last take */

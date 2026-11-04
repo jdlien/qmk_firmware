@@ -171,7 +171,8 @@ void rowisr_diag_tick(void) {   /* ISR context, priority 2: above the row interr
  * the state checks and the bookkeeping lie outside the mask (the review's
  * P2 5; the masked part is its own function, the disassembly checked). The
  * length the spin measured, in CT16B5 ticks, the TC at each edge and the
- * extension's copied state before and 2 ms after (its time, generation,
+ * extension's copied state before and after it, once two of the row ISR's
+ * services have entered since the mask or 20 ms have passed (its time, generation,
  * validity, the last observer's stamp and the guard's last rejected gap,
  * through rowisr_time_read: a copy, not an observation) are the report
  * (subs 8 and 9);
@@ -189,8 +190,8 @@ static uint8_t           sil_done = 0, sil_lost = 0;   /* run; not run at the fi
 static struct {                             /* the last silence's report (subs 8 and 9) */
     uint32_t      us, ticks;
     uint16_t      tc0, tc1;                 /* CT16B5 at the marker's edges */
-    rowisr_time_t t0, t1;                   /* the extension before, and after the frame counter's next judgments */
-    uint8_t       judged, waited_ms;        /* the services entered between the two copies (each judges the interval just ended), and the ms waited for two */
+    rowisr_time_t t0, t1;                   /* the extension before, and after two services or 20 ms */
+    uint8_t       judged, waited_ms;        /* the services entered between the two copies (a lower bound, an entry counted whether it judged or not), and the ms waited for two */
 } sil_rep;
 
 /* The masked part on its own, so the rising edge follows the mask by the

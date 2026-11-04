@@ -57,7 +57,7 @@ typedef struct {   /* the extension's state, copied (not an observation): the si
     uint8_t  valid;
 } rowisr_time_t;
 void rowisr_time_read(rowisr_time_t *t);         /* thread context */
-uint16_t rowisr_usb_judge_seq(void);               /* thread context: the services entered, wrapping; with the detector (ROWISR_USB_DETECT) each judges the interval just ended (the silence report waits on two) */
+uint16_t rowisr_usb_judge_seq(void);               /* thread context: the services entered, wrapping, an entry counted whether it judged or not; the silence report waits on two (rowisr_diag.c) */
 
 /* The handler's record (D10): health page 7 (HC_GET7, the totals) and op 28
  * sub 5 (the rest). Its elapsed figures run from the entry snapshot to the
