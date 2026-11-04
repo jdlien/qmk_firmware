@@ -160,12 +160,13 @@ static void apply(void) {
  * built uncapped, and it caps its own value knob with power_val_cap()
  * (rgb_matrix_kb.inc). */
 /* D9 revised (11-04): for an effect whose value is the same on every LED of
- * a frame, the colour is converted at full value and the value goes to the
- * driver beside the bytes, applied at the flush at 12 bits (rowisr.c): the
- * byte no longer loses the dim end's hue (a purple theme turned blue under
- * 8%). The effects whose value varies per LED (Typing Heatmap, RAINFALL,
- * DRIFT) keep the byte path. The cap applies first, as before. */
-static bool wide_mode(uint8_t m) {
+ * a frame, the colour is converted at full value and the driver applies the
+ * value at the flush at 12 bits (rowisr.c, from the config under the cap):
+ * the byte no longer loses the dim end's hue (a purple theme turned blue
+ * under 8%). The effects whose value varies per LED (Typing Heatmap,
+ * RAINFALL, DRIFT) keep the byte path. The cap applies first, as before. */
+bool power_wide_mode(void) {
+    uint8_t m = rgb_matrix_get_mode();
     return false
 #ifdef ENABLE_RGB_MATRIX_SOLID_COLOR
            || m == RGB_MATRIX_SOLID_COLOR
@@ -189,10 +190,7 @@ static bool wide_mode(uint8_t m) {
 }
 rgb_t rgb_matrix_hsv_to_rgb(hsv_t hsv) {
     if (hsv.v > val_cap) hsv.v = val_cap;
-    if (wide_mode(rgb_matrix_get_mode())) {
-        sn32f2xx_wide_frame(hsv.v);
-        hsv.v = 255;
-    }
+    if (power_wide_mode()) hsv.v = 255;   /* the chroma; the value is the flush's (rowisr.c reads the config and the cap) */
     return hsv_to_rgb(hsv);
 }
 

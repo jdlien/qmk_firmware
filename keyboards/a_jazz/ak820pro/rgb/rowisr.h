@@ -90,15 +90,16 @@ bool sn32f2xx_col_map_fault(void);              /* MATRIX_COL_PINS is not the or
  * and the row ISR start in matrix_init_custom(), before rgb_matrix exists. */
 void sn32f2xx_init(void);
 void sn32f2xx_flush(void);
-/* D9 revised (11-04): the precision path. An effect whose value is uniform
- * across the frame converts its colours at full value (the board's
- * rgb_matrix_hsv_to_rgb() wrap, power.c) and tells the driver the frame's
- * value here, once per call; the flush applies it to the chroma bytes at 12
- * bits through the curve (curve12.h). A pattern that writes raw bytes after
- * the effect (the dev Floor probe, the host's led command) cancels it, so
- * the flush takes the byte path. Thread context, the render's. */
-void sn32f2xx_wide_frame(uint8_t v);
-void sn32f2xx_wide_cancel(void);
+/* D9 revised (11-04): the precision path. In a wide mode (power_wide_mode():
+ * an effect whose value is the same on every LED) the board's
+ * rgb_matrix_hsv_to_rgb() wrap converts the colours at full value, so the
+ * render buffer holds the chroma, and the flush applies the frame's value
+ * (the config's under the ladder's cap) at 12 bits through the curve
+ * (curve12.h). A pattern that writes raw bytes after the effect (the dev
+ * Floor probe, the host's led command) blocks the wide path while it
+ * stands, so the flush takes the byte path; its release re-inits the
+ * effect for a full repaint (rowisr_diag.c). Thread context. */
+void sn32f2xx_wide_block(bool on);
 void sn32f2xx_set_color(int index, uint8_t r, uint8_t g, uint8_t b);
 void sn32f2xx_set_color_all(uint8_t r, uint8_t g, uint8_t b);
 

@@ -410,6 +410,16 @@ static uint8_t pat_led = 0xFFu, pat_r = 0, pat_g = 0, pat_b = 0;
 static uint8_t pat_r2 = 0, pat_g2 = 0, pat_b2 = 0;   /* the split's right half (253) */
 static uint8_t pat_owner;   /* who set the pattern standing (ROWISR_PAT_*), 0 none */
 
+/* A pattern's raw bytes take the byte path (D9: the wide path is blocked
+ * while one stands), and its release re-inits the effect so a sparse
+ * painter (Jellybean) repaints every LED it left raw (codex's design
+ * review, 11-04). */
+static void pattern_encoding(bool was) {
+    bool now = pat_led != 0xFFu;
+    sn32f2xx_wide_block(now);
+    if (was && !now) rgb_matrix_reinit_effect();
+}
+
 /* The pattern, from the host (sub 3) or the firmware (the menu's Floor
  * probe, 11-04): led 0..80 one LED, 254 every LED, 255 off; an index out of
  * range is off. The owner is the last setter's, so the menu's release leaves
@@ -420,8 +430,10 @@ void rowisr_diag_pattern(uint8_t owner, uint8_t led, uint8_t r, uint8_t g, uint8
     pat_r     = r;
     pat_g     = g;
     pat_b     = b;
+    bool was  = pat_led != 0xFFu;
     pat_led   = led;
     pat_owner = led == 0xFFu ? 0u : owner;
+    pattern_encoding(was);
 }
 void rowisr_diag_pattern_split(uint8_t owner, uint8_t r, uint8_t g, uint8_t b, uint8_t r2, uint8_t g2, uint8_t b2) {
     pat_r2    = r2;
@@ -430,8 +442,10 @@ void rowisr_diag_pattern_split(uint8_t owner, uint8_t r, uint8_t g, uint8_t b, u
     pat_r     = r;
     pat_g     = g;
     pat_b     = b;
+    bool was  = pat_led != 0xFFu;
     pat_led   = 0xFDu;
     pat_owner = owner;
+    pattern_encoding(was);
 }
 bool rowisr_diag_pattern_release(uint8_t owner) {
     if (pat_owner != owner) return false;
@@ -440,7 +454,6 @@ bool rowisr_diag_pattern_release(uint8_t owner) {
 }
 
 bool rgb_matrix_indicators_kb(void) {
-    if (pat_led != 0xFFu) sn32f2xx_wide_cancel();   /* raw bytes past the effect: the flush takes the byte path (D9; on devprobe a byte is its width in ticks) */
     if (pat_led == 0xFEu) {
         rgb_matrix_set_color_all(pat_r, pat_g, pat_b);   /* every LED at that colour: stage 6's floor probe, where the logger needs the sum */
     } else if (pat_led == 0xFDu) {   /* the split: the left half's colour and the right's, by the LED's column */

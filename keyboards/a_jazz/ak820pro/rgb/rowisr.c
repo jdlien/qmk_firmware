@@ -62,6 +62,7 @@
 #endif
 #include "rowisr.h"
 #include "rowisr_diag.h"   /* the quiesce cancels a dev hold-off first (an inline no-op in other builds) */
+#include "power.h"         /* D9: the ladder's value cap and the wide modes, read at the flush */
 
 #define ROWS_PER_HAND (MATRIX_ROWS)
 #ifndef MATRIX_INPUT_PRESSED_STATE
@@ -243,8 +244,9 @@ static uint16_t led_w[SN32F2XX_LED_COUNT][3];
 static uint8_t  field_phase = 0;
 static RGB      led_state_buf[SN32F2XX_LED_COUNT]; /* rgb_matrix's: the next frame */
 static bool     led_state_buf_update_required = false;
-static bool     wide_pending = false;   /* this render's effect converted its chroma at full value: the flush applies wide_v */
-static uint8_t  wide_v       = 0;       /* the frame's value, after the ladder's cap */
+static bool     wide_blocked = false;   /* a raw pattern stands (the dev Floor probe, the host's led command): the byte path whatever the mode */
+static bool     last_wide    = false;   /* the committed frame's encoding and value: an encoding or a value change forces the conversion */
+static uint8_t  last_v       = 0;
 #endif
 
 /* The rolling matrix the handler writes and the main loop consumes.
@@ -1704,23 +1706,26 @@ static inline uint16_t wide_width(uint8_t chroma, uint32_t recip) {
     return (uint16_t)(w + (frac >= 128u ? 1u : 0u));
 }
 
-void sn32f2xx_wide_frame(uint8_t v) {
-    wide_pending = true;
-    if (v != wide_v) {   /* the chroma can be unchanged while the value moves (the brightness keys): the value alone forces the flush */
-        wide_v                        = v;
-        led_state_buf_update_required = true;
-    }
-}
-void sn32f2xx_wide_cancel(void) {
-    wide_pending = false;
+void sn32f2xx_wide_block(bool on) {
+    wide_blocked = on;
 }
 
 void sn32f2xx_flush(void) {
     commits++;   /* every render's, changed or not */
-    bool wide    = wide_pending;
-    wide_pending = false;   /* consumed: the next render is on the byte path until its effect says otherwise */
-    if (!led_state_buf_update_required) return;
+    /* The frame's encoding is the mode's (codex's design review, 11-04): a
+     * wide mode's render buffer holds chroma whether or not this render
+     * called the wrap (Jellybean paints nothing in a frame without a drop),
+     * and its value is read here from the config under the ladder's cap,
+     * not from the wrap's calls. An encoding change (the mode, a raw
+     * pattern) or a value change converts the frame even when no byte
+     * moved: the chroma of a dim Solid is the chroma of a bright one. */
+    bool    wide = !wide_blocked && power_wide_mode();
+    uint8_t v    = rgb_matrix_get_val();
+    if (v > power_val_cap()) v = power_val_cap();
+    if (!led_state_buf_update_required && wide == last_wide && (!wide || v == last_v)) return;
     led_state_buf_update_required = false;
+    last_wide                     = wide;
+    last_v                        = v;
     /* The conversion into the live frame, unmasked (D9 revised): a halfword
      * store is atomic on this core and the handler reads one channel of one
      * LED at a time, so a field may show a frame half old and half new,
@@ -1729,7 +1734,7 @@ void sn32f2xx_flush(void) {
      * frame. */
     uint32_t sr = 0, sg = 0, sb = 0;
     if (wide) {
-        uint32_t full_q8 = ((uint32_t)curve_q6[wide_v] * ROWISR_K_Q6) >> 4;   /* Q6 x Q6 >> 4: Q8 ticks at full chroma, 1,195.3 at the reference's top */
+        uint32_t full_q8 = ((uint32_t)curve_q6[v] * ROWISR_K_Q6) >> 4;   /* Q6 x Q6 >> 4: Q8 ticks at full chroma, 1,195.3 at the reference's top (16,320 x 640 >> 4 at the 267 us cadence: under 2^20) */
         uint32_t recip   = (full_q8 * 256u + 127u) / 255u;                    /* Q8 of a chroma unit's ticks in Q8 (full_q8 x 256 under 2^27) */
         for (int i = 0; i < SN32F2XX_LED_COUNT; i++) {
             uint16_t wr = wide_width(led_state_buf[i].r, recip);
