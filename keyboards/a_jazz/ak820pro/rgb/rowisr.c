@@ -1693,11 +1693,12 @@ uint8_t sn32f2xx_led_commits(void) {
 
 /* D9 revised: a byte's width on the wide path. full_q8 is the frame's
  * light at full chroma in Q8 ticks (the curve at the value, scaled by the
- * cadence's k), recip its 1/255 in Q4 (one divide a frame); a channel is a
- * multiply and a shift, rounded to a tick, and under a tick a dithered
+ * cadence's k), recip its 1/255 in Q8 (one divide a frame; Q4 put a full
+ * chroma at the value whose light is 1.03 ticks under a tick); a channel is
+ * a multiply and a shift, rounded to a tick, and under a tick a dithered
  * tick (0.5 and up every second field, 0.25 and up every fourth) or dark. */
 static inline uint16_t wide_width(uint8_t chroma, uint32_t recip) {
-    uint32_t q8 = ((uint32_t)chroma * recip + 8u) >> 4;   /* Q8 ticks */
+    uint32_t q8 = ((uint32_t)chroma * recip + 128u) >> 8;   /* Q8 ticks: chroma (8 bits) x recip (under 2^19) fits */
     uint32_t w  = q8 >> 8, frac = q8 & 0xFFu;
     if (w == 0u) return frac >= 128u ? DITHER_HALF : (frac >= 64u ? DITHER_QUARTER : 0u);
     return (uint16_t)(w + (frac >= 128u ? 1u : 0u));
@@ -1729,7 +1730,7 @@ void sn32f2xx_flush(void) {
     uint32_t sr = 0, sg = 0, sb = 0;
     if (wide) {
         uint32_t full_q8 = ((uint32_t)curve_q6[wide_v] * ROWISR_K_Q6) >> 4;   /* Q6 x Q6 >> 4: Q8 ticks at full chroma, 1,195.3 at the reference's top */
-        uint32_t recip   = (full_q8 * 16u + 127u) / 255u;                     /* Q4 of a chroma unit's ticks in Q8 */
+        uint32_t recip   = (full_q8 * 256u + 127u) / 255u;                    /* Q8 of a chroma unit's ticks in Q8 (full_q8 x 256 under 2^27) */
         for (int i = 0; i < SN32F2XX_LED_COUNT; i++) {
             uint16_t wr = wide_width(led_state_buf[i].r, recip);
             uint16_t wb = wide_width(led_state_buf[i].b, recip);
