@@ -58,6 +58,7 @@
 #ifdef RGB_MATRIX_ENABLE
 #    include "rgb_matrix.h"
 #    include "rgb_matrix_drivers.h"
+#    include "curve12.h"   /* D9: the value's curve at 16 bits (scripts/gen_curve12.py) */
 #endif
 #include "rowisr.h"
 #include "rowisr_diag.h"   /* the quiesce cancels a dev hold-off first (an inline no-op in other builds) */
@@ -228,9 +229,22 @@ static const col_mr_t col_mr[SN32F2XX_RGB_MATRIX_COLS] = {
 static const uint16_t width_lut[256] = {W64(0), W64(64), W64(128), W64(192)};
 
 #ifdef RGB_MATRIX_ENABLE
-static RGB  led_state[SN32F2XX_LED_COUNT];     /* the front frame: what the handler drives */
-static RGB  led_state_buf[SN32F2XX_LED_COUNT]; /* rgb_matrix's: the next frame */
-static bool led_state_buf_update_required = false;
+/* The front frame (D9 revised, 11-04): each LED's pulse widths in ticks, in
+ * the pins' order R, B, G, 12 bits each; a value above the terminal is a
+ * dithered tick (DITHER_HALF: one tick every second field, DITHER_QUARTER:
+ * every fourth), resolved by the handler against field_phase, which the
+ * rotation's wrap advances. rgb_matrix's render buffer stays bytes: the
+ * flush converts, by the curve at the frame's value for an effect whose
+ * value is uniform (sn32f2xx_wide_frame(), from the board's hsv wrap), or by
+ * width_lut[] for raw bytes (the other effects, the dev pattern). */
+static uint16_t led_w[SN32F2XX_LED_COUNT][3];
+#define DITHER_HALF    0x8000u
+#define DITHER_QUARTER 0xC000u
+static uint8_t  field_phase = 0;
+static RGB      led_state_buf[SN32F2XX_LED_COUNT]; /* rgb_matrix's: the next frame */
+static bool     led_state_buf_update_required = false;
+static bool     wide_pending = false;   /* this render's effect converted its chroma at full value: the flush applies wide_v */
+static uint8_t  wide_v       = 0;       /* the frame's value, after the ladder's cap */
 #endif
 
 /* The rolling matrix the handler writes and the main loop consumes.
@@ -1148,15 +1162,20 @@ HOT_ATTR void rowisr_hot(uint8_t mux_row, uint8_t krow, uint8_t scan_row, uint8_
      * unrolled so each match register's address and key are the compiler's
      * constants: the loop was the handler's largest block (section 2 of the
      * cost diagnostic, 11-03). */
-    const uint8_t *co    = g_led_config.matrix_co[krow];
-    const uint8_t *plane = (const uint8_t *)led_state + (colour == 0 ? offsetof(RGB, r) : (colour == 1 ? offsetof(RGB, b) : offsetof(RGB, g)));
+    const uint8_t  *co = g_led_config.matrix_co[krow];
+    const uint16_t *wp = &led_w[0][colour];   /* the plane: the pins' R, B, G are the frame's columns, stride 3 (D9: the width itself, no table load) */
+    uint32_t        dither_lit = ((field_phase & 1u) == 0u) ? 1u : 0u;              /* DITHER_HALF's tick this field */
+    uint32_t        dither_lit4 = ((field_phase & 3u) == 0u) ? 1u : 0u;             /* DITHER_QUARTER's */
 #if !ROWISR_RAMTEXT
 #    pragma GCC unroll 15   /* in flash the unroll pays; in SRAM the loop's overhead is a cycle an instruction and the 300 B are the dev build's gap (the first 5f link overflowed the RAM by 8 B) */
 #endif
     for (uint8_t c = 0; c < SN32F2XX_RGB_MATRIX_COLS; c++) {
         uint8_t  li = co[c];
         uint32_t w  = 0;
-        if (li < SN32F2XX_LED_COUNT) w = width_lut[plane[(uint32_t)li * sizeof(RGB)]];
+        if (li < SN32F2XX_LED_COUNT) {
+            w = wp[(uint32_t)li * 3u];
+            if (w > ROWISR_TERMINAL) w = (w & 0x4000u) ? dither_lit4 : dither_lit;   /* a dithered tick: one compare on the common path */
+        }
         *col_mr[c].mr = col_mr[c].key | w;
         width_sum += w;
     }
@@ -1294,7 +1313,12 @@ static void rowisr_slot(void) {
      * the bottom row's). Scanning the row the rail belongs to puts that
      * flash on the held key itself, under the finger. Each key row is
      * still scanned once a field, one slot-triple later than before. */
-    if (++cur_row >= SN32F2XX_RGB_MATRIX_ROWS_HW) cur_row = 0;
+    if (++cur_row >= SN32F2XX_RGB_MATRIX_ROWS_HW) {
+        cur_row = 0;
+#ifdef RGB_MATRIX_ENABLE
+        field_phase++;   /* the dither's clock: one count a field (D9) */
+#endif
+    }
     if (++cur_colour >= SN32F2XX_RGB_MATRIX_ROW_CHANNELS) cur_colour = 0;   /* 0 R, 1 B, 2 G of this key row, counted beside cur_row (the
                                                                            * `% 3` was a software divide on every slot); they wrap together */
     uint8_t colour   = cur_colour;
@@ -1615,9 +1639,10 @@ void sn32f2xx_blank(void) {
 
 /* ---- The frames, the flush and the power accounting (D8) ------------------- */
 #ifdef RGB_MATRIX_ENABLE
-/* The committed frame's channel sums, for sn32f2xx_led_committed_dark() and
- * lit_ms (elapsed time with any committed channel non-zero, its present
- * meaning); the drive itself is what was emitted: width_acc[], ticks per
+/* The committed frame's channel sums (of the widths since D9), for
+ * sn32f2xx_led_committed_dark() and lit_ms (elapsed time with any committed
+ * channel non-zero, its present meaning); the drive itself is what was
+ * emitted: width_acc[], ticks per
  * colour, converted here to the model's unit (value x ms): a LED at byte b
  * emits k.b ticks once per field at the calibrated scale k (the reference,
  * ROWISR_K_REF_Q6), so ticks x T_field / k is b x ms; under a probe's
@@ -1666,28 +1691,69 @@ uint8_t sn32f2xx_led_commits(void) {
     return commits;
 }
 
+/* D9 revised: a byte's width on the wide path. full_q8 is the frame's
+ * light at full chroma in Q8 ticks (the curve at the value, scaled by the
+ * cadence's k), recip its 1/255 in Q4 (one divide a frame); a channel is a
+ * multiply and a shift, rounded to a tick, and under a tick a dithered
+ * tick (0.5 and up every second field, 0.25 and up every fourth) or dark. */
+static inline uint16_t wide_width(uint8_t chroma, uint32_t recip) {
+    uint32_t q8 = ((uint32_t)chroma * recip + 8u) >> 4;   /* Q8 ticks */
+    uint32_t w  = q8 >> 8, frac = q8 & 0xFFu;
+    if (w == 0u) return frac >= 128u ? DITHER_HALF : (frac >= 64u ? DITHER_QUARTER : 0u);
+    return (uint16_t)(w + (frac >= 128u ? 1u : 0u));
+}
+
+void sn32f2xx_wide_frame(uint8_t v) {
+    wide_pending = true;
+    if (v != wide_v) {   /* the chroma can be unchanged while the value moves (the brightness keys): the value alone forces the flush */
+        wide_v                        = v;
+        led_state_buf_update_required = true;
+    }
+}
+void sn32f2xx_wide_cancel(void) {
+    wide_pending = false;
+}
+
 void sn32f2xx_flush(void) {
     commits++;   /* every render's, changed or not */
-    if (led_state_buf_update_required) {
-        /* The handler reads led_state[] for each slot's duties, and this
-         * memcpy runs on the main loop: masked for its 10-16 us so no slot
-         * sees a torn frame (D8 keeps this for the first implementation; a
-         * slot starts up to 16 us late, inside its admission). */
-        chSysLock();
-        memcpy(led_state, led_state_buf, sizeof(RGB) * SN32F2XX_LED_COUNT);
-        led_state_buf_update_required = false;
-        chSysUnlock();
-        uint32_t sr = 0, sg = 0, sb = 0;
+    bool wide    = wide_pending;
+    wide_pending = false;   /* consumed: the next render is on the byte path until its effect says otherwise */
+    if (!led_state_buf_update_required) return;
+    led_state_buf_update_required = false;
+    /* The conversion into the live frame, unmasked (D9 revised): a halfword
+     * store is atomic on this core and the handler reads one channel of one
+     * LED at a time, so a field may show a frame half old and half new,
+     * which these effects never show at 444 Hz; the masked 243 B memcpy of
+     * the byte frame is gone with it. ~100 us of main-loop time a changed
+     * frame. */
+    uint32_t sr = 0, sg = 0, sb = 0;
+    if (wide) {
+        uint32_t full_q8 = ((uint32_t)curve_q6[wide_v] * ROWISR_K_Q6) >> 4;   /* Q6 x Q6 >> 4: Q8 ticks at full chroma, 1,195.3 at the reference's top */
+        uint32_t recip   = (full_q8 * 16u + 127u) / 255u;                     /* Q4 of a chroma unit's ticks in Q8 */
         for (int i = 0; i < SN32F2XX_LED_COUNT; i++) {
-            sr += led_state[i].r;
-            sg += led_state[i].g;
-            sb += led_state[i].b;
+            uint16_t wr = wide_width(led_state_buf[i].r, recip);
+            uint16_t wb = wide_width(led_state_buf[i].b, recip);
+            uint16_t wg = wide_width(led_state_buf[i].g, recip);
+            led_w[i][0] = wr;
+            led_w[i][1] = wb;
+            led_w[i][2] = wg;
+            sr += wr; sb += wb; sg += wg;
         }
-        drive_close(timer_read32());
-        drive_now[0] = sr;
-        drive_now[1] = sg;
-        drive_now[2] = sb;
+    } else {
+        for (int i = 0; i < SN32F2XX_LED_COUNT; i++) {
+            uint16_t wr = width_lut[led_state_buf[i].r];
+            uint16_t wb = width_lut[led_state_buf[i].b];
+            uint16_t wg = width_lut[led_state_buf[i].g];
+            led_w[i][0] = wr;
+            led_w[i][1] = wb;
+            led_w[i][2] = wg;
+            sr += wr; sb += wb; sg += wg;
+        }
     }
+    drive_close(timer_read32());
+    drive_now[0] = sr;   /* the widths' sums (a dithered entry counts as lit): committed_dark() and lit_ms */
+    drive_now[1] = sg;
+    drive_now[2] = sb;
 }
 
 /* Board power scale, 255 = as requested, applied below the rgb_matrix config. */

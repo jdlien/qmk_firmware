@@ -420,6 +420,7 @@ void ch582_led5a_reset(void) {
  * slot is its own index, not count % ring: 2^32 is not a multiple of 260, so
  * a wrapped count would skip slots 256-259 (codex rx-tap should-fix 1), and
  * the M0 has no divide instruction to spend per byte. */
+#ifdef CH582_RXTAP   /* opt-in since 11-04: its 208 B went to the precision path's wide frame (D9 revised); -DCH582_RXTAP brings it back */
 #define CH582_RXTAP_RING 208   /* eight 26-byte pages (ten until 10-20: RAM for the lock-LED clock) */
 static bool     rxtap_armed = false;
 static uint32_t rxtap_count = 0;
@@ -457,6 +458,9 @@ bool ch582_rxtap_page(uint8_t page, uint8_t *out) {
     memcpy(&out[2], &rxtap_ring[page * 26], 26);
     return true;
 }
+#else
+static inline void rxtap_note(uint8_t c) { (void)c; }
+#endif
 
 /* The lock-LED channel's receiver (lockchan.c; plans/LOCK-LED-CHANNEL-PLAN.md).
  * Dev builds only while it is an experiment: frames are decoded and counted,

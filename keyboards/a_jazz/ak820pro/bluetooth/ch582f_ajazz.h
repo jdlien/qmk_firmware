@@ -127,9 +127,11 @@ void ch582_lockchan_clock_drop(void);
  * a retry pending, [14..15] the rate trims from frames since boot, [16..17]
  * the period the last one set (0: none; rtc_frame_trim_stats). */
 void ch582_lockchan_clock_fill(uint8_t *out);
+#ifdef CH582_RXTAP   /* opt-in since 11-04 (the RAM went to D9's wide frame); ops 15 and 16 answer unhandled without it */
 void ch582_rxtap_arm(bool armed);
 void ch582_rxtap_fill(uint8_t *out);
 bool ch582_rxtap_page(uint8_t page, uint8_t *out);
+#endif
 /* The lock-LED channel's receiver (HC_DEVHOOK ops 10-13). */
 #include "lockchan.h"
 const lockchan_t *ch582_lockchan(void);

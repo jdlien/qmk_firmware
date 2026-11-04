@@ -1240,6 +1240,7 @@ static void health_command(uint8_t *data, uint8_t length) {
                     data[8] = battery_on_battery() ? 1 : 0;
                     break;
                 }
+#ifdef CH582_RXTAP   /* opt-in since 11-04: unhandled without it */
                 case 15:
                     if (length < 32 || data[4] > 2) { data[0] = RTC_UNHANDLED; break; }
                     if (data[4] != 0) ch582_rxtap_arm(data[4] == 1);
@@ -1249,6 +1250,7 @@ static void health_command(uint8_t *data, uint8_t length) {
                 case 16:
                     if (length < 32 || !ch582_rxtap_page(data[4], &data[4])) data[0] = RTC_UNHANDLED;
                     break;
+#endif
                 case 17: {
                     if (length < 32 || (data[4] > 5 && data[4] != 7 && data[4] != 8) || (data[4] == 4 && (data[5] == 0 || data[5] > 50)) ||
                         (data[4] == 5 && data[5] > 2)) {

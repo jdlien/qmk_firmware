@@ -440,6 +440,7 @@ bool rowisr_diag_pattern_release(uint8_t owner) {
 }
 
 bool rgb_matrix_indicators_kb(void) {
+    if (pat_led != 0xFFu) sn32f2xx_wide_cancel();   /* raw bytes past the effect: the flush takes the byte path (D9; on devprobe a byte is its width in ticks) */
     if (pat_led == 0xFEu) {
         rgb_matrix_set_color_all(pat_r, pat_g, pat_b);   /* every LED at that colour: stage 6's floor probe, where the logger needs the sum */
     } else if (pat_led == 0xFDu) {   /* the split: the left half's colour and the right's, by the LED's column */
