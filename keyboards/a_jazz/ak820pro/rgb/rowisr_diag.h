@@ -146,7 +146,9 @@
  *          rejection count before and [14..15] after (wrapping), [16] the
  *          frame counter's judging opportunities between the two copies
  *          and [17] the ms the second copy waited for two of them (2 to
- *          20; since 5g, so the copy follows the verdict). The
+ *          20; since 5g, so the copy follows the verdict; under two, the
+ *          frame counter's verdict was still pending at the copy, a hold
+ *          on the row ISR outlasting the wait, and the host says so). The
  *          extension's state is copied at each end, not observed. Read with
  *          sub 6's counts: a generation moved across the silence is one
  *          loss, the guard's if its count moved too, the frame counter's if

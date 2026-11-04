@@ -196,12 +196,13 @@ static struct {                             /* the last silence's report (subs 8
 /* The masked part on its own, so the rising edge follows the mask by the
  * pin's read, its branch and the store, and the falling edge precedes the
  * unmask by one store (the ELF checked); 0 if the pin was high (no edge). */
-__attribute__((noinline)) static uint32_t silence_masked(uint32_t want, uint16_t *tc0, uint16_t *tc1) {
+__attribute__((noinline)) static uint32_t silence_masked(uint32_t want, uint16_t *tc0, uint16_t *tc1, uint16_t *jseq) {
     chSysLock();
     if (gpio_read_pin(LED_WINLOCK_PIN)) {   /* the pin itself, under the mask: the tick could have raised it since the check outside */
         chSysUnlock();
         return 0;
     }
+    *jseq = rowisr_usb_judge_seq();   /* under the mask: no judgment falls between this read and the silence (codex's P2 on 1dfa597991) */
     gpio_write_pin_high(LED_WINLOCK_PIN);   /* the marker's rising edge */
     uint16_t t0   = (uint16_t)ct_rd(5, CT_TC);
     uint16_t last = t0;
@@ -243,9 +244,8 @@ static void silence_run(void) {   /* the housekeeping task: thread context */
     }
     rowisr_time_t t0;
     rowisr_time_read(&t0);
-    uint16_t tc0 = 0, tc1 = 0;
-    uint16_t jseq0 = rowisr_usb_judge_seq();
-    uint32_t acc = silence_masked(want, &tc0, &tc1);
+    uint16_t tc0 = 0, tc1 = 0, jseq0 = 0;
+    uint32_t acc = silence_masked(want, &tc0, &tc1, &jseq0);
     if (acc == 0) {
         sil_us = 0;
         sil_lost++;
@@ -263,8 +263,9 @@ static void silence_run(void) {   /* the housekeeping task: thread context */
         wait_ms(1);
         waited++;
     }
+    uint16_t dj = (uint16_t)(rowisr_usb_judge_seq() - jseq0);   /* before the copy: a lower bound of the judgments the copy reflects (under two, the
+                                                                 * verdict may still be pending: a hold on the row ISR outlasting the wait; the host says so) */
     rowisr_time_read(&sil_rep.t1);
-    uint16_t dj = (uint16_t)(rowisr_usb_judge_seq() - jseq0);
     sil_rep.judged = dj > 255u ? 255u : (uint8_t)dj; sil_rep.waited_ms = waited;
     sil_us = 0;
     sil_done++;
