@@ -250,7 +250,8 @@ volatile bool sn32f2xx_scan_skip = false; /* rowisr.h: op 28 sub 4 */
 #endif
 
 /* The rotation: the mux row the handler lights next (0..17) and the key row
- * it scans (0..5); the key row advances when the mux row's colour index is 0,
+ * it prepares (0..5; the row SCANNED in that slot is the one before it, the
+ * slot handler's rotation comment, 11-04); the key row advances when the mux row's colour index is 0,
  * the first pin of its group (R, B, G per key row: config.h's order, Q6).
  * The old driver submitted B, G, then R of the NEXT key row, one slot ahead
  * of the pins, and rendered right, so its widths evidently reached the LEDs
@@ -924,8 +925,9 @@ __attribute__((weak)) void sn32f2xx_isr_exit_hook(void) {}
 /* The electrical scan: the row selected, the settle, the columns read, the
  * row deselected. Its bookkeeping (scan_publish) runs after the arm in the
  * slot handler since stage 5e, off the deadline's path (codex's judgment,
- * 11-03 13:21); scan-only and the flash-program guard publish at once. A
- * held key's column goes low here through its diode, and whichever mux
+ * 11-03 13:21); scan-only publishes at once, and the flash-program guard's
+ * slot neither scans nor publishes (codex, 11-04). A held key's column
+ * goes low here through its diode, and whichever mux
  * rail still holds charge lights its LED at that column for the read (the
  * slot handler's rotation comment, 11-04): the slot scans the row that
  * rail belongs to. */
@@ -1297,11 +1299,10 @@ static void rowisr_slot(void) {
                                                                            * `% 3` was a software divide on every slot); they wrap together */
     uint8_t colour   = cur_colour;
     bool    scan     = false;
-    uint8_t scan_row = 0;
+    uint8_t scan_row = key_row;   /* before the advance: the row whose green rail step 2 just deselected (codex: no wrap expression) */
     if (colour == 0) {
         if (++key_row >= ROWS_PER_HAND) key_row = 0;
-        scan     = true;
-        scan_row = (uint8_t)(key_row ? key_row - 1u : ROWS_PER_HAND - 1u);   /* the row whose green rail step 2 just deselected */
+        scan = true;
     }
 
     /* 3 to 5: the scan, the match registers and the mux select (rowisr_hot,
