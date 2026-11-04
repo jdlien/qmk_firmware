@@ -924,7 +924,11 @@ __attribute__((weak)) void sn32f2xx_isr_exit_hook(void) {}
 /* The electrical scan: the row selected, the settle, the columns read, the
  * row deselected. Its bookkeeping (scan_publish) runs after the arm in the
  * slot handler since stage 5e, off the deadline's path (codex's judgment,
- * 11-03 13:21); scan-only and the flash-program guard publish at once. */
+ * 11-03 13:21); scan-only and the flash-program guard publish at once. A
+ * held key's column goes low here through its diode, and whichever mux
+ * rail still holds charge lights its LED at that column for the read (the
+ * slot handler's rotation comment, 11-04): the slot scans the row that
+ * rail belongs to. */
 static inline matrix_row_t scan_key_row_sample(uint8_t row) {
     const pin_t pin = key_row_pins[row];
     palClearLine(pin);   /* select: one BCLR, the row driven low (push-pull from init) */
@@ -1116,7 +1120,7 @@ typedef struct {
     uint32_t     width_sum;
     bool         scanned;
 } hot_out_t;
-HOT_ATTR void rowisr_hot(uint8_t mux_row, uint8_t krow, uint8_t colour, bool scan, hot_out_t *o) {
+HOT_ATTR void rowisr_hot(uint8_t mux_row, uint8_t krow, uint8_t scan_row, uint8_t colour, bool scan, hot_out_t *o) {
     /* 3. The scan slot (the interim scanner): the columns released around the
      * electrical scan; its bookkeeping after the arm (stage 5e). */
     o->scan_now = 0;
@@ -1127,7 +1131,7 @@ HOT_ATTR void rowisr_hot(uint8_t mux_row, uint8_t krow, uint8_t colour, bool sca
         if (!sn32f2xx_scan_skip)   /* op 28 sub 4: the LED work alone, to attribute the scan's cost */
 #endif
         {
-            o->scan_now = scan_key_row_sample(krow);
+            o->scan_now = scan_key_row_sample(scan_row);
             o->scanned  = true;
         }
         columns_active();
@@ -1277,21 +1281,33 @@ static void rowisr_slot(void) {
     }
 
     /* The rotation: the next mux row; every third one a new key row (the
-     * pins' order: see cur_row's comment). */
+     * pins' order: see cur_row's comment). The key row scanned in that
+     * slot is the one BEFORE the row being prepared (11-04): the slot's
+     * step 2 has just deselected the previous key row's last rail (its
+     * green), whose anode line still holds its charge, and the scan pulls a
+     * held key's column low through its diode, so that charge lights the
+     * LED at that column on that rail for the scan's microsecond, about a
+     * tick's worth once a field (JD's eye on the probe build at 1-12
+     * ticks: a held key brightened the key above it, green; the top row
+     * the bottom row's). Scanning the row the rail belongs to puts that
+     * flash on the held key itself, under the finger. Each key row is
+     * still scanned once a field, one slot-triple later than before. */
     if (++cur_row >= SN32F2XX_RGB_MATRIX_ROWS_HW) cur_row = 0;
     if (++cur_colour >= SN32F2XX_RGB_MATRIX_ROW_CHANNELS) cur_colour = 0;   /* 0 R, 1 B, 2 G of this key row, counted beside cur_row (the
                                                                            * `% 3` was a software divide on every slot); they wrap together */
-    uint8_t colour = cur_colour;
-    bool    scan   = false;
+    uint8_t colour   = cur_colour;
+    bool    scan     = false;
+    uint8_t scan_row = 0;
     if (colour == 0) {
         if (++key_row >= ROWS_PER_HAND) key_row = 0;
-        scan = true;
+        scan     = true;
+        scan_row = (uint8_t)(key_row ? key_row - 1u : ROWS_PER_HAND - 1u);   /* the row whose green rail step 2 just deselected */
     }
 
     /* 3 to 5: the scan, the match registers and the mux select (rowisr_hot,
      * in SRAM when ROWISR_RAMTEXT). */
     hot_out_t hot;
-    rowisr_hot(cur_row, key_row, colour, scan, &hot);
+    rowisr_hot(cur_row, key_row, scan_row, colour, scan, &hot);
     matrix_row_t scan_now  = hot.scan_now;
     bool         scanned   = hot.scanned;
     uint32_t     width_sum = hot.width_sum;
@@ -1322,7 +1338,7 @@ static void rowisr_slot(void) {
     }
     chSysUnlockFromISR();
 
-    if (scanned) scan_publish(key_row, scan_now);   /* the scan's bookkeeping, off the deadline's path (5e) */
+    if (scanned) scan_publish(scan_row, scan_now);   /* the scan's bookkeeping, off the deadline's path (5e) */
 
     /* The pulse's account (D8, D10): a dark row emits nothing and omits
      * nothing whatever the timing (codex, P2 9); a lit row armed is
