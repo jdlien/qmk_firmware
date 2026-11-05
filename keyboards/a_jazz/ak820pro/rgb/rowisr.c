@@ -228,6 +228,7 @@ static const col_mr_t col_mr[SN32F2XX_RGB_MATRIX_COLS] = {
 #define W16(i) W4(i), W4((i) + 4), W4((i) + 8), W4((i) + 12)
 #define W64(i) W16(i), W16((i) + 16), W16((i) + 32), W16((i) + 48)
 static const uint16_t width_lut[256] = {W64(0), W64(64), W64(128), W64(192)};
+#include "flush_dirty.h"
 
 #ifdef RGB_MATRIX_ENABLE
 /* The front frame (D9 revised, 11-04): each LED's pulse widths in ticks, in
@@ -1740,7 +1741,7 @@ void sn32f2xx_flush(void) {
     bool    wide = !wide_blocked && power_wide_mode();
     uint8_t v    = rgb_matrix_get_val();
     if (v > power_val_cap()) v = power_val_cap();
-    if (!led_state_buf_update_required && wide == last_wide && (!wide || v == last_v)) return;
+    if (!rowisr_flush_dirty(led_state_buf_update_required, wide, last_wide, v, last_v)) return;
     led_state_buf_update_required = false;
     last_wide                     = wide;
     last_v                        = v;

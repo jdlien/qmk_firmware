@@ -12,8 +12,9 @@
  * costs flash for all ~40 effect names, and returns the raw enum spelling --
  * "RAINBOW_MOVING_CHEVRON" is 22 characters against a 12-character band.
  * Each entry is #ifdef'd on the effect's own enable, so this still builds if
- * the animation list changes. The entries are in mode order:
- * rgb_matrix_effects.inc's, then rgb_matrix_kb.inc's customs.
+ * the animation list changes. The entries are in the menu's order: mode order
+ * (rgb_matrix_effects.inc's, then rgb_matrix_kb.inc's customs) but for Rain, listed
+ * beside Rain RGB with the highest mode. Each entry names its own mode.
  * The second field is the effect's STABLE id (P5a, the settings profiles):
  * a profile stores it, since QMK's mode numbers move when an effect is
  * enabled or disabled. Append-only, never renumbered or reused, and 0 is

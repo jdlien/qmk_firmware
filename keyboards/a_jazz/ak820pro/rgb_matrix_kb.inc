@@ -21,7 +21,6 @@
  *
  * Cost: 2 bytes per LED (162 B here) and one qsub8 per LED per frame.
  */
-RGB_MATRIX_EFFECT(RAIN)
 RGB_MATRIX_EFFECT(RAINFALL)
 
 #ifdef RGB_MATRIX_CUSTOM_EFFECT_IMPLS
@@ -117,6 +116,10 @@ static bool RAINFALL(effect_params_t* params) {
  * The objective check is `arm-none-eabi-nm` for __aeabi_idiv on the object.
  */
 RGB_MATRIX_EFFECT(DRIFT)
+/* RAIN's code is with RAINFALL's, above. Its declaration comes last because the
+ * order sets the mode numbers, which VIA, the RGB EEPROM and lighting backups store
+ * bare, so a new effect goes after the others and they keep theirs. */
+RGB_MATRIX_EFFECT(RAIN)
 
 #ifdef RGB_MATRIX_CUSTOM_EFFECT_IMPLS
 

@@ -3,7 +3,7 @@
 //
 // The enabled RGB effects, named as the Fn readout names them: one table for
 // the readout (param_overlay.c) and the menu's Effect choice (P1b,
-// plans/CONFIG-MENU-P1-DESIGN.md), in mode order.
+// plans/CONFIG-MENU-P1-DESIGN.md), in the menu's order.
 #pragma once
 
 #include <stdint.h>
