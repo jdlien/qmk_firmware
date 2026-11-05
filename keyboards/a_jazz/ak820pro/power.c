@@ -154,17 +154,16 @@ static void apply(void) {
     if (repaint) rgb_matrix_reinit_effect();
 }
 
-/* The ceiling on every colour the effects convert, QMK's weak hook
+/* QMK's weak hook for the colour an effect converts
  * (quantum/rgb_matrix/rgb_matrix.c). Every effect this board enables goes
- * through it, directly or through effect_runner_i, but DRIFT: its palette is
- * built uncapped, and it caps its own value knob with power_val_cap()
- * (rgb_matrix_kb.inc). */
-/* D9 revised (11-04): for an effect whose value is the same on every LED of
- * a frame, the colour is converted at full value and the driver applies the
- * value at the flush at 12 bits (rowisr.c, from the config under the cap):
- * the byte no longer loses the dim end's hue (a purple theme turned blue
- * under 8%). The effects whose value varies per LED (Typing Heatmap,
- * RAINFALL, DRIFT) keep the byte path. The cap applies first, as before. */
+ * through it, directly or through effect_runner_i, but DRIFT, which builds a
+ * palette with hsv_to_rgb and writes the bytes itself (rgb_matrix_kb.inc). */
+/* D9 revised (11-04): the effect renders chroma, the colour at full global
+ * value, and the driver applies the value once, at the flush, at 12 bits
+ * (rowisr.c, the config's under the ladder's cap): the byte no longer loses
+ * the dim end's hue (a purple theme turned blue under 8%), and one percentage
+ * means one light on every effect. Every enabled effect takes this path; the
+ * raw bytes of the dev pattern are the only thing left on the byte path. */
 bool power_wide_mode(void) {
     uint8_t m = rgb_matrix_get_mode();
     return false
@@ -186,11 +185,36 @@ bool power_wide_mode(void) {
 #ifdef ENABLE_RGB_MATRIX_JELLYBEAN_RAINDROPS
            || m == RGB_MATRIX_JELLYBEAN_RAINDROPS
 #endif
+#ifdef ENABLE_RGB_MATRIX_TYPING_HEATMAP
+           || m == RGB_MATRIX_TYPING_HEATMAP
+#endif
+#ifdef RGB_MATRIX_CUSTOM_KB
+           || m == RGB_MATRIX_CUSTOM_RAINFALL
+           || m == RGB_MATRIX_CUSTOM_DRIFT
+#endif
+        ;
+}
+/* An effect whose brightness varies per LED hands the wrap that local value,
+ * 255 at its brightest and with the global value left out (config.h's
+ * RGB_MATRIX_TYPING_HEATMAP_VAL, RAINFALL). A uniform effect hands it the
+ * config's value, which the flush applies, so the chroma is at full value. */
+static bool power_local_value_mode(void) {
+    uint8_t m = rgb_matrix_get_mode();
+    return false
+#ifdef ENABLE_RGB_MATRIX_TYPING_HEATMAP
+           || m == RGB_MATRIX_TYPING_HEATMAP
+#endif
+#ifdef RGB_MATRIX_CUSTOM_KB
+           || m == RGB_MATRIX_CUSTOM_RAINFALL
+#endif
         ;
 }
 rgb_t rgb_matrix_hsv_to_rgb(hsv_t hsv) {
-    if (hsv.v > val_cap) hsv.v = val_cap;
-    if (power_wide_mode()) hsv.v = 255;   /* the chroma; the value is the flush's (rowisr.c reads the config and the cap) */
+    if (power_wide_mode()) {
+        if (!power_local_value_mode()) hsv.v = 255;   /* the chroma; the value and the cap are the flush's */
+    } else if (hsv.v > val_cap) {
+        hsv.v = val_cap;
+    }
     return hsv_to_rgb(hsv);
 }
 

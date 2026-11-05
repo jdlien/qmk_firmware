@@ -236,10 +236,11 @@ static const uint16_t width_lut[256] = {W64(0), W64(64), W64(128), W64(192)};
  * every fourth), resolved by the handler against field_phase, which the
  * rotation's wrap advances. rgb_matrix's render buffer stays bytes: the
  * flush converts, by the curve at the frame's value (the config's under
- * the ladder's cap, read there) for a mode whose value is uniform
- * (power_wide_mode(): the board's hsv wrap converts those at full value,
- * so the bytes are the chroma), or by width_lut[] for raw bytes (the
- * other effects, and the dev pattern while it stands). */
+ * the ladder's cap, read there) on every enabled effect
+ * (power_wide_mode(): the bytes are the chroma, at full global value, an LED's
+ * own brightness in them on the effects that have one), or by width_lut[] for
+ * raw bytes (the dev pattern while it stands, and a future effect not added
+ * to that list). */
 static uint16_t led_w[SN32F2XX_LED_COUNT][3];
 /* A dithered entry (JD's eye, 11-04 evening: whole-tick rounding moved a
  * purple's red-to-blue ratio by a third between 3% and 6%): bit 15 set, a

@@ -43,6 +43,16 @@ static bool param_is_repeatable(uint16_t kc) {
     }
 }
 
+/* The fastest this control repeats: config.h's table, one traverse's length. */
+static uint16_t param_repeat_floor(uint16_t kc) {
+    switch (kc) {
+        case RM_VALU: case RM_VALD: return PARAM_REPEAT_FLOOR_VAL_MS;
+        case RM_HUEU: case RM_HUED: return PARAM_REPEAT_FLOOR_HUE_MS;
+        case SCR_UP:  case SCR_DN:  return PARAM_REPEAT_FLOOR_LCD_MS;
+        default:                    return PARAM_REPEAT_FLOOR_MS;
+    }
+}
+
 static void param_repeat_step(uint16_t kc) {
     /* P1b (C6): each step is a writer: an open edit of its domain rolls back
      * first, so the step is computed from the restored value. */
@@ -119,11 +129,12 @@ void param_repeat_task(void) {
     }
     uint32_t held = timer_elapsed32(rep_since);
     if (held < PARAM_REPEAT_DELAY_MS) return;
-    /* Slow at first so a short hold nudges precisely, then fast so a full
-     * traverse of 128 values does not take eight seconds. */
-    uint16_t interval = (held > (PARAM_REPEAT_DELAY_MS + PARAM_REPEAT_FAST_AFTER_MS))
-                            ? PARAM_REPEAT_FAST_MS
-                            : PARAM_REPEAT_INTERVAL_MS;
+    /* Slow at first so a short hold nudges precisely, then a straight line down
+     * to the control's floor (config.h), so a full traverse takes about 4 s. */
+    uint32_t t = held - PARAM_REPEAT_DELAY_MS;
+    if (t > (1u << PARAM_REPEAT_RAMP_SHIFT)) t = 1u << PARAM_REPEAT_RAMP_SHIFT;
+    uint32_t span     = PARAM_REPEAT_INTERVAL_MS - param_repeat_floor(rep_kc);
+    uint32_t interval = PARAM_REPEAT_INTERVAL_MS - ((span * t) >> PARAM_REPEAT_RAMP_SHIFT);
     if (timer_elapsed32(rep_last) < interval) return;
     rep_last = timer_read32();
     param_repeat_step(rep_kc);

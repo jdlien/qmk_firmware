@@ -60,8 +60,9 @@ static bool RAINFALL(effect_params_t* params) {
 
     for (uint8_t i = led_min; i < led_max; i++) {
         RGB_MATRIX_TEST_LED_FLAGS();
-        hsv_t hsv = {rainfall_h[i], rgb_matrix_config.hsv.s,
-                     scale8(rainfall_v[i], rgb_matrix_config.hsv.v)};
+        /* The drop's own brightness, without the global value: the flush
+         * applies that (power.c's wrap keeps this v as the local one). */
+        hsv_t hsv = {rainfall_h[i], rgb_matrix_config.hsv.s, rainfall_v[i]};
         rgb_t rgb = rgb_matrix_hsv_to_rgb(hsv);
         rgb_matrix_set_color(i, rgb.r, rgb.g, rgb.b);
     }
@@ -90,8 +91,6 @@ RGB_MATRIX_EFFECT(DRIFT)
 
 #ifdef RGB_MATRIX_CUSTOM_EFFECT_IMPLS
 
-#    include "power.h"   /* power_val_cap(): the ladder's ceiling on the value knob */
-
 /* 16x16 so indexing is masks only. Authored here, never computed at runtime. */
 static const uint8_t drift_noise[256] = {
      12, 194,  70, 215, 173,  19, 198, 146, 113, 186, 146,  29,  58, 149, 221,  27,
@@ -117,8 +116,8 @@ static const uint8_t drift_noise[256] = {
  * (which QMK does not provide), while in HSV a rotation is an add.
  *
  * Dark indigo -> violet -> slate -> warm grey, weighted dark on purpose:
- * understated, not demo-pop. Each stop's v carries that dark weighting;
- * rgb_matrix_config.hsv.v scales the whole thing on top, per LED.
+ * understated, not demo-pop. Each stop's v carries that dark weighting; the
+ * global value scales the whole thing on top, at the flush (rowisr.c).
  *
  * NINE entries with the last duplicated so the top ramp cell needs no clamp
  * branch. */
@@ -130,10 +129,9 @@ static const hsv_t drift_ramp_hsv[9] = {
 
 /* Derived palette, rebuilt only when hue or saturation actually changes -- the
  * demoscene trick: keep the field, swap the palette. The per-LED path never
- * does an HSV conversion. Built UNCAPPED (hsv_to_rgb, not the power ladder's
- * capped rgb_matrix_hsv_to_rgb): the user's value scales the RGB after the
- * conversion, so a cap on the stops would clip a Drift that is already under
- * it. The ladder caps the value knob instead, below. */
+ * does an HSV conversion. Built with hsv_to_rgb, not the board's
+ * rgb_matrix_hsv_to_rgb: the stops carry their own v, and these bytes are the
+ * chroma whose global value and cap the flush applies. */
 static rgb_t  drift_ramp[9];
 static uint8_t drift_pal_h = 0, drift_pal_s = 0;
 static bool    drift_pal_valid = false;
@@ -232,13 +230,6 @@ static bool DRIFT(effect_params_t* params) {
      * looping. At 32 bits the wrap is 2^22 units, an exact multiple of 256, and
      * at the slowest drift it is ~100 days away regardless. */
 
-    /* The power ladder's ceiling (power.c) on the value knob itself: a Drift
-     * at or under it is untouched, and over it looks as the knob at the
-     * ceiling would. Linear in drive, so it saves less than on the other
-     * effects; the gauge counts what is driven. */
-    uint8_t v = rgb_matrix_config.hsv.v;
-    if (v > power_val_cap()) v = power_val_cap();
-
     RGB_MATRIX_USE_LIMITS(led_min, led_max);
     for (uint8_t i = led_min; i < led_max; i++) {
         RGB_MATRIX_TEST_LED_FLAGS();
@@ -268,7 +259,7 @@ static bool DRIFT(effect_params_t* params) {
          * lights the whole board and reads as "lit, with blobs" rather than
          * "dark, with a few bright spots". Squaring flips that to 56% in the
          * darkest three. This is a gamma on the FIELD, not on brightness;
-         * rgb_matrix_config.hsv.v still scales the result. */
+         * the global value still scales the result, at the flush. */
         n = scale8(n, n);
 
         /* Ramp position, 5-bit fraction between adjacent stops. */
@@ -280,10 +271,8 @@ static bool DRIFT(effect_params_t* params) {
         uint8_t g  = (uint8_t)(a->g + (((int16_t)(b->g - a->g) * frac) >> 5));
         uint8_t bl = (uint8_t)(a->b + (((int16_t)(b->b - a->b) * frac) >> 5));
 
-        /* Scale by the configured value, or the brightness keys stop working on
-         * this mode. Kept as the last step so a decay trail could modulate it
-         * later without touching the colour path. */
-        rgb_matrix_set_color(i, scale8(r, v), scale8(g, v), scale8(bl, v));
+        /* The chroma: the flush applies the global value, as on every effect. */
+        rgb_matrix_set_color(i, r, g, bl);
     }
     return rgb_matrix_check_finished_leds(led_max);
 }

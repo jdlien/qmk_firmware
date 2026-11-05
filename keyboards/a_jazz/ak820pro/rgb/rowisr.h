@@ -91,9 +91,10 @@ bool sn32f2xx_col_map_fault(void);              /* MATRIX_COL_PINS is not the or
 void sn32f2xx_init(void);
 void sn32f2xx_flush(void);
 /* D9 revised (11-04): the precision path. In a wide mode (power_wide_mode():
- * an effect whose value is the same on every LED) the board's
- * rgb_matrix_hsv_to_rgb() wrap converts the colours at full value, so the
- * render buffer holds the chroma, and the flush applies the frame's value
+ * every enabled effect) the render buffer holds the chroma, the colours at
+ * full global value (an LED's own brightness in them on Rainfall, the Heatmap
+ * and Drift; the board's rgb_matrix_hsv_to_rgb() wrap sees to the rest), and
+ * the flush applies the frame's value
  * (the config's under the ladder's cap) at 12 bits through the curve
  * (curve12.h). A pattern that writes raw bytes after the effect (the dev
  * Floor probe, the host's led command) blocks the wide path while it

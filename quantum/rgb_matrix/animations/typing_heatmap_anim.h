@@ -16,6 +16,12 @@ RGB_MATRIX_EFFECT(TYPING_HEATMAP)
 #        ifndef RGB_MATRIX_TYPING_HEATMAP_AREA_LIMIT
 #            define RGB_MATRIX_TYPING_HEATMAP_AREA_LIMIT 16
 #        endif
+
+// The global value the render scales by. A board that applies the value later,
+// after the render, sets this to 255.
+#        ifndef RGB_MATRIX_TYPING_HEATMAP_VAL
+#            define RGB_MATRIX_TYPING_HEATMAP_VAL rgb_matrix_config.hsv.v
+#        endif
 void process_rgb_matrix_typing_heatmap(uint8_t row, uint8_t col) {
 #        ifdef RGB_MATRIX_TYPING_HEATMAP_SLIM
     // Limit effect to pressed keys
@@ -82,7 +88,7 @@ bool TYPING_HEATMAP(effect_params_t* params) {
                 uint8_t val = g_rgb_frame_buffer[row][col];
                 if (!HAS_ANY_FLAGS(g_led_config.flags[g_led_config.matrix_co[row][col]], params->flags)) continue;
 
-                hsv_t hsv = {170 - qsub8(val, 85), rgb_matrix_config.hsv.s, scale8((qadd8(170, val) - 170) * 3, rgb_matrix_config.hsv.v)};
+                hsv_t hsv = {170 - qsub8(val, 85), rgb_matrix_config.hsv.s, scale8((qadd8(170, val) - 170) * 3, RGB_MATRIX_TYPING_HEATMAP_VAL)};
                 rgb_t rgb = rgb_matrix_hsv_to_rgb(hsv);
                 rgb_matrix_set_color(g_led_config.matrix_co[row][col], rgb.r, rgb.g, rgb.b);
 

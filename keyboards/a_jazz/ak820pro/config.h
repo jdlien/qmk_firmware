@@ -348,9 +348,21 @@
 /* Then ACCELERATE. Fine steps and a fixed repeat rate are in direct conflict:
  * 128 brightness values at 16/s is an 8-second sweep. Ramping after a moment
  * of holding keeps small corrections precise (you release before it speeds up)
- * while making a full traverse quick. */
-#define PARAM_REPEAT_FAST_AFTER_MS 800  /* holding this long past the initial delay... */
-#define PARAM_REPEAT_FAST_MS        12  /* ...switches to ~83 steps/s (256 hue values in ~4 s) */
+ * while making a full traverse quick. The interval falls in a straight line
+ * from PARAM_REPEAT_INTERVAL_MS to a floor over 2 s, so there is no moment at
+ * which the sweep lurches. A jump to 83 steps/s crossed the top 90% of the
+ * geometric brightness curve's light in about half a second, with no chance to
+ * stop where wanted. Each control's floor gives a full traverse of about 4 s
+ * (3.6 to 5 s from the press), whatever its number of steps. */
+#define PARAM_REPEAT_RAMP_SHIFT   11   /* the ramp's length: 2^11 = 2,048 ms */
+#define PARAM_REPEAT_FLOOR_VAL_MS 24   /* 128 values */
+#define PARAM_REPEAT_FLOOR_HUE_MS 12   /* 256 values */
+#define PARAM_REPEAT_FLOOR_LCD_MS 30   /* 101 levels */
+#define PARAM_REPEAT_FLOOR_MS     47   /* 64 values: saturation, speed */
+
+/* The global value is the flush's on this board (D9, rowisr.c), so the heatmap
+ * renders its heat alone. */
+#define RGB_MATRIX_TYPING_HEATMAP_VAL 255
 
 /* Measured ILRC divider for THIS unit, seeding the RTC so it does not have to
  * climb from the LLD's nominal 32000 on every boot (the trimmed value is not

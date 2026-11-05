@@ -59,9 +59,9 @@ void power_wake_notice(void);
 /* The ceiling on the lighting's value now applied: 255, Power saver's 128
  * while typing (any mode's when the battery is low), or the dim's 64. */
 uint8_t power_val_cap(void);
-/* D9 revised (11-04): the current effect's value is the same on every LED
- * (Solid, Alphas/Mods, the Cycles, Jellybean), so its render buffer holds
- * the chroma and the driver applies the value at the flush (rowisr.c). */
+/* D9 revised (11-04): the current effect renders chroma, at full global value,
+ * and the driver applies the value at the flush (rowisr.c): every enabled
+ * effect, so one percentage means one light across them. */
 bool    power_wide_mode(void);
 
 /* RGB off as a cap, whatever the ladder or the user's toggle says. */
