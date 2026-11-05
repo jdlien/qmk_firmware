@@ -27,7 +27,22 @@ void          menu_invalidate(void);                      /* a loss under the me
 menu_result_t menu_input(int8_t turns, mi_latch_t latch, uint32_t now);
 void          menu_tick(uint32_t now, uint32_t idle_ms);  /* each pass: the latched model and the title */
 #if defined(AK820_DEV_HOOKS) || defined(MENU_HOST_TEST)
-void          menu_probe_closed(void);   /* 11-04, dev: no session open: the Floor probe's pattern released, if its */
+void          menu_probe_closed(void);
+/* The editors' fast turn (menu.c, edit_turn): an input carrying two or more
+ * detents, or one within MENU_FAST_MS of the last, steps MENU_FAST_PCT
+ * percent (a 0-255 value or a level) or MENU_FAST_HUE hue units instead of
+ * one. The defaults are P1b's (10-25) and the host test's; config.h sets
+ * the board's (11-04: JD found a quick spin skipping the steps he wanted to
+ * see, so the daily build's are gentler and the dev build has none). */
+#ifndef MENU_FAST_MS
+#    define MENU_FAST_MS 90u
+#endif
+#ifndef MENU_FAST_PCT
+#    define MENU_FAST_PCT 8
+#endif
+#ifndef MENU_FAST_HUE
+#    define MENU_FAST_HUE 12
+#endif   /* 11-04, dev: no session open: the Floor probe's pattern released, if its */
 #endif
 uint8_t       menu_screen_id(void);                       /* op 27 sub 5, byte 14: 16 + the node showing */
 uint8_t       menu_cursor(void);                          /* byte 15: the cursor, a topic's top line, the confirm's page */

@@ -2424,20 +2424,20 @@ static int16_t val_of_pct(int16_t p) { return (int16_t)((p * 255 + 50) / 100); }
  * a 0-255 value; a fast one is 8% (as fast as the old 20 of 255) or 12 hue
  * units. The Screen's levels are 0-100 since P2b, as the indicators'. */
 static void edit_turn(int8_t turns, uint32_t now) {
-    bool fast = turns >= 2 || turns <= -2 || (ft_have && (uint32_t)(now - ft_last) < 90u);
+    bool fast = turns >= 2 || turns <= -2 || (ft_have && (uint32_t)(now - ft_last) < MENU_FAST_MS);
     ft_have   = true;
     ft_last   = now;
     uint8_t node = cur()->node;
     int16_t v    = me_value();
     if (is_hue_editor(node))
-        v = (int16_t)((v + turns * (fast ? 12 : 1)) & 255);
+        v = (int16_t)((v + turns * (fast ? MENU_FAST_HUE : 1)) & 255);
     else if (node == N_SCREEN || is_ind_editor(node)) {   /* levels 0-100: the Screen's, the indicators' */
         int16_t max = e_range_max();
-        v = (int16_t)(v + turns * (fast ? 8 : 1));
+        v = (int16_t)(v + turns * (fast ? MENU_FAST_PCT : 1));
         if (v < 0) v = 0;
         if (v > max) v = max;
     } else {   /* a 0-255 value shown as a percentage */
-        int16_t p = (int16_t)(pct_of(v) + turns * (fast ? 8 : 1));
+        int16_t p = (int16_t)(pct_of(v) + turns * (fast ? MENU_FAST_PCT : 1));
         if (p < 0) p = 0;
         if (p > 100) p = 100;
         v = val_of_pct(p);
