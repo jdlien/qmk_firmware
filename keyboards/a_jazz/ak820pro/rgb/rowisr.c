@@ -1157,15 +1157,17 @@ HOT_ATTR void rowisr_hot(uint8_t mux_row, uint8_t krow, uint8_t scan_row, uint8_
         columns_active();
     }
 
-    /* 4. The fifteen match registers for the next mux row, through the scale
-     * table, zeros for the nine holes. The sum of the widths feeds D8. */
+    /* 4. The fifteen match registers for the next mux row, the widths read
+     * from the frame (D9: converted at the flush), zeros for the nine holes.
+     * The sum of the widths feeds D8. */
     uint32_t width_sum = 0;
 #ifdef RGB_MATRIX_ENABLE
-    /* Stage 5a: the colour's byte plane chosen once (the pins' R, B, G against
-     * the struct's r, g, b), the width a table load, the fifteen columns
-     * unrolled so each match register's address and key are the compiler's
-     * constants: the loop was the handler's largest block (section 2 of the
-     * cost diagnostic, 11-03). */
+    /* Stage 5a: the colour's plane chosen once (the pins' R, B, G are the
+     * frame's columns), the fifteen columns unrolled so each match
+     * register's address and key are the compiler's constants: the loop was
+     * the handler's largest block (section 2 of the cost diagnostic, 11-03).
+     * Since D9 the width is a halfword load from the frame, converted at the
+     * flush, instead of a byte load and a table load. */
     const uint8_t  *co = g_led_config.matrix_co[krow];
     const uint16_t *wp = &led_w[0][colour];   /* the plane: the pins' R, B, G are the frame's columns, stride 3 (D9: the width itself, no table load) */
     uint32_t        dither_lit = ((field_phase & 1u) == 0u) ? 1u : 0u;              /* DITHER_HALF's tick this field */
@@ -1841,8 +1843,9 @@ bool matrix_scan_custom(matrix_row_t current_matrix[]) {
      * and the copy, raw_edges' undercount of one or two in a few hundred,
      * BACKLOG.md), and counted off the lock. The ISR writes shared_matrix on
      * every key-row sample, so the compare and copy exclude it or the loop
-     * can consume a matrix that is part new and part old, the hazard
-     * sn32f2xx_flush() locks against. */
+     * can consume a matrix that is part new and part old (the hazard the
+     * flush's masked copy locked against until D9; the widths' halfword
+     * stores need no lock). */
     matrix_row_t diff[MATRIX_ROWS];
     bool         changed = false;
     chSysLock();
