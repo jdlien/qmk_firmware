@@ -235,9 +235,11 @@ static const uint16_t width_lut[256] = {W64(0), W64(64), W64(128), W64(192)};
  * dithered tick (DITHER_HALF: one tick every second field, DITHER_QUARTER:
  * every fourth), resolved by the handler against field_phase, which the
  * rotation's wrap advances. rgb_matrix's render buffer stays bytes: the
- * flush converts, by the curve at the frame's value for an effect whose
- * value is uniform (sn32f2xx_wide_frame(), from the board's hsv wrap), or by
- * width_lut[] for raw bytes (the other effects, the dev pattern). */
+ * flush converts, by the curve at the frame's value (the config's under
+ * the ladder's cap, read there) for a mode whose value is uniform
+ * (power_wide_mode(): the board's hsv wrap converts those at full value,
+ * so the bytes are the chroma), or by width_lut[] for raw bytes (the
+ * other effects, and the dev pattern while it stands). */
 static uint16_t led_w[SN32F2XX_LED_COUNT][3];
 #define DITHER_HALF    0x8000u
 #define DITHER_QUARTER 0xC000u

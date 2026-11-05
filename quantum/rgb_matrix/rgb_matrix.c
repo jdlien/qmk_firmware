@@ -346,7 +346,13 @@ static void rgb_task_start(void) {
                              false;
 
     // Set effect to be renedered
-    rgb_current_effect = suspend_backlight || !rgb_matrix_config.enable ? 0 : rgb_matrix_config.mode;
+    uint8_t next_effect = suspend_backlight || !rgb_matrix_config.enable ? 0 : rgb_matrix_config.mode;
+    // ak820pro (11-04): a change of the effect to render invalidates the last-flushed one, so a mode
+    // that comes back before a flush (A -> B for a chunk -> A) still re-inits: the compare at render
+    // against rgb_last_effect alone would see A == A and keep B's chunk in the buffer. The board's
+    // precision path reads that buffer as chroma for A's mode (keyboards/a_jazz/ak820pro/rgb/rowisr.c).
+    if (next_effect != rgb_current_effect) rgb_last_effect = UINT8_MAX;
+    rgb_current_effect = next_effect;
 
     // next task
     rgb_task_state = RENDERING;

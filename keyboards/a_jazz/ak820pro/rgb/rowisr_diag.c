@@ -410,14 +410,21 @@ static uint8_t pat_led = 0xFFu, pat_r = 0, pat_g = 0, pat_b = 0;
 static uint8_t pat_r2 = 0, pat_g2 = 0, pat_b2 = 0;   /* the split's right half (253) */
 static uint8_t pat_owner;   /* who set the pattern standing (ROWISR_PAT_*), 0 none */
 
-/* A pattern's raw bytes take the byte path (D9: the wide path is blocked
- * while one stands), and its release re-inits the effect so a sparse
- * painter (Jellybean) repaints every LED it left raw (codex's design
- * review, 11-04). */
+/* A pattern's raw bytes take the byte path (D9): the wide path is blocked
+ * by the hook that installs them (rgb_matrix_indicators_kb below), never
+ * by the command, so a chroma frame rendered before the command and
+ * flushed after it is still converted as chroma (codex's verify round,
+ * 11-04: the command's block would have shown it at full for a frame).
+ * The release clears the render buffer and re-inits the effect, so a
+ * sparse painter (Jellybean) or an effect whose flags exclude LEDs leaves
+ * no raw byte to be read as chroma (codex, the design and verify rounds). */
 static void pattern_encoding(bool was) {
     bool now = pat_led != 0xFFu;
-    sn32f2xx_wide_block(now);
-    if (was && !now) rgb_matrix_reinit_effect();
+    if (was && !now) {
+        sn32f2xx_wide_block(false);
+        rgb_matrix_set_color_all(0, 0, 0);
+        rgb_matrix_reinit_effect();
+    }
 }
 
 /* The pattern, from the host (sub 3) or the firmware (the menu's Floor
@@ -454,6 +461,7 @@ bool rowisr_diag_pattern_release(uint8_t owner) {
 }
 
 bool rgb_matrix_indicators_kb(void) {
+    if (pat_led != 0xFFu) sn32f2xx_wide_block(true);   /* with the raw bytes, each render: the flush after this one takes the byte path */
     if (pat_led == 0xFEu) {
         rgb_matrix_set_color_all(pat_r, pat_g, pat_b);   /* every LED at that colour: stage 6's floor probe, where the logger needs the sum */
     } else if (pat_led == 0xFDu) {   /* the split: the left half's colour and the right's, by the LED's column */
