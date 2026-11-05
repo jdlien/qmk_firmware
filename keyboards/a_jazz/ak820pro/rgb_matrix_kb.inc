@@ -35,12 +35,17 @@ RGB_MATRIX_EFFECT(RAINFALL)
  * time, since the decay is fixed. */
 #    define RAIN_PEAK_MIN 96
 
+/* RAIN's fade, in 16ths of the drop's value a frame: about 2.7, so a drop falls
+ * half as long again as RAINFALL's 4. */
+#    define RAIN_DECAY_Q4 43
+
 static uint8_t rainfall_v[RGB_MATRIX_LED_COUNT];
 static uint8_t rainfall_h[RGB_MATRIX_LED_COUNT];
 
 /* Decay every drop and seed the next, once a frame. */
 static void rain_step(effect_params_t* params, bool mono) {
     static uint8_t countdown = 0;
+    static uint8_t decay_q4 = 0;
 
     /* init stays true for every chunk of the first frame: reset once, on the
      * first, or a drop seeded there is wiped by the next (codex). */
@@ -53,8 +58,14 @@ static void rain_step(effect_params_t* params, bool mono) {
      * here), so the simulation must advance on the FIRST chunk only -- stepping
      * it per chunk would decay five times a frame and quintuple the drop rate. */
     if (params->iter == 0) {
+        uint8_t decay = RAINFALL_DECAY;
+        if (mono) {
+            decay_q4 += RAIN_DECAY_Q4;
+            decay = decay_q4 >> 4;
+            decay_q4 &= 15;
+        }
         for (uint8_t i = 0; i < RGB_MATRIX_LED_COUNT; i++)
-            rainfall_v[i] = qsub8(rainfall_v[i], RAINFALL_DECAY);
+            rainfall_v[i] = qsub8(rainfall_v[i], decay);
 
         if (countdown) countdown--;
         if (!countdown) {
