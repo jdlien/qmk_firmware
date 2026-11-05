@@ -241,8 +241,15 @@ static const uint16_t width_lut[256] = {W64(0), W64(64), W64(128), W64(192)};
  * so the bytes are the chroma), or by width_lut[] for raw bytes (the
  * other effects, and the dev pattern while it stands). */
 static uint16_t led_w[SN32F2XX_LED_COUNT][3];
-#define DITHER_HALF    0x8000u
-#define DITHER_QUARTER 0xC000u
+/* A dithered entry (JD's eye, 11-04 evening: whole-tick rounding moved a
+ * purple's red-to-blue ratio by a third between 3% and 6%): bit 15 set, a
+ * four-field pattern in bits 11-14 (one bit a field, the field's bit the
+ * phase's low two bits select) and the base width in bits 0-10; the
+ * handler drives base + the pattern's bit. The fraction of a tick is kept
+ * to a quarter for widths under 16 ticks. */
+#define DITHER_FLAG    0x8000u
+#define DITHER_BASE    0x07FFu
+#define DITHER_PAT_SHIFT 11u
 static uint8_t  field_phase = 0;
 static RGB      led_state_buf[SN32F2XX_LED_COUNT]; /* rgb_matrix's: the next frame */
 static bool     led_state_buf_update_required = false;
@@ -1170,8 +1177,7 @@ HOT_ATTR void rowisr_hot(uint8_t mux_row, uint8_t krow, uint8_t scan_row, uint8_
      * flush, instead of a byte load and a table load. */
     const uint8_t  *co = g_led_config.matrix_co[krow];
     const uint16_t *wp = &led_w[0][colour];   /* the plane: the pins' R, B, G are the frame's columns, stride 3 (D9: the width itself, no table load) */
-    uint32_t        dither_lit = ((field_phase & 1u) == 0u) ? 1u : 0u;              /* DITHER_HALF's tick this field */
-    uint32_t        dither_lit4 = ((field_phase & 3u) == 0u) ? 1u : 0u;             /* DITHER_QUARTER's */
+    uint32_t        dither_shift = DITHER_PAT_SHIFT + (field_phase & 3u);          /* this field's bit of a dithered entry's pattern */
 #if !ROWISR_RAMTEXT
 #    pragma GCC unroll 15   /* in flash the unroll pays; in SRAM the loop's overhead is a cycle an instruction and the 300 B are the dev build's gap (the first 5f link overflowed the RAM by 8 B) */
 #endif
@@ -1180,7 +1186,7 @@ HOT_ATTR void rowisr_hot(uint8_t mux_row, uint8_t krow, uint8_t scan_row, uint8_
         uint32_t w  = 0;
         if (li < SN32F2XX_LED_COUNT) {
             w = wp[(uint32_t)li * 3u];
-            if (w > ROWISR_TERMINAL) w = (w & 0x4000u) ? dither_lit4 : dither_lit;   /* a dithered tick: one compare on the common path */
+            if (w > ROWISR_TERMINAL) w = (w & DITHER_BASE) + ((w >> dither_shift) & 1u);   /* a dithered entry: the base plus this field's tick; one compare on the common path */
         }
         *col_mr[c].mr = col_mr[c].key | w;
         width_sum += w;
@@ -1701,13 +1707,20 @@ uint8_t sn32f2xx_led_commits(void) {
  * light at full chroma in Q8 ticks (the curve at the value, scaled by the
  * cadence's k), recip its 1/255 in Q8 (one divide a frame; Q4 put a full
  * chroma at the value whose light is 1.03 ticks under a tick); a channel is
- * a multiply and a shift, rounded to a tick, and under a tick a dithered
- * tick (0.5 and up every second field, 0.25 and up every fourth) or dark. */
+ * a multiply and a shift. Under 16 ticks the fraction is kept to a quarter
+ * as a four-field pattern (a quarter: one field in four lit a tick more,
+ * a half: two, three quarters: three; under a tick the base is 0), so the
+ * channels' ratios hold to an eighth of a tick at the dim end; from 16
+ * ticks the width is rounded. */
+static const uint8_t dither_pat[4] = {0u, 0x1u, 0x5u, 0x7u};   /* quarters 0-3: the fields lit a tick more, of four */
 static inline uint16_t wide_width(uint8_t chroma, uint32_t recip) {
     uint32_t q8 = ((uint32_t)chroma * recip + 128u) >> 8;   /* Q8 ticks: chroma (8 bits) x recip (under 2^20 at the 267 us cadence's k = 640) stays under 2^28 */
     uint32_t w  = q8 >> 8, frac = q8 & 0xFFu;
-    if (w == 0u) return frac >= 128u ? DITHER_HALF : (frac >= 64u ? DITHER_QUARTER : 0u);
-    return (uint16_t)(w + (frac >= 128u ? 1u : 0u));
+    if (w >= 16u) return (uint16_t)(w + (frac >= 128u ? 1u : 0u));
+    uint32_t quarters = (frac + 32u) >> 6;   /* 0..4, rounded */
+    if (quarters == 4u) { w++; quarters = 0u; }
+    if (quarters == 0u) return (uint16_t)w;
+    return (uint16_t)(DITHER_FLAG | ((uint32_t)dither_pat[quarters] << DITHER_PAT_SHIFT) | w);
 }
 
 void sn32f2xx_wide_block(bool on) {
