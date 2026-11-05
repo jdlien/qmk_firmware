@@ -2416,28 +2416,33 @@ static void open_editor(uint8_t node, uint32_t now) {
 static int16_t pct_of(int16_t v) { return (int16_t)((v * 100 + 127) / 255); }
 static int16_t val_of_pct(int16_t p) { return (int16_t)((p * 255 + 50) / 100); }
 
-/* A turn in an editor: the field's next value, previewed. Fast (the mockup's
- * rule, codex's predicate): two or more detents in one input, or one within
- * 90 ms of the editor's last turn. A range clamps; a hue wraps. A slow
- * detent is the finest step the value shows (JD, 10-25: "micro-adjustments
- * by one value/percent"): a hue's unit, a level, or the next percentage of
- * a 0-255 value; a fast one is 8% (as fast as the old 20 of 255) or 12 hue
- * units. The Screen's levels are 0-100 since P2b, as the indicators'. */
+/* A turn in an editor: the field's next value, previewed. The step by the
+ * spin (menu.h's tiers; the mockup's rule and codex's predicate were two
+ * tiers): a fast turn is two or more detents in one input, or one within
+ * MENU_FAST_MS of the editor's last turn; a medium one within MENU_MED_MS;
+ * a slow detent is the finest step the value shows (JD, 10-25:
+ * "micro-adjustments by one value/percent"): a hue's unit, a level, or the
+ * next percentage of a 0-255 value. A range clamps; a hue wraps. The
+ * Screen's levels are 0-100 since P2b, as the indicators'. */
 static void edit_turn(int8_t turns, uint32_t now) {
-    bool fast = turns >= 2 || turns <= -2 || (ft_have && (uint32_t)(now - ft_last) < MENU_FAST_MS);
-    ft_have   = true;
-    ft_last   = now;
-    uint8_t node = cur()->node;
-    int16_t v    = me_value();
+    uint32_t gap  = ft_have ? (uint32_t)(now - ft_last) : UINT32_MAX;
+    bool     fast = turns >= 2 || turns <= -2 || gap < MENU_FAST_MS;
+    bool     med  = !fast && gap < MENU_MED_MS;
+    ft_have       = true;
+    ft_last       = now;
+    uint8_t node  = cur()->node;
+    int16_t v     = me_value();
+    int16_t step_pct = fast ? MENU_FAST_PCT : (med ? MENU_MED_PCT : 1);
+    int16_t step_hue = fast ? MENU_FAST_HUE : (med ? MENU_MED_HUE : 1);
     if (is_hue_editor(node))
-        v = (int16_t)((v + turns * (fast ? MENU_FAST_HUE : 1)) & 255);
+        v = (int16_t)((v + turns * step_hue) & 255);
     else if (node == N_SCREEN || is_ind_editor(node)) {   /* levels 0-100: the Screen's, the indicators' */
         int16_t max = e_range_max();
-        v = (int16_t)(v + turns * (fast ? MENU_FAST_PCT : 1));
+        v = (int16_t)(v + turns * step_pct);
         if (v < 0) v = 0;
         if (v > max) v = max;
     } else {   /* a 0-255 value shown as a percentage */
-        int16_t p = (int16_t)(pct_of(v) + turns * (fast ? MENU_FAST_PCT : 1));
+        int16_t p = (int16_t)(pct_of(v) + turns * step_pct);
         if (p < 0) p = 0;
         if (p > 100) p = 100;
         v = val_of_pct(p);

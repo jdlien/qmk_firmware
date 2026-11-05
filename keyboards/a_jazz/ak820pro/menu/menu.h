@@ -28,20 +28,31 @@ menu_result_t menu_input(int8_t turns, mi_latch_t latch, uint32_t now);
 void          menu_tick(uint32_t now, uint32_t idle_ms);  /* each pass: the latched model and the title */
 #if defined(AK820_DEV_HOOKS) || defined(MENU_HOST_TEST)
 void          menu_probe_closed(void);
-/* The editors' fast turn (menu.c, edit_turn): an input carrying two or more
- * detents, or one within MENU_FAST_MS of the last, steps MENU_FAST_PCT
- * percent (a 0-255 value or a level) or MENU_FAST_HUE hue units instead of
- * one. The defaults are P1b's (10-25) and the host test's; config.h sets
- * the board's (11-04: JD found a quick spin skipping the steps he wanted to
- * see, so the daily build's are gentler and the dev build has none). */
+/* The editors' acceleration (menu.c, edit_turn), three tiers by the gap
+ * between detents: a slow turn steps one (a percent, a level, a hue unit);
+ * a medium spin, a detent within MENU_MED_MS of the last, MENU_MED_PCT or
+ * MENU_MED_HUE; a fast one, within MENU_FAST_MS or two or more detents in
+ * one input, MENU_FAST_PCT or MENU_FAST_HUE. The defaults are P1b's two
+ * tiers (10-25: 8% and 12 within 90 ms) for the host test; config.h sets
+ * the board's (11-04, JD at the knob: 1, 2, 3 percent so a full range is
+ * about two spins, a fast spin three). */
 #ifndef MENU_FAST_MS
 #    define MENU_FAST_MS 90u
+#endif
+#ifndef MENU_MED_MS
+#    define MENU_MED_MS MENU_FAST_MS
 #endif
 #ifndef MENU_FAST_PCT
 #    define MENU_FAST_PCT 8
 #endif
+#ifndef MENU_MED_PCT
+#    define MENU_MED_PCT MENU_FAST_PCT
+#endif
 #ifndef MENU_FAST_HUE
 #    define MENU_FAST_HUE 12
+#endif
+#ifndef MENU_MED_HUE
+#    define MENU_MED_HUE MENU_FAST_HUE
 #endif   /* 11-04, dev: no session open: the Floor probe's pattern released, if its */
 #endif
 uint8_t       menu_screen_id(void);                       /* op 27 sub 5, byte 14: 16 + the node showing */

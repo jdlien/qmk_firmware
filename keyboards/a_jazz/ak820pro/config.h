@@ -331,20 +331,19 @@
 
 #define PARAM_REPEAT_DELAY_MS    400   /* hold this long before repeating starts */
 #define PARAM_REPEAT_INTERVAL_MS  60   /* first cadence: ~16 steps/s, fine for nudging */
-/* The configuration menu's editors (menu/menu.h): a fast turn's step. 11-04
- * (JD): a quick spin stepped 8% a detent and skipped the steps he wanted to
- * see, so the shipped builds step 4% (6 hue units) on a fast turn and count
- * one fast only within 60 ms of the last; the dev build has no acceleration
- * at all for the dim end's calibration (every detent one step). */
-#ifdef AK820_DEV_HOOKS
-#    define MENU_FAST_MS  0u
-#    define MENU_FAST_PCT 1
-#    define MENU_FAST_HUE 1
-#else
-#    define MENU_FAST_MS  60u
-#    define MENU_FAST_PCT 4
-#    define MENU_FAST_HUE 6
-#endif
+/* The configuration menu's editors (menu/menu.h): the step by the spin,
+ * three tiers. 11-04, JD at the knob: the old 8% on any quick turn skipped
+ * the steps he wanted to see, and one percent a detent took four spins for
+ * the range; so a slow turn steps 1, a medium spin (a detent within 110 ms
+ * of the last) 2, a fast one (within 50 ms, or two detents in one input)
+ * 3 percent, hue 1, 2 and 4 units: about two spins for the range, a fast
+ * spin under one and a half. The same on every build. */
+#define MENU_FAST_MS  50u
+#define MENU_MED_MS   110u
+#define MENU_FAST_PCT 3
+#define MENU_MED_PCT  2
+#define MENU_FAST_HUE 4
+#define MENU_MED_HUE  2
 
 /* Then ACCELERATE. Fine steps and a fixed repeat rate are in direct conflict:
  * 128 brightness values at 16/s is an 8-second sweep. Ramping after a moment
