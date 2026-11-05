@@ -54,10 +54,11 @@ typedef struct {
 } ladder_t;
 
 /* Power saver's ceiling while typing, as a value, which the flush caps on every
- * effect. On D9's curve that is 3.6% of full light (it was 18.6% on QMK's CIE
- * table when chosen): owed a new value by light, on battery. A ceiling, not a
- * halving, so a board already this dim keeps its colours. */
-#define SAVER_VAL 128u
+ * effect: 75% on the slider, 18.6% of full light, the light the original 128 gave
+ * on QMK's CIE table, so about half as bright to the eye. Measured on white, it
+ * leaves the LEDs a quarter of what they draw at full, 11.6 mA against 45.5. A
+ * ceiling, not a halving, so a board already this dim keeps its setting. */
+#define SAVER_VAL 191u
 
 static const ladder_t ladders[POWER_MODE_COUNT] = {
     [POWER_MODE_FULL]   = {NEVER, NEVER, NEVER, NEVER, 255u},
@@ -72,9 +73,11 @@ static const ladder_t ladders[POWER_MODE_COUNT] = {
  * key like Fn+B would seem to do nothing. */
 #define MESSAGE_WAKE_MS 4000u
 
-/* The dim: the lighting's value capped here, so 100% becomes 25% and a colour
- * keeps its hue (the driver's per-channel scale turned a dim purple red). */
-#define DIM_VAL            64u
+/* The dim: the lighting's value capped here, so 100% becomes 55%, 4.75% of full
+ * light, the light the original 64 gave on QMK's CIE table, and a colour keeps its
+ * hue. Measured on white, the LEDs draw 5.5 mA there, against 45.5 at full. Lower
+ * buys little: under 55% they stay at 3 to 5 mA. */
+#define DIM_VAL            139u
 #define SCREEN_DIM_LEVEL   37u   /* of the 0..100 backlight levels (P2b: 4.09 ticks, the old 4 of 23 never dimmer); a ceiling */
 #define BACKLIGHT_NO_CAP 0xFFu
 /* Below this level on battery, the lighting follows Power Saver's stages
