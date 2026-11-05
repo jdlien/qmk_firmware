@@ -15,9 +15,9 @@
  * turning speed up adds raindrops rather than making each one shorter -- which
  * is the knob you actually want when the effect looks too sparse or too busy.
  *
- * Two effects share it. RAIN is one colour, the user's hue and saturation, and
- * each drop falls from its own brightness, so not every key lights to the top.
- * RAINFALL gives every drop a random hue at full brightness.
+ * Each drop falls from its own brightness, so not every key lights to the top.
+ * Two effects share it and differ only in colour: RAIN is the user's hue, RAINFALL
+ * a random hue per drop. Saturation is the user's on both.
  *
  * Cost: 2 bytes per LED (162 B here) and one qsub8 per LED per frame.
  */
@@ -26,24 +26,20 @@ RGB_MATRIX_EFFECT(RAINFALL)
 
 #ifdef RGB_MATRIX_CUSTOM_EFFECT_IMPLS
 
-/* ~1.4 s from full to dark at the ~62 Hz effect rate (255/4 frames). Long
- * enough to read as a fall rather than a blink. */
-#    define RAINFALL_DECAY 4
-
-/* RAIN's dimmest drop, as the drop's own value: a tenth of its light at the top,
+/* The dimmest drop, as the drop's own value: a tenth of its light at the top,
  * through the CIE table the conversion applies. A dim drop also falls for less
- * time, since the decay is fixed. */
+ * time, since the fade is fixed. */
 #    define RAIN_PEAK_MIN 96
 
-/* RAIN's fade, in 16ths of the drop's value a frame: about 2.7, so a drop falls
- * half as long again as RAINFALL's 4. */
-#    define RAIN_DECAY_Q4 43
+/* The fade, in 16ths of the drop's value a frame: 2.25. Long enough to read as a
+ * fall rather than a blink. */
+#    define RAIN_DECAY_Q4 36
 
 static uint8_t rainfall_v[RGB_MATRIX_LED_COUNT];
 static uint8_t rainfall_h[RGB_MATRIX_LED_COUNT];
 
 /* Decay every drop and seed the next, once a frame. */
-static void rain_step(effect_params_t* params, bool mono) {
+static void rain_step(effect_params_t* params) {
     static uint8_t countdown = 0;
     static uint8_t decay_q4 = 0;
 
@@ -58,19 +54,16 @@ static void rain_step(effect_params_t* params, bool mono) {
      * here), so the simulation must advance on the FIRST chunk only -- stepping
      * it per chunk would decay five times a frame and quintuple the drop rate. */
     if (params->iter == 0) {
-        uint8_t decay = RAINFALL_DECAY;
-        if (mono) {
-            decay_q4 += RAIN_DECAY_Q4;
-            decay = decay_q4 >> 4;
-            decay_q4 &= 15;
-        }
+        decay_q4 += RAIN_DECAY_Q4;
+        uint8_t decay = decay_q4 >> 4;
+        decay_q4 &= 15;
         for (uint8_t i = 0; i < RGB_MATRIX_LED_COUNT; i++)
             rainfall_v[i] = qsub8(rainfall_v[i], decay);
 
         if (countdown) countdown--;
         if (!countdown) {
             uint8_t i     = random8_max(RGB_MATRIX_LED_COUNT);
-            rainfall_v[i] = mono ? (uint8_t)(RAIN_PEAK_MIN + random8_max(256 - RAIN_PEAK_MIN)) : 255;
+            rainfall_v[i] = (uint8_t)(RAIN_PEAK_MIN + random8_max(256 - RAIN_PEAK_MIN));
             rainfall_h[i] = random8();
             /* Frames between drops: 25 at speed 0 down to 1 at full. At the
              * default speed this leaves roughly half a dozen lit at once. */
@@ -80,7 +73,7 @@ static void rain_step(effect_params_t* params, bool mono) {
 }
 
 static bool RAIN(effect_params_t* params) {
-    rain_step(params, true);
+    rain_step(params);
     RGB_MATRIX_USE_LIMITS(led_min, led_max);
     for (uint8_t i = led_min; i < led_max; i++) {
         RGB_MATRIX_TEST_LED_FLAGS();
@@ -92,7 +85,7 @@ static bool RAIN(effect_params_t* params) {
 }
 
 static bool RAINFALL(effect_params_t* params) {
-    rain_step(params, false);
+    rain_step(params);
     RGB_MATRIX_USE_LIMITS(led_min, led_max);
     for (uint8_t i = led_min; i < led_max; i++) {
         RGB_MATRIX_TEST_LED_FLAGS();
