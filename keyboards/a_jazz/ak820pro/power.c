@@ -73,11 +73,11 @@ static const ladder_t ladders[POWER_MODE_COUNT] = {
  * key like Fn+B would seem to do nothing. */
 #define MESSAGE_WAKE_MS 4000u
 
-/* The dim: the lighting's value capped here, so 100% becomes 55%, 4.75% of full
- * light, the light the original 64 gave on QMK's CIE table, and a colour keeps its
- * hue. Measured on white, the LEDs draw 5.5 mA there, against 45.5 at full. Lower
- * buys little: under 55% they stay at 3 to 5 mA. */
-#define DIM_VAL            139u
+/* The dim: the lighting's value capped here, so 100% becomes 40%, 1.8% of full
+ * light, and a colour keeps its hue. Chosen by eye, a little dim on purpose: lit in
+ * a dark room, hard to see in bright office light. Measured on white, the LEDs draw
+ * 4.5 mA there, against 45.5 at full. */
+#define DIM_VAL            102u
 #define SCREEN_DIM_LEVEL   37u   /* of the 0..100 backlight levels (P2b: 4.09 ticks, the old 4 of 23 never dimmer); a ceiling */
 #define BACKLIGHT_NO_CAP 0xFFu
 /* Below this level on battery, the lighting follows Power Saver's stages
