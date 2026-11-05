@@ -65,21 +65,25 @@ const char *rgb_effect_name(uint8_t mode) {
 }
 
 /* The effects' speeds (rgb_speed.c): quantum/rgb_matrix's two board hooks.
- * Any other effect_runner_i effect keeps upstream's time. */
+ * Any other effect_runner_i effect keeps upstream's time. The Cycles run on a
+ * clock that carries their position across a speed change: time x speed moved
+ * the pattern somewhere else at every step of the speed. Only the running effect
+ * calls this, so one clock serves the three. */
 uint8_t rgb_matrix_runner_i_time(void) {
+    static rgb_speed_clock_t clock;
     uint8_t s = rgb_matrix_config.speed;
     switch (rgb_matrix_get_mode()) {
 #ifdef ENABLE_RGB_MATRIX_CYCLE_ALL
         case RGB_MATRIX_CYCLE_ALL:
-            return (uint8_t)rgb_speed_phase(g_rgb_timer, rgb_speed_rate(&RGB_SPEED_CYCLE_ALL, s));
+            return rgb_speed_advance(&clock, g_rgb_timer, rgb_speed_rate(&RGB_SPEED_CYCLE_ALL, s));
 #endif
 #ifdef ENABLE_RGB_MATRIX_CYCLE_LEFT_RIGHT
         case RGB_MATRIX_CYCLE_LEFT_RIGHT:
-            return (uint8_t)rgb_speed_phase(g_rgb_timer, rgb_speed_rate(&RGB_SPEED_CYCLE_SWEEP, s));
+            return rgb_speed_advance(&clock, g_rgb_timer, rgb_speed_rate(&RGB_SPEED_CYCLE_SWEEP, s));
 #endif
 #ifdef ENABLE_RGB_MATRIX_CYCLE_UP_DOWN
         case RGB_MATRIX_CYCLE_UP_DOWN:
-            return (uint8_t)rgb_speed_phase(g_rgb_timer, rgb_speed_rate(&RGB_SPEED_CYCLE_SWEEP, s));
+            return rgb_speed_advance(&clock, g_rgb_timer, rgb_speed_rate(&RGB_SPEED_CYCLE_SWEEP, s));
 #endif
         default:
             return scale16by8(g_rgb_timer, qadd8(s / 4, 1));

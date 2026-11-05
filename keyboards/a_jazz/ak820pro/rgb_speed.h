@@ -20,3 +20,13 @@ extern const rgb_speed_curve_t RGB_SPEED_JELLYBEAN;     /* a drop every 2 s to 3
 
 uint32_t rgb_speed_rate(const rgb_speed_curve_t *c, uint8_t speed);
 uint32_t rgb_speed_phase(uint32_t ms, uint32_t rate);   /* (ms * rate) >> 24 */
+
+/* A running phase: its position carries across a change of rate, where
+ * rgb_speed_phase() recomputes it from all the time so far and jumps. */
+typedef struct {
+    uint32_t phase;   /* 2^-24 of a unit, so it wraps at 256 units: a hue cycle */
+    uint32_t ms;
+} rgb_speed_clock_t;
+
+/* Advance to ms at rate and return the unit's low byte. */
+uint8_t rgb_speed_advance(rgb_speed_clock_t *c, uint32_t ms, uint32_t rate);

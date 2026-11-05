@@ -37,3 +37,11 @@ uint32_t rgb_speed_rate(const rgb_speed_curve_t *c, uint8_t speed) {
 uint32_t rgb_speed_phase(uint32_t ms, uint32_t rate) {
     return (uint32_t)(((uint64_t)ms * rate) >> 24);
 }
+
+/* Modulo 2^32 throughout, which is the phase's own period, so a long gap and the
+ * millisecond counter's wrap both come out exact. */
+uint8_t rgb_speed_advance(rgb_speed_clock_t *c, uint32_t ms, uint32_t rate) {
+    c->phase += (ms - c->ms) * rate;
+    c->ms = ms;
+    return (uint8_t)(c->phase >> 24);
+}
