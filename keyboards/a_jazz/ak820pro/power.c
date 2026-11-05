@@ -53,10 +53,10 @@ typedef struct {
     uint8_t  active_val;
 } ladder_t;
 
-/* Power saver's ceiling while typing: about half as bright to the eye under
- * QMK's CIE curve, a quarter of the LED power (about half on DRIFT, which caps
- * its value knob after the curve). A ceiling, not a halving, so a board
- * already this dim keeps its colours. */
+/* Power saver's ceiling while typing, as a value, which the flush caps on every
+ * effect. On D9's curve that is 3.6% of full light (it was 18.6% on QMK's CIE
+ * table when chosen): owed a new value by light, on battery. A ceiling, not a
+ * halving, so a board already this dim keeps its colours. */
 #define SAVER_VAL 128u
 
 static const ladder_t ladders[POWER_MODE_COUNT] = {
@@ -135,14 +135,17 @@ static void apply(void) {
             break;
     }
     if (lights_cut) scale = 0;
-    bool repaint = (vcap != val_cap) || (scale != applied_scale);
+    /* A wide mode's cap is the flush's alone (rowisr.c), so a cap change repaints
+     * nothing there: Rainfall, the Heatmap and Drift keep their state across a
+     * dim, and the key that ends a dim keeps its heat. */
+    bool repaint = (scale != applied_scale) || (vcap != val_cap && !power_wide_mode());
     val_cap       = vcap;
     applied_scale = scale;
     sn32f2xx_set_power_scale(scale);
     display_set_backlight_cap(cap);
     /* Every LED through the new caps at once: the driver's scale applies only
-     * as an LED is set, and the value cap only as a colour is converted, and
-     * an effect that rewrites a few LEDs a frame (Jellybean Raindrops) would
+     * as an LED is set, and off the wide path the value cap only as a colour is
+     * converted, and an effect that rewrites a few LEDs a frame (Jellybean) would
      * leave the rest as they were (codex). Re-running the effect's init pass
      * makes it paint them all (rgb_matrix_reinit_effect, a local core hook:
      * rgb_matrix_mode_noeeprom on the same mode does not set init). No
@@ -166,6 +169,7 @@ static void apply(void) {
  * raw bytes of the dev pattern are the only thing left on the byte path. */
 bool power_wide_mode(void) {
     uint8_t m = rgb_matrix_get_mode();
+    (void)m;
     return false
 #ifdef ENABLE_RGB_MATRIX_SOLID_COLOR
            || m == RGB_MATRIX_SOLID_COLOR
@@ -200,6 +204,7 @@ bool power_wide_mode(void) {
  * config's value, which the flush applies, so the chroma is at full value. */
 static bool power_local_value_mode(void) {
     uint8_t m = rgb_matrix_get_mode();
+    (void)m;
     return false
 #ifdef ENABLE_RGB_MATRIX_TYPING_HEATMAP
            || m == RGB_MATRIX_TYPING_HEATMAP

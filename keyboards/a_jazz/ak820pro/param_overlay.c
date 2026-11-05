@@ -92,8 +92,9 @@ void param_show_lcd_brightness(void) {
 #endif
 }
 
-/* Arm/disarm the repeat. The caller returns through to QMK, which performs
- * the FIRST step itself -- this only handles the ones after the threshold. */
+/* Arm/disarm the repeat. This only handles the steps after the threshold. The
+ * caller returns through to QMK, whose RGB keys step once on RELEASE (the LCD
+ * keys step on the press, in process_record_kb). */
 void param_repeat_process_record(uint16_t keycode, keyrecord_t *record) {
     if (param_is_repeatable(keycode)) {
         if (record->event.pressed) {

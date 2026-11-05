@@ -1750,7 +1750,9 @@ void sn32f2xx_flush(void) {
      * LEDs across a hue or brightness change: D8's coherent-frame invariant
      * is relaxed deliberately (codex, 11-04), to be seen by camera at the
      * transitions; the masked 243 B memcpy of the byte frame is gone with
-     * it. ~100 us of main-loop time a changed frame. */
+     * it. Main-loop time a changed frame, from the ELF's instruction counts: the
+     * wide loop about 0.3-0.7 ms of CPU, 0.6-1.5 ms beside the row ISR, the byte
+     * loop about a quarter of that. Rainfall and Drift pay it every frame. */
     uint32_t sr = 0, sg = 0, sb = 0;
     if (wide) {
         uint32_t full_q8 = ((uint32_t)curve_q6[v] * ROWISR_K_Q6) >> 4;   /* Q6 x Q6 >> 4: Q8 ticks at full chroma, 1,195.3 at the reference's top (16,320 x 640 >> 4 at the 267 us cadence: under 2^20) */
@@ -1810,14 +1812,6 @@ void sn32f2xx_set_color_all(uint8_t r, uint8_t g, uint8_t b) {
     }
 }
 
-uint32_t sn32f2xx_led_load(void) {
-    uint32_t sum = 0;
-    for (int i = 0; i < SN32F2XX_LED_COUNT; i++) {
-        sum += (uint32_t)led_state_buf[i].r + led_state_buf[i].g + led_state_buf[i].b;
-    }
-    return sum;
-}
-
 const rgb_matrix_driver_t rgb_matrix_driver = {
     .init          = sn32f2xx_init,
     .flush         = sn32f2xx_flush,
@@ -1837,7 +1831,6 @@ void     sn32f2xx_flush(void) {}
 void     sn32f2xx_set_power_scale(uint8_t scale) { (void)scale; }
 void     sn32f2xx_set_color(int index, uint8_t r, uint8_t g, uint8_t b) { (void)index; (void)r; (void)g; (void)b; }
 void     sn32f2xx_set_color_all(uint8_t r, uint8_t g, uint8_t b) { (void)r; (void)g; (void)b; }
-uint32_t sn32f2xx_led_load(void) { return 0; }
 #endif
 
 /* ---- The consume ------------------------------------------------------------- */

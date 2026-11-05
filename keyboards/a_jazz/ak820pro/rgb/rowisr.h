@@ -104,10 +104,6 @@ void sn32f2xx_wide_block(bool on);
 void sn32f2xx_set_color(int index, uint8_t r, uint8_t g, uint8_t b);
 void sn32f2xx_set_color_all(uint8_t r, uint8_t g, uint8_t b);
 
-/* Sum of every LED channel's requested PWM value, 0 .. LED_COUNT * 3 * 255.
- * Proportional to the matrix's average drive, so a board can estimate its
- * current draw from it. Main-thread only, like sn32f2xx_set_color(). */
-uint32_t sn32f2xx_led_load(void);
 
 /* The drive actually shown, time-weighted: the sum of every channel's value in
  * the COMMITTED frame (what the row ISR drives), times the ms it was shown,
