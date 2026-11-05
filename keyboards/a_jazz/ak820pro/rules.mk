@@ -73,7 +73,7 @@ VPATH += graphics
 VPATH += rtc
 VPATH += menu
 
-# Board-local RGB effects (rgb_matrix_kb.inc): RAINFALL and DRIFT
+# Board-local RGB effects (rgb_matrix_kb.inc): RAIN, RAINFALL and DRIFT
 RGB_MATRIX_CUSTOM_KB = yes
 
 # The RGB matrix driver and the key matrix, board-local since stage 1 of the

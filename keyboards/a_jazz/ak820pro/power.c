@@ -196,6 +196,7 @@ bool power_wide_mode(void) {
            || m == RGB_MATRIX_TYPING_HEATMAP
 #endif
 #ifdef RGB_MATRIX_CUSTOM_KB
+           || m == RGB_MATRIX_CUSTOM_RAIN
            || m == RGB_MATRIX_CUSTOM_RAINFALL
            || m == RGB_MATRIX_CUSTOM_DRIFT
 #endif
@@ -203,7 +204,7 @@ bool power_wide_mode(void) {
 }
 /* An effect whose brightness varies per LED hands the wrap that local value,
  * 255 at its brightest and with the global value left out (config.h's
- * RGB_MATRIX_TYPING_HEATMAP_VAL, RAINFALL). A uniform effect hands it the
+ * RGB_MATRIX_TYPING_HEATMAP_VAL, RAIN and RAINFALL). A uniform effect hands it the
  * config's value, which the flush applies, so the chroma is at full value. */
 static bool power_local_value_mode(void) {
     uint8_t m = rgb_matrix_get_mode();
@@ -213,6 +214,7 @@ static bool power_local_value_mode(void) {
            || m == RGB_MATRIX_TYPING_HEATMAP
 #endif
 #ifdef RGB_MATRIX_CUSTOM_KB
+           || m == RGB_MATRIX_CUSTOM_RAIN
            || m == RGB_MATRIX_CUSTOM_RAINFALL
 #endif
         ;

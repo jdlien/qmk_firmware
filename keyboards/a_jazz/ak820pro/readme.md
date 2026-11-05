@@ -95,7 +95,7 @@ non-blocking glyph-queue renderer (no more keystroke-eating display stalls);
 persisted RTC divider trim and backlight level; interrupt priorities fixed
 for reliable Bluetooth at a 1 kHz LED field rate; hold-to-pair with progress
 bar; per-key RGB niceties (hold-to-repeat, on-panel readouts, two custom
-board-local effects: RAINFALL and DRIFT); extensive input validation and an
+board-local effects: RAIN, RAINFALL and DRIFT); extensive input validation and an
 audited concurrency model. History on this branch tells the whole story.
 
 Known post-flash oddity that looks like a bug: the stored RGB mode index

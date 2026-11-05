@@ -51,7 +51,8 @@ const rgb_effect_t rgb_effects[] = {
     {RGB_MATRIX_TYPING_HEATMAP, 10, "Heatmap"},
 #endif
 #if defined(RGB_MATRIX_CUSTOM_KB)
-    {RGB_MATRIX_CUSTOM_RAINFALL, 11, "Rainfall"},
+    {RGB_MATRIX_CUSTOM_RAIN, 13, "Rain"},
+    {RGB_MATRIX_CUSTOM_RAINFALL, 11, "Rain RGB"},
     {RGB_MATRIX_CUSTOM_DRIFT, 12, "Drift"},
 #endif
 };

@@ -92,7 +92,7 @@ void sn32f2xx_init(void);
 void sn32f2xx_flush(void);
 /* D9 revised (11-04): the precision path. In a wide mode (power_wide_mode():
  * every enabled effect) the render buffer holds the chroma, the colours at
- * full global value (an LED's own brightness in them on Rainfall, the Heatmap
+ * full global value (an LED's own brightness in them on the two Rains, the Heatmap
  * and Drift; the board's rgb_matrix_hsv_to_rgb() wrap sees to the rest), and
  * the flush applies the frame's value
  * (the config's under the ladder's cap) at 12 bits through the curve
