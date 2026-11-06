@@ -113,6 +113,9 @@ _Static_assert(WDT_SITE_LOOP_BASE + LOOP_SITE_COUNT <= 64, "the loop's sites run
 /* hid_protocol.c: raw HID (USB or the 2.4G dongle) carried an accepted media
  * command less than `ms` ago (the lock-LED channel's lease, R3-2). */
 bool hid_rawhid_media_within(uint32_t now, uint32_t ms);
+/* A deep sleep's wake: the timer stood still asleep, so the lease's elapsed time
+ * did not count, and the display has expired what the lease protected. */
+void hid_rawhid_media_forget(void);
 /* hid_protocol.c: raw HID set the clock (an accepted set) at most `s` seconds
  * ago, slept time included: the lock-LED clock's owner rule. */
 bool hid_rawhid_clock_within(uint32_t s);
