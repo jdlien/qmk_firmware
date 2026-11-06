@@ -119,8 +119,7 @@ enum {
  * stamped whenever it gets past validation, since a false from it can still
  * have moved the board's clock (a PCF write that failed): a refusal it did
  * not need costs a wireless sync's 10 minutes, never a wrong clock. Raw81
- * (the dongle) carries no clock command. Dev builds only, with the channel. */
-#ifdef AK820_DEV_HOOKS
+ * (the dongle) carries no clock command. */
 static uint32_t rawhid_clock_at, rawhid_clock_credit;
 static bool     rawhid_clock_seen;
 
@@ -135,9 +134,6 @@ static void rawhid_clock_set(void) {
     rawhid_clock_seen   = true;
     ch582_lockchan_clock_drop();   /* a wireless sync still waiting yields to it */
 }
-#else
-static inline void rawhid_clock_set(void) {}
-#endif
 
 static void rtc_set_ms_command(uint8_t *data, uint8_t length) {
     if (length < 15 || !rtc_ms_payload_valid(&data[3])) {
@@ -380,15 +376,13 @@ static inline bool is_text_cmd(const uint8_t *data, uint8_t length) {
  * raw HID last carried a media command that changed the display's state, by
  * USB or through the 2.4G dongle (raw81 dispatches here too). Stamped here at
  * the ingress, never in the display's setters, which the lock-LED handler
- * calls as well; dev builds only, with the channel. */
-#ifdef AK820_DEV_HOOKS
+ * calls as well. */
 static uint32_t rawhid_media_at;
 static bool     rawhid_media_seen;
 
 bool hid_rawhid_media_within(uint32_t now, uint32_t ms) {
     return rawhid_media_seen && now - rawhid_media_at <= ms;
 }
-#endif
 
 /* True when the command reached a display setter with arguments it applies:
  * a short report or a line past 1 renews nothing (codex, handler review, 1). */
@@ -396,15 +390,11 @@ static bool text_command_inner(uint8_t *data, uint8_t length);
 
 static void text_command(uint8_t *data, uint8_t length) {
     bool applied = text_command_inner(data, length);
-#ifdef AK820_DEV_HOOKS
     if (applied) {
         rawhid_media_at   = timer_read32();
         rawhid_media_seen = true;
         ch582_lockchan_rawhid();   /* R4-3: no assembly straddles it */
     }
-#else
-    (void)applied;
-#endif
 }
 
 static bool text_command_inner(uint8_t *data, uint8_t length) {
