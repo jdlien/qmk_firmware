@@ -70,8 +70,11 @@ static bool rtc_apply_bytes(const uint8_t *p) {
         .minutes = p[5],
         .seconds = p[6],
     };
-    bool ok = rtc_set_time(&t);
-    rawhid_clock_set();
+    uint16_t gen = rtc_clock_generation();
+    bool     ok  = rtc_set_time(&t);
+    /* A refusal moved nothing, so it claims nothing; a set whose PCF write
+     * failed did move the live clock, so it does. */
+    if (ok || rtc_clock_generation() != gen) rawhid_clock_set();
     return ok;
 }
 
@@ -382,6 +385,10 @@ static bool     rawhid_media_seen;
 
 bool hid_rawhid_media_within(uint32_t now, uint32_t ms) {
     return rawhid_media_seen && now - rawhid_media_at <= ms;
+}
+
+void hid_rawhid_media_forget(void) {
+    rawhid_media_seen = false;
 }
 
 /* True when the command reached a display setter with arguments it applies:

@@ -845,6 +845,16 @@ static eventflags_t uart_err_poll(void) {
     return f;
 }
 
+/* An ACK may still be unread: bytes left queued at the drain's cap, or a fresh
+ * `61` / `61 0D` in the parser's window (ch582_task() sets this each pass). The
+ * pump then neither judges a timeout nor starts a new frame: a retransmit now
+ * would draw a second ACK, which would release the NEXT frame unsent, a lost
+ * press or a stuck release if that frame never reached the module. Capped so
+ * keyboard TX is never starved, and counted past the cap. */
+#define CH582_ACK_DEFER_CAP_MS 50u
+static bool     rx_defer;
+static uint32_t ack_defer_overrun;
+
 #ifdef AK820_DEV_HOOKS
 /* Raw HID over the 2.4G dongle, stage 2 (plans/RAWHID-24G-PLAN.md, revisions
  * 2-4). The rules are raw81.c's, host-tested by scripts/raw81_test.py; this is
@@ -868,14 +878,13 @@ static eventflags_t uart_err_poll(void) {
  *     19 switches it) so a late ACK cannot pop an A1;
  *   - the pump's timeout judgment, and the window's close, wait while bytes
  *     are still queued or the window holds a fresh ACK prefix (R4-1), capped
- *     at RAW81_DEFER_CAP_MS past the timeout and counted.
+ *     at CH582_ACK_DEFER_CAP_MS past the timeout and counted.
  * Every UART writer is in the main loop (the ACK writes, the A-frames, this
  * pair): the single-writer rule the pair's free-space check relies on. */
 #include "raw81.h"
 #define RAW81_SILENCE_TICKS ((uint16_t)TIME_MS2I(5))    /* 938 at 187.5 kHz */
 #define RAW81_LIFETIME_TICKS ((uint16_t)TIME_MS2I(20))  /* 3x the measured 6-7 ms */
 #define RAW91_ACK_WINDOW_MS 15u
-#define RAW81_DEFER_CAP_MS  50u
 
 static raw81_rx_t r81;
 static bool       r81_inited;
@@ -973,8 +982,7 @@ static bool     r91_ack_window;
 static uint16_t r91_window_at, r91_window_ms;
 static bool     r81_in_tx_drain;
 static uint8_t  r81_depth;
-static bool     rx_defer;                    /* this pass: bytes still queued, or a fresh ACK prefix */
-static uint32_t r81_drops, r81_dispatched, r91_sent_tx, r91_acks, ack_defer_overrun, r91_short_write;
+static uint32_t r81_drops, r81_dispatched, r91_sent_tx, r91_acks, r91_short_write;
 /* A response unsent this long after its dispatch is dropped, so none can
  * wait indefinitely behind keyboard traffic: it bounds a transaction's
  * traffic, which the host's 3 s quiet before a new session relies on
@@ -1346,7 +1354,7 @@ static void ch582_tx_pump(void) {
     if (r91_ack_window) {
         if (timer_elapsed(r91_window_at) < r91_window_ms) return;
         if (rx_defer) {
-            if (timer_elapsed(r91_window_at) < r91_window_ms + RAW81_DEFER_CAP_MS) return;
+            if (timer_elapsed(r91_window_at) < r91_window_ms + CH582_ACK_DEFER_CAP_MS) return;
             ack_defer_overrun++;   /* forced closed past the cap, as the other overrides */
         }
         r91_ack_window = false;
@@ -1354,17 +1362,11 @@ static void ch582_tx_pump(void) {
 #endif
     if (tx_in_flight) {
         if (timer_elapsed(tx_sent_time) < CH582_TX_ACK_TIMEOUT_MS) return;   /* still waiting for ACK */
-#ifdef AK820_DEV_HOOKS
-        /* R4-1: no timeout judgment while this frame's ACK may still be
-         * unread (bytes left queued at the drain's cap, or a fresh `61` /
-         * `61 0D` in the window): a retransmit now would draw a second ACK
-         * that releases the NEXT frame unsent. Capped, and counted past it,
-         * so keyboard TX is never starved. */
+        /* R4-1: no timeout judgment while this frame's ACK may still be unread. */
         if (rx_defer) {
-            if (timer_elapsed(tx_sent_time) < CH582_TX_ACK_TIMEOUT_MS + RAW81_DEFER_CAP_MS) return;
+            if (timer_elapsed(tx_sent_time) < CH582_TX_ACK_TIMEOUT_MS + CH582_ACK_DEFER_CAP_MS) return;
             ack_defer_overrun++;
         }
-#endif
         tx_stat_timeout++;
         if (++tx_retries > CH582_TX_MAX_RETRIES) {                          /* give up, move on */
             tx_stat_giveup++;
@@ -1384,7 +1386,6 @@ static void ch582_tx_pump(void) {
 #endif
         return;
     }
-#ifdef AK820_DEV_HOOKS
     /* R5-1: no new frame either while an ACK may still be unread: a second
      * ACK for a retransmitted frame, still queued, would pop this one unsent.
      * The same cap past the moment it would have started, counted. */
@@ -1396,12 +1397,11 @@ static void ch582_tx_pump(void) {
                 start_held    = true;
                 start_held_at = timer_read();
             }
-            if (timer_elapsed(start_held_at) < RAW81_DEFER_CAP_MS) return;
+            if (timer_elapsed(start_held_at) < CH582_ACK_DEFER_CAP_MS) return;
             ack_defer_overrun++;
         }
         start_held = false;
     }
-#endif
     tx_link_change_check(&tx_q[tx_head]);
     sdWrite(&CH582_SERIAL_DRIVER, tx_q[tx_head].data, tx_q[tx_head].len);
     tx_sent_time = timer_read();
@@ -1447,6 +1447,7 @@ void ch582_sleep_wake(void) {
     link_state_stale  = true;
     link_hold_armed   = true;
     LOCKCHAN_LINK_LOST();
+    hid_rawhid_media_forget();
 }
 
 bool ch582_link_state_stale(void) {
@@ -2040,9 +2041,7 @@ void ch582_task(void) {
     uint16_t p1 = prof ? ACCT_NOW() : 0u;
     prof_call_c5 = prof_call_ack = 0;
     prof_call_n5c = 0;
-#ifdef AK820_DEV_HOOKS
     bool drained = false;   /* the drain reached an empty queue (not the 64-byte cap) */
-#endif
 #ifdef AK820_DEV_HOOKS
     /* One bulk read refills a local buffer, instead of a lock round trip
      * per byte: draining a 34-byte request byte by byte cost ~3.4 ms of the
@@ -2071,12 +2070,13 @@ void ch582_task(void) {
 #endif
         if (RX_TAKE(&c) == 0) {
             if ((b0 | b1 | b2) && (uint16_t)((uint16_t)chVTGetSystemTimeX() - rx_last_tk) >= RX_QUIET_TICKS) b2 = b1 = b0 = 0;
+            drained = true;
 #ifdef AK820_DEV_HOOKS
             /* The queue is empty. After RAW81_SILENCE_TICKS with no byte the
              * line was silent that long: a quarantine ends (the window starts
              * over with it), and an ACK prefix left in the window is expired
-             * too, so it cannot hold the pump's judgment forever (R4-1, R5-1). */
-            drained         = true;
+             * too, so it cannot hold the pump's judgment forever (R4-1, R5-1).
+             * Every build's RX_QUIET_TICKS, above, does the same for the window. */
             uint16_t now_tk = (uint16_t)chVTGetSystemTimeX();
             if (raw81_empty(&r81, now_tk, RAW81_SILENCE_TICKS, RAW81_LIFETIME_TICKS)) {
                 b2 = b1 = b0 = 0;
@@ -2367,13 +2367,11 @@ void ch582_task(void) {
      * flight (an orphan) -- or, worse, popped the NEXT frame, since `61 0D 0A`
      * carries no sequence number. */
     uint16_t p2 = prof ? ACCT_NOW() : 0u;
-#ifdef AK820_DEV_HOOKS
     /* R4-1/R5-1: an ACK may still be unread -- bytes left queued at the
      * 64-byte cap, or a fresh `61` / `61 0D` in the window (an old one was
      * expired on silence above). The pump then neither judges a timeout nor
      * starts a new frame (capped and counted inside it). */
     rx_defer = !drained || b0 == 0x61 || (b1 == 0x61 && b0 == 0x0D);
-#endif
     ch582_tx_pump();
 #ifdef AK820_DEV_HOOKS
     /* After the pump, not before: a select or pair it sends this pass calls
