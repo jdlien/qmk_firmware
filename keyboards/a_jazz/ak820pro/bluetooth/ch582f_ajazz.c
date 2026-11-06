@@ -6,13 +6,11 @@
 #include "hal.h"
 #include "health.h"   /* health_note_rx_malformed() -- main-loop context only */
 #include "loop_acct.h" /* D1: this task's share of each main-loop pass */
-#ifdef AK820_DEV_HOOKS
 #include "lockchan.h"  /* the lock-LED channel's receiver, fed from 5A */
 #include "lockchan_media.h"   /* what a committed frame means */
 #include "ak820pro.h"         /* hid_rawhid_media_within, the channel's lease */
 #include "graphics/display.h" /* the text slot, for a committed frame */
 #include "rtc/rtc.h"          /* the board's clock, for a type 4 */
-#endif
 
 #ifndef CH582_SERIAL_DRIVER
 #    define CH582_SERIAL_DRIVER SD2
@@ -458,10 +456,11 @@ bool ch582_rxtap_page(uint8_t page, uint8_t *out) {
     return true;
 }
 
-/* The lock-LED channel's receiver (lockchan.c; plans/LOCK-LED-CHANNEL-PLAN.md).
- * Dev builds only while it is an experiment: frames are decoded and counted,
- * and HC_DEVHOOK ops 10-13 read them; nothing acts on them yet. Fed every 5A
- * byte while linked, raw (before the d <= 0x1F guard: P3 carries data in the
+#endif /* AK820_DEV_HOOKS: the 5A trace and the RX tap */
+
+/* The lock-LED channel's receiver (lockchan.c; plans/LOCK-LED-CHANNEL-PLAN.md):
+ * now playing and the clock over Bluetooth, in every build. A dev build's
+ * HC_DEVHOOK ops 10-13 read its counts. Fed every 5A byte while linked, raw (before the d <= 0x1F guard: P3 carries data in the
  * padding bits 5-7, which the module passes and the guard keeps from QMK).
  * Zero-initialised, which is lockchan_init's state. */
 static lockchan_t lockchan;
@@ -625,13 +624,15 @@ void ch582_lockchan_media_counts(uint32_t out[3]) {
     out[1] = lcm_rejected;
     out[2] = lcm_leased;
 }
-/* Every site where the link may move also drops stage 1's pending echo, so a
- * reply cannot leave on a link other than its request's (r81 below; codex
- * stage-1 review, should-fix 4). */
+/* Every site where the link may move: a frame being assembled and a clock frame
+ * waiting to retry go. On a dev build so does stage 1's pending echo, so a reply
+ * cannot leave on a link other than its request's (r81 below; codex stage-1
+ * review, should-fix 4). */
+#ifdef AK820_DEV_HOOKS
 static void r81_link_lost(void);
 #    define LOCKCHAN_LINK_LOST() do { lockchan_link_lost(&lockchan); r81_link_lost(); ch582_lockchan_clock_drop(); } while (0)
 #else
-#    define LOCKCHAN_LINK_LOST() ((void)0)
+#    define LOCKCHAN_LINK_LOST() do { lockchan_link_lost(&lockchan); ch582_lockchan_clock_drop(); } while (0)
 #endif
 
 static const SerialConfig serial_cfg = {
@@ -2142,10 +2143,10 @@ void ch582_task(void) {
                      *     to pass the checksum usually has high bits set. */
 #ifdef AK820_DEV_HOOKS
                     led5a_note(d, is_module_connected && (d & ~0x1F) == 0);
+#endif
                     if (is_module_connected && !usb_mode && lockchan_feed(&lockchan, d, timer_read32())) {
                         lockchan_media_commit(&lockchan.last);
                     }
-#endif
                     if (is_module_connected && (d & ~0x1F) == 0) {
                         host_leds = d;
                     } else if ((d & ~0x1F) == 0 &&
@@ -2376,8 +2377,20 @@ void ch582_task(void) {
      * effect runs (codex, stage-2 implementation review, 3). At most one a
      * pass; never nested (R2-2). Its response goes on a later pass. */
     r81_dispatch();
-    lockchan_poll(&lockchan, timer_read32(), is_module_connected && !usb_mode);
-    lockchan_clock_poll(&lcc, timer_read32(), &lcc_hooks);
+#endif
+    /* Each timer_read32() is a 64-bit divide on this core, ~100-250 us under the
+     * row handler, and only a frame in progress or a clock frame waiting to retry
+     * uses the time: an idle pass reads none (both polls return at once there). */
+    {
+        bool lc_linked = is_module_connected && !usb_mode;
+        if (!lc_linked) {
+            lockchan_link_lost(&lockchan);
+        } else if (lockchan_busy(&lockchan)) {
+            lockchan_poll(&lockchan, timer_read32(), true);
+        }
+        if (lcc.pending) lockchan_clock_poll(&lcc, timer_read32(), &lcc_hooks);
+    }
+#ifdef AK820_DEV_HOOKS
     r81_depth--;
 #endif
     if (prof) prof_end(p0, p1, p2, bytes_processed);
