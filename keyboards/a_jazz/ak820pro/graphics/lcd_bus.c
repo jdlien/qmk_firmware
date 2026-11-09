@@ -199,7 +199,7 @@ static bool spi0_poll_send(const uint8_t *buf, uint32_t n) {
      * give-up, touching nothing. */
     uint32_t e = 0;
     while (SN_SPI0->STAT_b.BUSY && e < SPI0_POLL_ENTRY_SPIN) e++;
-    if (!blit_done || SPID0.state != SPI_READY || SN_SPI0->STAT_b.BUSY) {
+    if (!blit_done || SPID0.state != SPI_READY || SN_SPI0->STAT_b.BUSY || !SN_SPI0->STAT_b.TX_EMPTY) {
         poll_give_up(false);
         return false;
     }
@@ -233,13 +233,16 @@ static bool spi0_poll_send(const uint8_t *buf, uint32_t n) {
 #endif
     while (rx < stop) {
         while (tx < stop && (tx - rx) < 8u && !SN_SPI0->STAT_b.TX_FULL) SN_SPI0->DATA = buf[tx++];
-        while (!SN_SPI0->STAT_b.RX_EMPTY) {
+        /* At most the FIFO's 8 an iteration: a receive flag stuck clear cannot
+         * hold the loop past the spin limit's check (codex, the garble review). */
+        for (uint32_t d = 0; d < 8u && !SN_SPI0->STAT_b.RX_EMPTY; d++) {
             (void)SN_SPI0->DATA;
             if (rx < tx) rx++;   /* an entry with none of ours in flight is a stray */
             else poll_stray();
         }
         if (++spin > limit) { ok = false; break; }
     }
+    if (ok && (tx != stop || rx != stop)) ok = false;   /* success only with every byte submitted and answered */
     /* Every byte out before the caller may change DC: the transmit FIFO empty
      * and the shifter idle, as the DMA's teardown waits (hal_spi_v2_lld.c),
      * seen on three reads in a row so a gap between two queued frames can't
@@ -249,11 +252,12 @@ static bool spi0_poll_send(const uint8_t *buf, uint32_t n) {
      * the column end as a command and kept the last window's. */
     bool waited = false;
     for (uint8_t idle = 0; ok && idle < 3u;) {
-        if (SN_SPI0->STAT_b.TX_EMPTY && !SN_SPI0->STAT_b.BUSY) {
+        const uint32_t st = SN_SPI0->STAT;   /* one read decides and counts (codex): TX_EMPTY b0, BUSY b4 */
+        if ((st & 1u) && !(st & (1u << 4))) {
             idle++;
         } else {
             idle = 0;
-            if (!SN_SPI0->STAT_b.TX_EMPTY) waited = true;
+            if (!(st & 1u)) waited = true;
         }
         if (++spin > limit + 1000u) ok = false;
     }
