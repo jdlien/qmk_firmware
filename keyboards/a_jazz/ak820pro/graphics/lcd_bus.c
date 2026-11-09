@@ -351,6 +351,23 @@ static void reset_panel(void) {
  * asserted for the caller to release. */
 static bool lcd_window_polled(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
     x0 += LCD_OFF_X; x1 += LCD_OFF_X; y0 += LCD_OFF_Y; y1 += LCD_OFF_Y;
+    /* Fix B for the 11-09 title garble (plans/LCD-TITLE-GARBLE-PLAN.md): the
+     * manual's rule after any change to CTRL0 while enabled is a FRESET (p.
+     * 162), and the DMA's completion changes DL from 16 to 8 without one,
+     * with the panel still selected (hal_spi_v2_lld.c). Only the next DMA's
+     * Prepare() resets, so every polled send between two DMAs ran on SPI0 as
+     * that change left it. Here, with both chip selects high and the bus idle
+     * (every caller quiesced, and lcd_blit_flash's Prepare() has fired
+     * nothing yet), leftovers are counted as strays and the FSM and FIFOs
+     * reset before the window goes out. */
+    if (blit_done && !SN_SPI0->STAT_b.BUSY) {
+        for (uint32_t d = 0; d < 16u && !SN_SPI0->STAT_b.RX_EMPTY; d++) {
+            (void)SN_SPI0->DATA;
+            poll_stray();
+        }
+        SN_SPI0->CTRL0_b.FRESET = 0b11;
+        for (uint32_t w = 0; w < 64u && SN_SPI0->CTRL0_b.FRESET; w++) { }   /* self-clearing */
+    }
     const uint8_t caset = 0x2A, raset = 0x2B, ramwr = 0x2C;
     const uint8_t xs[4] = {(uint8_t)(x0 >> 8), (uint8_t)x0, (uint8_t)(x1 >> 8), (uint8_t)x1};
     const uint8_t ys[4] = {(uint8_t)(y0 >> 8), (uint8_t)y0, (uint8_t)(y1 >> 8), (uint8_t)y1};
