@@ -365,8 +365,7 @@ static bool lcd_window_polled(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1
             (void)SN_SPI0->DATA;
             poll_stray();
         }
-        SN_SPI0->CTRL0_b.FRESET = 0b11;
-        for (uint32_t w = 0; w < 64u && SN_SPI0->CTRL0_b.FRESET; w++) { }   /* self-clearing */
+        SN_SPI0->CTRL0_b.FRESET = 0b11;   /* write-only (SN32F290.h's __OM): no readback to wait on */
     }
     const uint8_t caset = 0x2A, raset = 0x2B, ramwr = 0x2C;
     const uint8_t xs[4] = {(uint8_t)(x0 >> 8), (uint8_t)x0, (uint8_t)(x1 >> 8), (uint8_t)x1};
