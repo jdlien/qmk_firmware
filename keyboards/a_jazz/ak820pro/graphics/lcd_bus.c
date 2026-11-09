@@ -200,7 +200,32 @@ static void poll_give_up(bool reset) {
  * to the next polled window that is not a DMA's own, taken only within 8
  * main-loop passes of the completion so the 16-bit tick cannot alias (0.35 s
  * a wrap; a pass is under 25 ms). */
-static uint8_t           poll_mode;           /* 0: fix A, 1: 4790208267's send */
+/* The split (11-09 evening): modes 2-6 are the old send plus ONE of fix A's
+ * changes each, so the change that alone stops the garble names the
+ * mechanism. The counters show that in A's mode none of its checks ever
+ * fired (strays, late and give-ups 0 over 534 windows), so A differed from
+ * the old send only by a few STAT reads before the first byte and after the
+ * last; modes 3 and 5 are that time alone, N discarded reads, settable. */
+enum {
+    PM_A          = 0,   /* fix A's send, every boot's default */
+    PM_OLD        = 1,   /* 4790208267's, verbatim */
+    PM_EXIT       = 2,   /* old + A's exit: three idle STAT reads in a row */
+    PM_DLY_AFTER  = 3,   /* old + N discarded STAT reads after its BUSY wait */
+    PM_ENTRY      = 4,   /* old + A's entry: TX empty required, the RX drain */
+    PM_DLY_BEFORE = 5,   /* old + N discarded STAT reads before its first byte */
+    PM_ACCT       = 6,   /* old + A's accounting: own entries only, bounded, all answered */
+    PM_COUNT
+};
+static uint8_t           poll_mode;           /* PM_*; a boot starts at PM_A */
+static uint8_t           poll_delay_n = 4u;   /* modes 3 and 5: the discarded reads */
+static uint16_t          exit_extra;          /* A's exit (modes 0, 2) needing more than its three reads */
+/* SCK for the painters' polled windows and their payloads, to slow it for a
+ * logic analyser: CLKDIV's DIV (SCK = 48 MHz / (2 DIV + 2); 0 is the 24 MHz
+ * every boot runs). Applied only at a painter's window, with SPI0 idle and
+ * before its CS and DC move, so it adds nothing between a DC flip and a byte;
+ * never inside a DMA's arm, whose Prepare() set 24 MHz for the DMA itself. */
+static uint8_t           poll_div;
+static bool              poll_div_pending;    /* poll_div differs from what SPI0 may hold */
 static uint16_t          window_notidle;
 static volatile uint16_t lcd_pass_no, dma_done_pass;
 static uint16_t          dma_gap_min = 0xFFFFu;   /* system ticks, 5.33 us */
@@ -208,11 +233,7 @@ static uint32_t          windows_total, windows_after_dma;
 static volatile bool     dma_since_window;
 static volatile uint16_t dma_done_tick;
 static bool              window_is_dma_arm;
-static bool spi0_poll_send_a(const uint8_t *buf, uint32_t n);
-static bool spi0_poll_send_old(const uint8_t *buf, uint32_t n);
-static bool spi0_poll_send(const uint8_t *buf, uint32_t n) {
-    return poll_mode ? spi0_poll_send_old(buf, n) : spi0_poll_send_a(buf, n);
-}
+static bool spi0_poll_send(const uint8_t *buf, uint32_t n);   /* the dispatcher, after the variants */
 
 static bool spi0_poll_send_a(const uint8_t *buf, uint32_t n) {
     /* The entry check (C4, S1): SPI0 idle -- no DMA in flight, the ChibiOS
@@ -274,6 +295,7 @@ static bool spi0_poll_send_a(const uint8_t *buf, uint32_t n) {
      * either way a queued byte went out after the DC flip, so the panel took
      * the column end as a command and kept the last window's. */
     bool waited = false;
+    const uint32_t spin0 = spin;   /* lcd-diag: reads beyond three mean BUSY or TX seen not idle */
     for (uint8_t idle = 0; ok && idle < 3u;) {
         const uint32_t st = SN_SPI0->STAT;   /* one read decides and counts (codex): TX_EMPTY b0, BUSY b4 */
         if ((st & 1u) && !(st & (1u << 4))) {
@@ -285,6 +307,7 @@ static bool spi0_poll_send_a(const uint8_t *buf, uint32_t n) {
         if (++spin > limit + 1000u) ok = false;
     }
     if (waited && spi0_poll_late < 0xFFFFu) spi0_poll_late++;
+    if (spin - spin0 > 3u && exit_extra < 0xFFFFu) exit_extra++;
 #ifdef WDT_TEST_HOOKS
     if (fault) ok = false;   /* mode 0: half sent; mode 1: all sent, BUSY "stuck" */
 #endif
@@ -326,6 +349,111 @@ static bool spi0_poll_send_old(const uint8_t *buf, uint32_t n) {
     SN_SPI0->IC = 1u << 2;                               /* RXFIFOTHIC: a literal write, as the driver does */
     SN_SPI0->IE = 0b0100;                                /* RXFIFOTHIE back */
     return ok;
+}
+
+/* lcd-diag's split: the old send with ONE of fix A's changes, chosen by the
+ * constant v, so each wrapper below compiles to its own straight-line copy
+ * with no run-time test of the mode inside the send. Every part not named by
+ * v is the old send's, verbatim, in its order. No observation is added
+ * beyond what the borrowed part of A itself counts. */
+static inline __attribute__((always_inline)) bool split_send(const uint8_t *buf, uint32_t n, const unsigned v) {
+    uint32_t e = 0;
+    while (SN_SPI0->STAT_b.BUSY && e < SPI0_POLL_ENTRY_SPIN) e++;
+    if (v == PM_ENTRY) {   /* A's entry: TX empty required; RX leftovers drained and counted */
+        if (!blit_done || SPID0.state != SPI_READY || SN_SPI0->STAT_b.BUSY || !SN_SPI0->STAT_b.TX_EMPTY) {
+            poll_give_up(false);
+            return false;
+        }
+        for (uint32_t d = 0; d < 16u && !SN_SPI0->STAT_b.RX_EMPTY; d++) {
+            (void)SN_SPI0->DATA;
+            poll_stray();
+        }
+        if (!SN_SPI0->STAT_b.RX_EMPTY) {
+            poll_give_up(false);
+            return false;
+        }
+    } else if (!blit_done || SPID0.state != SPI_READY || SN_SPI0->STAT_b.BUSY || !SN_SPI0->STAT_b.RX_EMPTY) {
+        poll_give_up(false);
+        return false;
+    }
+    if (v == PM_DLY_BEFORE) {   /* time alone, where A's entry spends its extra reads */
+        for (uint32_t d = poll_delay_n; d; d--) (void)SN_SPI0->STAT;
+    }
+    SN_SPI0->IE = 0;                                     /* every SPI0 source off: safe only quiesced */
+    uint32_t tx = 0, rx = 0, spin = 0;
+    const uint32_t limit = n * SPI0_POLL_SPIN_PER_BYTE + 1000u;
+    uint32_t       stop  = n;
+    bool           ok    = true;
+    while (rx < stop) {
+        while (tx < stop && (tx - rx) < 8u && !SN_SPI0->STAT_b.TX_FULL) SN_SPI0->DATA = buf[tx++];
+        if (v == PM_ACCT) {   /* A's: at most 8 an iteration, an entry beyond tx is a stray */
+            for (uint32_t d = 0; d < 8u && !SN_SPI0->STAT_b.RX_EMPTY; d++) {
+                (void)SN_SPI0->DATA;
+                if (rx < tx) rx++;
+                else poll_stray();
+            }
+        } else {
+            while (!SN_SPI0->STAT_b.RX_EMPTY) { (void)SN_SPI0->DATA; rx++; }
+        }
+        if (++spin > limit) { ok = false; break; }
+    }
+    if (v == PM_ACCT && ok && (tx != stop || rx != stop)) ok = false;   /* A's: every byte submitted and answered */
+    if (v == PM_EXIT) {   /* A's exit in place of the BUSY wait, its counters with it */
+        bool waited = false;
+        const uint32_t spin0 = spin;
+        for (uint8_t idle = 0; ok && idle < 3u;) {
+            const uint32_t st = SN_SPI0->STAT;   /* TX_EMPTY b0, BUSY b4 */
+            if ((st & 1u) && !(st & (1u << 4))) {
+                idle++;
+            } else {
+                idle = 0;
+                if (!(st & 1u)) waited = true;
+            }
+            if (++spin > limit + 1000u) ok = false;
+        }
+        if (waited && spi0_poll_late < 0xFFFFu) spi0_poll_late++;
+        if (spin - spin0 > 3u && exit_extra < 0xFFFFu) exit_extra++;
+    } else {
+        while (ok && SN_SPI0->STAT_b.BUSY) {
+            if (++spin > limit + 1000u) ok = false;
+        }
+    }
+    if (v == PM_DLY_AFTER) {   /* time alone, where A's exit spends its extra reads */
+        for (uint32_t d = poll_delay_n; d; d--) (void)SN_SPI0->STAT;
+    }
+    if (!ok) poll_give_up(true);
+    if (v == PM_ACCT) {
+        for (uint32_t d = 0; d < 16u && !SN_SPI0->STAT_b.RX_EMPTY; d++) {
+            (void)SN_SPI0->DATA;
+            if (ok) poll_stray();   /* past a complete count: not one of ours */
+        }
+    } else {
+        for (uint32_t d = 0; d < 16u && !SN_SPI0->STAT_b.RX_EMPTY; d++) (void)SN_SPI0->DATA;
+    }
+    SN_SPI0->IC = 1u << 2;                               /* RXFIFOTHIC: a literal write, as the driver does */
+    SN_SPI0->IE = 0b0100;                                /* RXFIFOTHIE back */
+    return ok;
+}
+static bool spi0_poll_send_exit(const uint8_t *b, uint32_t n)       { return split_send(b, n, PM_EXIT); }
+static bool spi0_poll_send_dly_after(const uint8_t *b, uint32_t n)  { return split_send(b, n, PM_DLY_AFTER); }
+static bool spi0_poll_send_entry(const uint8_t *b, uint32_t n)      { return split_send(b, n, PM_ENTRY); }
+static bool spi0_poll_send_dly_before(const uint8_t *b, uint32_t n) { return split_send(b, n, PM_DLY_BEFORE); }
+static bool spi0_poll_send_acct(const uint8_t *b, uint32_t n)       { return split_send(b, n, PM_ACCT); }
+
+/* One table call for every mode, so each pays the same dispatch between the
+ * caller's DC flip and its first byte. */
+typedef bool (*poll_send_fn)(const uint8_t *buf, uint32_t n);
+static const poll_send_fn poll_sends[PM_COUNT] = {
+    [PM_A]          = spi0_poll_send_a,
+    [PM_OLD]        = spi0_poll_send_old,
+    [PM_EXIT]       = spi0_poll_send_exit,
+    [PM_DLY_AFTER]  = spi0_poll_send_dly_after,
+    [PM_ENTRY]      = spi0_poll_send_entry,
+    [PM_DLY_BEFORE] = spi0_poll_send_dly_before,
+    [PM_ACCT]       = spi0_poll_send_acct,
+};
+static bool spi0_poll_send(const uint8_t *buf, uint32_t n) {
+    return poll_sends[poll_mode](buf, n);
 }
 
 /* One scratch buffer for every CPU push (plans/CONFIG-MENU-BUILD-PLAN.md, C4):
@@ -407,6 +535,14 @@ static bool lcd_window_polled(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1
         windows_total++;
         const uint32_t st = SN_SPI0->STAT;   /* TX_EMPTY b0, RX_EMPTY b2, BUSY b4 */
         if (((st & 0x15u) != 0x05u) && window_notidle < 0xFFFFu) window_notidle++;
+        /* The SCK divider (poll_div), only with SPI0 idle and no DMA of ours
+         * in flight; until then this window runs at whatever SPI0 holds. Not
+         * cleared at 24 MHz until written, so a DMA's Prepare() writing DIV 0
+         * behind it leaves the next window to put the slow one back. */
+        if ((poll_div_pending || poll_div) && blit_done && (st & 0x15u) == 0x05u) {
+            SN_SPI0->CLKDIV_b.DIV = poll_div;
+            poll_div_pending = false;
+        }
         if (dma_since_window) {
             dma_since_window = false;
             if ((uint16_t)(lcd_pass_no - dma_done_pass) <= 8u) {
@@ -1684,16 +1820,26 @@ void anim_task(void) {
 }
 
 /* lcd-diag's HC_LCDDIAG (hid_protocol.c): sub 0 reads, 1 sets the mode from
- * data[4] (0 fix A, 1 the old send) and reads, 2 zeroes the counters and
- * reads. Reply from data[4]: [0] mode, [1..2] give-ups, [3..4] strays, [5..6]
- * late, [7..8] 0 (was old_queued, removed), [9..10] windows not idle, [11..12] the shortest
+ * data[4] (PM_*, 0-6) and reads, 2 zeroes the counters and reads, 3 sets
+ * modes 3 and 5's N from data[4], 4 sets the painters' SCK divider from
+ * data[4] (0-15; 0 is 24 MHz, 7 is 3 MHz). Reply from data[4]: [0] mode,
+ * [1..2] give-ups, [3..4] strays, [5..6] late, [7..8] A's exits needing more
+ * than three reads, [9..10] windows not idle, [11..12] the shortest
  * DMA-to-window gap (system ticks, 0xFFFF none), [13..16] windows after a
- * DMA, [17..20] polled windows, all LE. Main thread, between paints. */
+ * DMA, [17..20] polled windows, [21] N, [22] the divider, all LE. Main
+ * thread, between paints: none of it touches SPI0 (the divider waits for a
+ * painter's idle window). */
 bool lcd_diag_op(uint8_t *data) {
     const uint8_t sub = data[3];
-    if (sub > 2u || (sub == 1u && data[4] > 1u)) return false;
+    if (sub > 4u || (sub == 1u && data[4] >= PM_COUNT) || (sub == 4u && data[4] > 15u)) return false;
     if (sub == 1u) poll_mode = data[4];
+    if (sub == 3u) poll_delay_n = data[4];
+    if (sub == 4u && data[4] != poll_div) {
+        poll_div         = data[4];
+        poll_div_pending = true;
+    }
     if (sub == 2u) {
+        exit_extra = 0;
         spi0_poll_giveups = spi0_poll_strays = spi0_poll_late = 0;
         window_notidle   = 0;
         dma_gap_min      = 0xFFFFu;
@@ -1709,8 +1855,11 @@ bool lcd_diag_op(uint8_t *data) {
     memcpy(&o[9], &window_notidle, 2);
     uint16_t g = dma_gap_min;
     memcpy(&o[11], &g, 2);
+    memcpy(&o[7], &exit_extra, 2);
     memcpy(&o[13], &windows_after_dma, 4);
     memcpy(&o[17], &windows_total, 4);
+    o[21] = poll_delay_n;
+    o[22] = poll_div;
     return true;
 }
 
