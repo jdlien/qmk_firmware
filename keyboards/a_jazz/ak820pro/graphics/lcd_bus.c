@@ -1714,5 +1714,13 @@ bool lcd_diag_op(uint8_t *data) {
     return true;
 }
 
-/* lcd-diag: a main-loop pass ended (display_pass_end). */
-void lcd_diag_pass(void) { lcd_pass_no++; }
+/* lcd-diag: a main-loop pass ended (display_pass_end). A completion older
+ * than 8 passes expires here, so no pending marker can survive a whole cycle
+ * of the 16-bit pass count and come back looking fresh (codex's verify). Under
+ * the lock: the completion's ISR writes the marker and its pass. */
+void lcd_diag_pass(void) {
+    chSysLock();
+    lcd_pass_no++;
+    if (dma_since_window && (uint16_t)(lcd_pass_no - dma_done_pass) > 8u) dma_since_window = false;
+    chSysUnlock();
+}
