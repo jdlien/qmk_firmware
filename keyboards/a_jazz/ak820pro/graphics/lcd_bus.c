@@ -440,8 +440,9 @@ static bool spi0_poll_send_entry(const uint8_t *b, uint32_t n)      { return spl
 static bool spi0_poll_send_dly_before(const uint8_t *b, uint32_t n) { return split_send(b, n, PM_DLY_BEFORE); }
 static bool spi0_poll_send_acct(const uint8_t *b, uint32_t n)       { return split_send(b, n, PM_ACCT); }
 
-/* One table call for every mode, so each pays the same dispatch between the
- * caller's DC flip and its first byte. */
+/* The payloads' dispatch (a pixel stream after its window's last DC flip):
+ * one table call for every mode. The window's own parts call their send
+ * directly (window_parts). */
 typedef bool (*poll_send_fn)(const uint8_t *buf, uint32_t n);
 static const poll_send_fn poll_sends[PM_COUNT] = {
     [PM_A]          = spi0_poll_send_a,
@@ -530,6 +531,22 @@ static void reset_panel(void) {
  * polled send, which waits out BUSY before returning, so DC changes only
  * between whole bytes. False: a part gave up (blit_lost set); CS is left
  * asserted for the caller to release. */
+/* lcd-diag: the window's five parts with the send named at compile time, so
+ * each mode's copy calls its send directly, as 5688b2a975's did after its one
+ * mode test: a DC flip, the arguments, the call, with no table load between
+ * the flip and the first byte (the split measures time at that scale). */
+static inline __attribute__((always_inline)) bool window_parts(poll_send_fn send, const uint8_t *caset, const uint8_t *xs,
+                                                              const uint8_t *raset, const uint8_t *ys, const uint8_t *ramwr) {
+    cs(0);
+    dc(0); if (!send(caset, 1)) return false;
+    dc(1); if (!send(xs, 4)) return false;
+    dc(0); if (!send(raset, 1)) return false;
+    dc(1); if (!send(ys, 4)) return false;
+    dc(0); if (!send(ramwr, 1)) return false;
+    dc(1);
+    return true;
+}
+
 static bool lcd_window_polled(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
     if (!window_is_dma_arm) {   /* lcd-diag: a polled window, not a DMA's own */
         windows_total++;
@@ -556,14 +573,15 @@ static bool lcd_window_polled(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1
     const uint8_t caset = 0x2A, raset = 0x2B, ramwr = 0x2C;
     const uint8_t xs[4] = {(uint8_t)(x0 >> 8), (uint8_t)x0, (uint8_t)(x1 >> 8), (uint8_t)x1};
     const uint8_t ys[4] = {(uint8_t)(y0 >> 8), (uint8_t)y0, (uint8_t)(y1 >> 8), (uint8_t)y1};
-    cs(0);
-    dc(0); if (!spi0_poll_send(&caset, 1)) return false;
-    dc(1); if (!spi0_poll_send(xs, 4)) return false;
-    dc(0); if (!spi0_poll_send(&raset, 1)) return false;
-    dc(1); if (!spi0_poll_send(ys, 4)) return false;
-    dc(0); if (!spi0_poll_send(&ramwr, 1)) return false;
-    dc(1);
-    return true;
+    switch (poll_mode) {
+    case PM_OLD:        return window_parts(spi0_poll_send_old, &caset, xs, &raset, ys, &ramwr);
+    case PM_EXIT:       return window_parts(spi0_poll_send_exit, &caset, xs, &raset, ys, &ramwr);
+    case PM_DLY_AFTER:  return window_parts(spi0_poll_send_dly_after, &caset, xs, &raset, ys, &ramwr);
+    case PM_ENTRY:      return window_parts(spi0_poll_send_entry, &caset, xs, &raset, ys, &ramwr);
+    case PM_DLY_BEFORE: return window_parts(spi0_poll_send_dly_before, &caset, xs, &raset, ys, &ramwr);
+    case PM_ACCT:       return window_parts(spi0_poll_send_acct, &caset, xs, &raset, ys, &ramwr);
+    default:            return window_parts(spi0_poll_send_a, &caset, xs, &raset, ys, &ramwr);
+    }
 }
 
 // ---------------------------------------------------------------------------
