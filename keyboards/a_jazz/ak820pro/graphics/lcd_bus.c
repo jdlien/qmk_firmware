@@ -538,11 +538,11 @@ static void reset_panel(void) {
 static inline __attribute__((always_inline)) bool window_parts(poll_send_fn send, const uint8_t *caset, const uint8_t *xs,
                                                               const uint8_t *raset, const uint8_t *ys, const uint8_t *ramwr) {
     cs(0);
-    dc(0); if (!send(caset, 1)) return false;
-    dc(1); if (!send(xs, 4)) return false;
-    dc(0); if (!send(raset, 1)) return false;
-    dc(1); if (!send(ys, 4)) return false;
-    dc(0); if (!send(ramwr, 1)) return false;
+    dc(0); if (__builtin_expect(!send(caset, 1), 0)) return false;
+    dc(1); if (__builtin_expect(!send(xs, 4), 0)) return false;
+    dc(0); if (__builtin_expect(!send(raset, 1), 0)) return false;
+    dc(1); if (__builtin_expect(!send(ys, 4), 0)) return false;
+    dc(0); if (__builtin_expect(!send(ramwr, 1), 0)) return false;
     dc(1);
     return true;
 }
