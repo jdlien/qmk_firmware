@@ -546,6 +546,9 @@ enum {
      * sub, ...]. Every build: flash.sh keeps the profiles and the live
      * settings across a flash with it. An unknown sub answers unhandled. */
     HC_PROFILES    = 0x10,
+    /* lcd-diag branch only, never merged: the title garble's switchable send
+     * (graphics/lcd_bus.c, lcd_diag_op). */
+    HC_LCDDIAG     = 0x14,
     /* Clock-sync status (PLAN.md 3.7): [.., .., HC_RTC, page] ->
      *   [.., .., HC_RTC, page, block...]
      * page 1 = the 21-byte RTC_GET_TIME[11..31] tail at [4..24];
@@ -833,6 +836,9 @@ static void health_command(uint8_t *data, uint8_t length) {
             break;
         case HC_RESET:
             health_reset();
+            break;
+        case HC_LCDDIAG:
+            if (length < 32 || !lcd_diag_op(data)) data[0] = RTC_UNHANDLED;
             break;
         case HC_FLASHW:
             if (data[3] == FLASH_TIDY_PAGE && length >= 32) {   /* 10-27: the early cleanup's (flash_tidy.h) */
