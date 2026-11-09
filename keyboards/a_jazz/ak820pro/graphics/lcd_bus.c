@@ -217,7 +217,11 @@ enum {
     PM_COUNT
 };
 static uint8_t           poll_mode;           /* PM_*; a boot starts at PM_A */
-static uint8_t           poll_delay_n = 4u;   /* modes 3 and 5: the discarded reads */
+/* Modes 3 and 5: the discarded reads, 7N - 2 cycles plus ~8 of setup (codex,
+ * the split's review): 10 is ~76 cycles, over A's whole extra exit (~61) and
+ * its whole extra prefix (~54), so a delay mode at the default spends at
+ * least A's time on its side. */
+static uint8_t           poll_delay_n = 10u;
 static uint16_t          exit_extra;          /* A's exit (modes 0, 2) needing more than its three reads */
 /* SCK for the painters' polled windows and their payloads, to slow it for a
  * logic analyser: CLKDIV's DIV (SCK = 48 MHz / (2 DIV + 2); 0 is the 24 MHz
@@ -1844,9 +1848,12 @@ void anim_task(void) {
  * [1..2] give-ups, [3..4] strays, [5..6] late, [7..8] A's exits needing more
  * than three reads, [9..10] windows not idle, [11..12] the shortest
  * DMA-to-window gap (system ticks, 0xFFFF none), [13..16] windows after a
- * DMA, [17..20] polled windows, [21] N, [22] the divider, all LE. Main
- * thread, between paints: none of it touches SPI0 (the divider waits for a
- * painter's idle window). */
+ * DMA, [17..20] polled windows, [21] N, [22] the divider asked for, [23] this
+ * layout's version (2: the split's; earlier builds leave 0, and their [7..8]
+ * is not exit_extra), [24] the divider SPI0 holds now (a register read), [25]
+ * whether the one asked for is still to be applied, all LE. Main thread,
+ * between paints: none of it writes SPI0 (the divider waits for a painter's
+ * idle window). */
 bool lcd_diag_op(uint8_t *data) {
     const uint8_t sub = data[3];
     if (sub > 4u || (sub == 1u && data[4] >= PM_COUNT) || (sub == 4u && data[4] > 15u)) return false;
@@ -1878,6 +1885,9 @@ bool lcd_diag_op(uint8_t *data) {
     memcpy(&o[17], &windows_total, 4);
     o[21] = poll_delay_n;
     o[22] = poll_div;
+    o[23] = 2u;                                     /* the reply layout's version */
+    o[24] = (uint8_t)SN_SPI0->CLKDIV_b.DIV;          /* what SPI0 holds, not what was asked */
+    o[25] = poll_div_pending ? 1u : 0u;
     return true;
 }
 
