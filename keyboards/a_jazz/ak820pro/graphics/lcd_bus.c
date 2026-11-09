@@ -152,6 +152,18 @@ static volatile bool blit_done;   /* likewise: false while a flash->LCD DMA is i
 #define SPI0_POLL_SPIN_PER_BYTE 64u
 #define SPI0_POLL_ENTRY_SPIN    256u
 static uint16_t spi0_poll_giveups;
+/* The 11-09 large-font fault (plans/BACKLOG.md, "Stray white pixels"): on the
+ * daily build nearly every title change painted its letters into windows whose
+ * column end stayed at 127. Counted on every build, health page 4:
+ *   strays: receive entries no byte of the send accounts for, at its start
+ *     (which used to refuse the send) or after its count completed;
+ *   late:   sends whose count completed with the transmit FIFO not yet empty,
+ *     where returning on BUSY alone would have let the caller flip DC under a
+ *     queued byte. */
+static uint16_t spi0_poll_strays, spi0_poll_late;
+static inline void poll_stray(void) { if (spi0_poll_strays < 0xFFFFu) spi0_poll_strays++; }
+uint16_t lcd_spi0_poll_strays(void) { return spi0_poll_strays; }
+uint16_t lcd_spi0_poll_late(void) { return spi0_poll_late; }
 #ifdef AK820_DEV_HOOKS
 uint16_t lcd_spi0_poll_giveups(void) { return spi0_poll_giveups; }
 #    define POLL_FAIL() po_note_fail(PO_FAIL_SPI0_POLL)
@@ -187,7 +199,18 @@ static bool spi0_poll_send(const uint8_t *buf, uint32_t n) {
      * give-up, touching nothing. */
     uint32_t e = 0;
     while (SN_SPI0->STAT_b.BUSY && e < SPI0_POLL_ENTRY_SPIN) e++;
-    if (!blit_done || SPID0.state != SPI_READY || SN_SPI0->STAT_b.BUSY || !SN_SPI0->STAT_b.RX_EMPTY) {
+    if (!blit_done || SPID0.state != SPI_READY || SN_SPI0->STAT_b.BUSY) {
+        poll_give_up(false);
+        return false;
+    }
+    /* Idle, so anything still in the receive FIFO is a leftover (a DMA's late
+     * word, an earlier send's last echo after its drain): discarded and
+     * counted, not counted as one of this send's bytes. */
+    for (uint32_t d = 0; d < 16u && !SN_SPI0->STAT_b.RX_EMPTY; d++) {
+        (void)SN_SPI0->DATA;
+        poll_stray();
+    }
+    if (!SN_SPI0->STAT_b.RX_EMPTY) {
         poll_give_up(false);
         return false;
     }
@@ -210,17 +233,39 @@ static bool spi0_poll_send(const uint8_t *buf, uint32_t n) {
 #endif
     while (rx < stop) {
         while (tx < stop && (tx - rx) < 8u && !SN_SPI0->STAT_b.TX_FULL) SN_SPI0->DATA = buf[tx++];
-        while (!SN_SPI0->STAT_b.RX_EMPTY) { (void)SN_SPI0->DATA; rx++; }
+        while (!SN_SPI0->STAT_b.RX_EMPTY) {
+            (void)SN_SPI0->DATA;
+            if (rx < tx) rx++;   /* an entry with none of ours in flight is a stray */
+            else poll_stray();
+        }
         if (++spin > limit) { ok = false; break; }
     }
-    while (ok && SN_SPI0->STAT_b.BUSY) {
+    /* Every byte out before the caller may change DC: the transmit FIFO empty
+     * and the shifter idle, as the DMA's teardown waits (hal_spi_v2_lld.c),
+     * seen on three reads in a row so a gap between two queued frames can't
+     * pass for the end. The count alone completes one entry early when a
+     * stray was taken for ours, and BUSY alone can read clear between frames;
+     * either way a queued byte went out after the DC flip, so the panel took
+     * the column end as a command and kept the last window's. */
+    bool waited = false;
+    for (uint8_t idle = 0; ok && idle < 3u;) {
+        if (SN_SPI0->STAT_b.TX_EMPTY && !SN_SPI0->STAT_b.BUSY) {
+            idle++;
+        } else {
+            idle = 0;
+            if (!SN_SPI0->STAT_b.TX_EMPTY) waited = true;
+        }
         if (++spin > limit + 1000u) ok = false;
     }
+    if (waited && spi0_poll_late < 0xFFFFu) spi0_poll_late++;
 #ifdef WDT_TEST_HOOKS
     if (fault) ok = false;   /* mode 0: half sent; mode 1: all sent, BUSY "stuck" */
 #endif
     if (!ok) poll_give_up(true);
-    for (uint32_t d = 0; d < 16u && !SN_SPI0->STAT_b.RX_EMPTY; d++) (void)SN_SPI0->DATA;
+    for (uint32_t d = 0; d < 16u && !SN_SPI0->STAT_b.RX_EMPTY; d++) {
+        (void)SN_SPI0->DATA;
+        if (ok) poll_stray();   /* past a complete count: not one of ours */
+    }
     SN_SPI0->IC = 1u << 2;                               /* RXFIFOTHIC: a literal write, as the driver does */
     SN_SPI0->IE = 0b0100;                                /* RXFIFOTHIE back */
     return ok;

@@ -40,6 +40,10 @@ bool     lcd_blit_lost_pending(void);
 void     lcd_blit_lost_inject(void);   /* op 27 sub 8 */
 #endif
 uint16_t lcd_blit_timeouts(void);
+/* The polled send's leftovers and its wait for an empty FIFO (lcd_bus.c, the
+ * 11-09 large-font fault): health page 4, every build. */
+uint16_t lcd_spi0_poll_strays(void);
+uint16_t lcd_spi0_poll_late(void);
 uint32_t lcd_blit_count_take(void);
 uint16_t lcd_blit_retries(void);
 /* Why each blit timeout happened, from the registers BEFORE the abort, and the

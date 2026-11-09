@@ -381,7 +381,8 @@ void health_fill4(uint8_t *out28) {
     PUT32((uint32_t)CH_CFG_ST_FREQUENCY);         /* 16 */
     PUT32(up);                                    /* 20 */
     PUT32(rst);                                   /* 24 */
-    PUT32(0);                                     /* 28: reserved */
+    PUT16(lcd_spi0_poll_strays());                /* 26: the polled send's leftovers (lcd_bus.c) */
+    PUT16(lcd_spi0_poll_late());                  /* 28: and its waits for an empty FIFO */
 #undef PUT16
 #undef PUT32
 }
