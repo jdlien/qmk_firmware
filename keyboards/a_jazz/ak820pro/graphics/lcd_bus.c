@@ -195,13 +195,14 @@ static void poll_give_up(bool reset) {
  * This branch only, never merged (plans/LCD-TITLE-GARBLE-PLAN.md). A daily
  * build whose polled send can run as fix A's (mode 0, the default and every
  * boot's) or as 4790208267's (mode 1), switched at run time by HC_LCDDIAG, so
- * the same board and build test both. Counters: the old send's exits with
- * the transmit FIFO not empty or BUSY set at the moment it decided it was done
- * (one STAT read, its behaviour otherwise untouched), the polled windows
- * that started with SPI0 not idle, and the shortest time from a DMA's
- * completion to the next polled window that is not a DMA's own. */
+ * the same board and build test both. Counters: the polled windows that
+ * started with SPI0 not idle, and the shortest time from a DMA's completion
+ * to the next polled window that is not a DMA's own, taken only within 8
+ * main-loop passes of the completion so the 16-bit tick cannot alias (0.35 s
+ * a wrap; a pass is under 25 ms). */
 static uint8_t           poll_mode;           /* 0: fix A, 1: 4790208267's send */
-static uint16_t          old_queued, window_notidle;
+static uint16_t          window_notidle;
+static volatile uint16_t lcd_pass_no, dma_done_pass;
 static uint16_t          dma_gap_min = 0xFFFFu;   /* system ticks, 5.33 us */
 static uint32_t          windows_total, windows_after_dma;
 static volatile bool     dma_since_window;
@@ -297,8 +298,9 @@ static bool spi0_poll_send_a(const uint8_t *buf, uint32_t n) {
     return ok;
 }
 
-/* 4790208267's spi0_poll_send, verbatim but for the observation after its
- * BUSY wait (lcd-diag's mode 1). */
+/* 4790208267's spi0_poll_send, verbatim (lcd-diag's mode 1): no observation
+ * of its own, since any work between its BUSY wait and the caller's DC flip
+ * could hide the very fault under test (codex, the diagnostic's review). */
 static bool spi0_poll_send_old(const uint8_t *buf, uint32_t n) {
     uint32_t e = 0;
     while (SN_SPI0->STAT_b.BUSY && e < SPI0_POLL_ENTRY_SPIN) e++;
@@ -318,10 +320,6 @@ static bool spi0_poll_send_old(const uint8_t *buf, uint32_t n) {
     }
     while (ok && SN_SPI0->STAT_b.BUSY) {
         if (++spin > limit + 1000u) ok = false;
-    }
-    if (ok) {   /* the observation: where the old send decided it was done */
-        const uint32_t st = SN_SPI0->STAT;
-        if ((!(st & 1u) || (st & (1u << 4))) && old_queued < 0xFFFFu) old_queued++;
     }
     if (!ok) poll_give_up(true);
     for (uint32_t d = 0; d < 16u && !SN_SPI0->STAT_b.RX_EMPTY; d++) (void)SN_SPI0->DATA;
@@ -411,9 +409,11 @@ static bool lcd_window_polled(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1
         if (((st & 0x15u) != 0x05u) && window_notidle < 0xFFFFu) window_notidle++;
         if (dma_since_window) {
             dma_since_window = false;
-            windows_after_dma++;
-            const uint16_t g = (uint16_t)((uint16_t)st_lld_get_counter() - dma_done_tick);
-            if (g < dma_gap_min) dma_gap_min = g;
+            if ((uint16_t)(lcd_pass_no - dma_done_pass) <= 8u) {
+                windows_after_dma++;
+                const uint16_t g = (uint16_t)((uint16_t)st_lld_get_counter() - dma_done_tick);
+                if (g < dma_gap_min) dma_gap_min = g;
+            }
         }
     }
     x0 += LCD_OFF_X; x1 += LCD_OFF_X; y0 += LCD_OFF_Y; y1 += LCD_OFF_Y;
@@ -1204,6 +1204,7 @@ static void blit_done_cb(void) {
     gpio_write_pin(FLASH_CS, 1);
     cs(1);
     dma_done_tick    = (uint16_t)st_lld_get_counter();   /* lcd-diag */
+    dma_done_pass    = lcd_pass_no;
     dma_since_window = true;
     blit_end_tick16 = (uint16_t)st_lld_get_counter();
 #ifdef CONSOLE_ENABLE
@@ -1685,7 +1686,7 @@ void anim_task(void) {
 /* lcd-diag's HC_LCDDIAG (hid_protocol.c): sub 0 reads, 1 sets the mode from
  * data[4] (0 fix A, 1 the old send) and reads, 2 zeroes the counters and
  * reads. Reply from data[4]: [0] mode, [1..2] give-ups, [3..4] strays, [5..6]
- * late, [7..8] old_queued, [9..10] windows not idle, [11..12] the shortest
+ * late, [7..8] 0 (was old_queued, removed), [9..10] windows not idle, [11..12] the shortest
  * DMA-to-window gap (system ticks, 0xFFFF none), [13..16] windows after a
  * DMA, [17..20] polled windows, all LE. Main thread, between paints. */
 bool lcd_diag_op(uint8_t *data) {
@@ -1694,8 +1695,9 @@ bool lcd_diag_op(uint8_t *data) {
     if (sub == 1u) poll_mode = data[4];
     if (sub == 2u) {
         spi0_poll_giveups = spi0_poll_strays = spi0_poll_late = 0;
-        old_queued = window_notidle = 0;
-        dma_gap_min = 0xFFFFu;
+        window_notidle   = 0;
+        dma_gap_min      = 0xFFFFu;
+        dma_since_window = false;
         windows_total = windows_after_dma = 0;
     }
     uint8_t *o = &data[4];
@@ -1704,7 +1706,6 @@ bool lcd_diag_op(uint8_t *data) {
     memcpy(&o[1], &spi0_poll_giveups, 2);
     memcpy(&o[3], &spi0_poll_strays, 2);
     memcpy(&o[5], &spi0_poll_late, 2);
-    memcpy(&o[7], &old_queued, 2);
     memcpy(&o[9], &window_notidle, 2);
     uint16_t g = dma_gap_min;
     memcpy(&o[11], &g, 2);
@@ -1712,3 +1713,6 @@ bool lcd_diag_op(uint8_t *data) {
     memcpy(&o[17], &windows_total, 4);
     return true;
 }
+
+/* lcd-diag: a main-loop pass ended (display_pass_end). */
+void lcd_diag_pass(void) { lcd_pass_no++; }

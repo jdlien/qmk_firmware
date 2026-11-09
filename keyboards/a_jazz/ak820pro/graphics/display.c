@@ -3657,6 +3657,7 @@ bool display_wake_notice_take(void) {
 }
 
 void display_pass_end(void) {
+    lcd_diag_pass();   /* lcd-diag branch only */
     batt_painted_this_pass = false;
     ts_heavy_this_pass     = false;
     pass_deferred          = false;

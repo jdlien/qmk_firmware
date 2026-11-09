@@ -46,6 +46,7 @@ uint16_t lcd_spi0_poll_strays(void);
 uint16_t lcd_spi0_poll_late(void);
 /* lcd-diag branch only: HC_LCDDIAG (lcd_bus.c). */
 bool lcd_diag_op(uint8_t *data);
+void lcd_diag_pass(void);
 uint32_t lcd_blit_count_take(void);
 uint16_t lcd_blit_retries(void);
 /* Why each blit timeout happened, from the registers BEFORE the abort, and the
