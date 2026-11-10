@@ -27,7 +27,9 @@ enum {
     N_TOP, N_POWER, N_CLOCK, N_DIAG, N_HELP, N_ABOUT, N_EXIT,   /* 1-7 */
     N_HEALTH, N_MORE, N_RESET,                                  /* 8-10; N_MORE, Help's More info (P1d), the
                                                                  * Camera page's number (retired 10-28) */
-    N_TOPIC0, N_TOPIC1, N_TOPIC2, N_TOPIC3,                     /* 11-14 */
+    N_TOPIC0, N_TOPIC1, N_TOPIC2,                               /* 11-13: Help's topics */
+    N_FREE14,                                                   /* 14: Pro tips' until 11-10, free; kept so no later
+                                                                 * node renumbers */
     N_BACK,                                                     /* 15: "‹ Back" */
     N_POW0, N_POW1, N_POW2, N_POW3,                             /* 16-19 */
     N_CLK0, N_CLK1, N_CLK2, N_CLK3,                             /* 20-23 */
@@ -60,7 +62,7 @@ enum {
 /* RK_ITEM's signature holds the node in bits 8-13, under its kind's bit 14:
  * 63 is the last that fits (0x7F00-0x7FFF, below RK_TEXT's 0x8000). */
 _Static_assert(N_COUNT <= 64, "a row's node is 6 bits");   /* 64 since Icon only: the next node widens row_sig */
-_Static_assert(MENU_HELP_TOPICS == 4, "Help's four topics");
+_Static_assert(MENU_HELP_TOPICS == 3, "Help's three topics, N_TOPIC0-2 (Pro tips dropped 11-10)");
 static bool is_pslot(uint8_t node) { return node == N_PSLOT; }
 
 /* The top level's order (P4, JD 10-25): Battery under Clock, and
@@ -89,7 +91,7 @@ static const uint8_t diag_rows[]  = {N_BACK, N_ABOUT, N_HEALTH, N_RESET, N_PROBE
 static const uint8_t diag_rows[]  = {N_BACK, N_ABOUT, N_HEALTH, N_RESET};   /* 10-28: About, as System info; no Camera page */
 #endif
 #define DIAG_ROW_HEALTH 2u   /* menu_return_from_diag()'s row: the debug page's */
-static const uint8_t help_rows[]  = {N_BACK, N_TOPIC0, N_TOPIC1, N_TOPIC2, N_TOPIC3, N_MORE};   /* P1d: More info last */
+static const uint8_t help_rows[]  = {N_BACK, N_TOPIC0, N_TOPIC1, N_TOPIC2, N_MORE};   /* P1d: More info last */
 static const uint8_t power_rows[] = {N_BACK, N_POW0, N_POW1, N_POW2, N_POW3};
 static const uint8_t clock_rows[] = {N_BACK, N_CLK0, N_CLK1, N_CLK2, N_CLK3, N_CLK4, N_CLK5};
 static const uint8_t batt_rows[]  = {N_BACK, N_BV0, N_BV1, N_BV2, N_BV3};   /* P4; Both, 10-26; Icon only, 10-30 */
@@ -332,7 +334,7 @@ static const char *label_of(uint8_t node) {
         default: break;
     }
     if (node >= N_BT0 && node <= N_BT2) return slot_names[node - N_BT0];
-    if (node >= N_TOPIC0 && node <= N_TOPIC3) return help_title((uint8_t)(node - N_TOPIC0));
+    if (node >= N_TOPIC0 && node <= N_TOPIC2) return help_title((uint8_t)(node - N_TOPIC0));
     if (node >= N_POW0 && node <= N_POW3) return power_full[node - N_POW0];
     if (clk_row(node) >= 0) return clock_full[clk_row(node)];
     if (bv_row(node) >= 0) return batt_full[bv_row(node)];
@@ -542,7 +544,7 @@ static uint8_t row_index(uint8_t list, uint8_t node) {
         if (row_node(list, i, &v) == node) return i;
     return 0;
 }
-static bool is_topic(uint8_t node) { return node >= N_TOPIC0 && node <= N_TOPIC3; }
+static bool is_topic(uint8_t node) { return node >= N_TOPIC0 && node <= N_TOPIC2; }
 static bool is_list(uint8_t node) {
     return node == N_TOP || node == N_DIAG || node == N_HELP || node == N_LIGHT || node == N_IND || node == N_CONN ||
            node == N_PROFILES || is_pslot(node) || node == N_PROBE;
@@ -751,7 +753,7 @@ static const char *title_text(uint8_t id) {
 #endif
         default: break;
     }
-    if (id >= T_TOPIC0 && id < T_TOPIC0 + 4) return help_title((uint8_t)(id - T_TOPIC0));
+    if (id >= T_TOPIC0 && id < T_TOPIC0 + MENU_HELP_TOPICS) return help_title((uint8_t)(id - T_TOPIC0));
     return "";   /* a slot's page: its name, in l_paint() */
 }
 /* A heading's icon, before its text (JD, 10-24): the wrench on the top level,
@@ -759,7 +761,7 @@ static const char *title_text(uint8_t id) {
  * The flashes and the hints are messages, not headings: none. */
 static const char *title_icon(uint8_t id) {
     if (id == T_TOP) return MT_WRENCH " ";   /* it inks all 12 columns: a space */
-    if ((id >= T_TOPIC0 && id < T_TOPIC0 + 4) || id == T_MORE) return icon_of(N_HELP);
+    if ((id >= T_TOPIC0 && id < T_TOPIC0 + MENU_HELP_TOPICS) || id == T_MORE) return icon_of(N_HELP);
     switch (id) {
         case T_POWER: return icon_of(N_POWER);
         case T_CLOCK: return icon_of(N_CLOCK);

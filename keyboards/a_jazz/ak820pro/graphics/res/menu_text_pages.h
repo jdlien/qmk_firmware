@@ -8,19 +8,18 @@
 
 #include <stdint.h>
 
-#define MENU_HELP_TOPICS 4
+#define MENU_HELP_TOPICS 3
 
 static const char *const menu_help_titles[MENU_HELP_TOPICS] = {
     "Using the menu",
     "Customizing",
     "Shortcuts",
-    "Pro tips",
 };
 
 /* A topic's lines are menu_help_lines[menu_help_start[t] .. menu_help_start[t + 1]). */
-static const uint8_t menu_help_start[MENU_HELP_TOPICS + 1] = {0, 7, 15, 27, 40};
+static const uint8_t menu_help_start[MENU_HELP_TOPICS + 1] = {0, 7, 15, 26};
 
-static const char *const menu_help_lines[40] = {
+static const char *const menu_help_lines[26] = {
     /* Using the menu */
     "Turn: move",
     "Click: choose, save",
@@ -41,7 +40,6 @@ static const char *const menu_help_lines[40] = {
     /* Shortcuts */
     "Fn+Q/W/E  BT slot",
     "  hold 2 s: pair",
-    "Slider: BT 2.4G USB",
     "Fn+Lt/Rt  hue",
     "Fn+Up/Dn  brightness",
     "Fn+,/.    saturation",
@@ -51,33 +49,18 @@ static const char *const menu_help_lines[40] = {
     "Fn+C      clock",
     "Fn+PgUp/Dn screen",
     "Fn+Esc    bootloader",
-    /* Pro tips */
-    "Balanced sleeps",
-    "after 20 min idle.",
-    "A key wakes it, and",
-    "the key still types.",
-    "",
-    "The lights are the",
-    "battery's big cost.",
-    "Asleep, a night is",
-    "about 1%.",
-    "",
-    "2.4G answers faster;",
-    "Bluetooth has three",
-    "slots.",
 };
 
-/* Large's (plans/MENU-8X16-PLAN.md): the same four, wrapped at 15. */
+/* Large's (plans/MENU-8X16-PLAN.md): the same three, wrapped at 15. */
 static const char *const menu_help_titles_l[MENU_HELP_TOPICS] = {
     "Menu basics",
     "Customizing",
     "Shortcuts",
-    "Pro tips",
 };
 
-static const uint8_t menu_help_start_l[MENU_HELP_TOPICS + 1] = {0, 7, 18, 33, 48};
+static const uint8_t menu_help_start_l[MENU_HELP_TOPICS + 1] = {0, 7, 18, 31};
 
-static const char *const menu_help_lines_l[48] = {
+static const char *const menu_help_lines_l[31] = {
     /* Menu basics */
     "Turn: move",
     "Click: choose",
@@ -101,8 +84,6 @@ static const char *const menu_help_lines_l[48] = {
     /* Shortcuts */
     "Fn+QWE  BT 1-3",
     " hold 2 s: pair",
-    "Slider  BT 2.4G",
-    "        or USB",
     "Fn+Lt/Rt  hue",
     "Fn+Up/Dn bright",
     "Fn+,/. saturate",
@@ -114,20 +95,4 @@ static const char *const menu_help_lines_l[48] = {
     "        screen",
     "Fn+Esc",
     "    bootloader",
-    /* Pro tips */
-    "Balanced sleeps",
-    "after 20 min",
-    "idle. A key",
-    "wakes it and",
-    "still types.",
-    "",
-    "The lights are",
-    "the battery's",
-    "big cost.",
-    "Asleep, a night",
-    "is about 1%.",
-    "",
-    "2.4G answers",
-    "faster; BT has",
-    "three slots.",
 };
