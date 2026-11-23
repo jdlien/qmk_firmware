@@ -47,6 +47,10 @@ void     env_batt_view_set(uint8_t v);  /* kb_eeconfig_set_batt_view(): draw_bat
 uint8_t  env_font(void);                /* kb_eeconfig_get_font() */
 void     env_font_set(uint8_t f);       /* kb_eeconfig_set_font(): saved, nothing redrawn */
 void     env_text_refont(void);         /* display_text_refont() */
+/* The Win side's icon (Manuel, 11-23): Windows' (false) or Linux's, saved in
+ * the readout's byte; the setter asks the dashboard to repaint the logo. */
+bool     env_os_linux(void);            /* kb_eeconfig_get_os_linux() */
+void     env_os_linux_set(bool linux_icon);
 
 /* P1b's primitives (menu_edit.c's): each one QMK or board call in
  * menu_glue.c; the host's fakes copy their semantics. QMK's mode and HSV

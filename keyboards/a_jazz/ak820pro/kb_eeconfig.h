@@ -89,6 +89,12 @@ void    kb_eeconfig_set_batt_view(uint8_t view);   /* ignores anything else */
 uint8_t kb_eeconfig_get_font(void);          /* KB_FONT_* */
 void    kb_eeconfig_set_font(uint8_t font);  /* ignores anything else */
 
+/* The icon the dashboard shows on the Win side of the Win/Mac switch: the
+ * Windows logo (false, the default) or Linux's (Manuel, 11-23; the menu's
+ * "Win icon" row). Not part of a settings profile. */
+bool kb_eeconfig_get_os_linux(void);
+void kb_eeconfig_set_os_linux(bool linux_icon);
+
 /* A change is waiting for its deferred flash write (a sleep's precondition). */
 bool kb_eeconfig_write_pending(void);
 void kb_eeconfig_flush(void);   /* a pending write now (HC_PROFILES' sub 6), not inside a recovery */

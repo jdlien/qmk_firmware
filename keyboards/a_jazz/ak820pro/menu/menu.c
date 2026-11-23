@@ -28,8 +28,8 @@ enum {
     N_HEALTH, N_MORE, N_RESET,                                  /* 8-10; N_MORE, Help's More info (P1d), the
                                                                  * Camera page's number (retired 10-28) */
     N_TOPIC0, N_TOPIC1, N_TOPIC2,                               /* 11-13: Help's topics */
-    N_FREE14,                                                   /* 14: Pro tips' until 11-10, free; kept so no later
-                                                                 * node renumbers */
+    N_OSICON,                                                   /* 14: Pro tips' until 11-10; the Win side's icon,
+                                                                 * Windows or Linux, a click toggles (Manuel, 11-23) */
     N_BACK,                                                     /* 15: "‹ Back" */
     N_POW0, N_POW1, N_POW2, N_POW3,                             /* 16-19 */
     N_CLK0, N_CLK1, N_CLK2, N_CLK3,                             /* 20-23 */
@@ -75,7 +75,7 @@ static bool is_pslot(uint8_t node) { return node == N_PSLOT; }
  * page"), so fourteen rows: Large's two pages of seven, Small's eight and
  * six. */
 static const uint8_t top_rows[]   = {N_LIGHT, N_SCREEN, N_CONN,     N_POWER, N_IND,  N_CLOCK, N_BATT,
-                                     N_PROFILES, N_BOOT, N_FONT, N_DEFAULTS, N_DIAG, N_HELP, N_EXIT};
+                                     N_PROFILES, N_BOOT, N_FONT, N_OSICON, N_DEFAULTS, N_DIAG, N_HELP, N_EXIT};
 static const uint8_t light_rows[] = {N_BACK, N_EFFECT, N_BRIGHT, N_HUE, N_SAT, N_SPEED, N_LIGHTS};
 static const uint8_t ind_rows[]   = {N_BACK, N_LOCKS, N_CHGL};
 static const uint8_t conn_rows[]  = {N_BACK, N_BT0, N_BT1, N_BT2, N_PAIRNOW};   /* P3: on BT */
@@ -330,6 +330,7 @@ static const char *label_of(uint8_t node) {
         case N_PRENAME: return "Rename";   /* P5c */
         case N_PNEW:   return "+ Save new";   /* P5d: the `+` in the check box's cells, the names' column */
         case N_FONT:   return "Font";         /* 10-28 */
+        case N_OSICON: return "OS icon";      /* Manuel, 11-23; "Win icon" left no gap before "Linux" in Large's 15 cells */
         case N_MORE:   return "More info";    /* P1d */
         default: break;
     }
@@ -365,6 +366,7 @@ static const char *icon_of(uint8_t node) {
         case N_PRENAME: return MT_I_RENAME " ";
         case N_PDELETE: return MT_I_DELETE;
         case N_FONT:   return MT_I_FONT;   /* 10-28: a large A and a small one */
+        case N_OSICON: return MT_I_SCREEN;   /* Manuel, 11-23: the screen, whose logo it picks */
         default:      return NULL;
     }
 }
@@ -1147,6 +1149,7 @@ static row_t row_at(uint8_t r) {
 #endif
     else if (x.node == N_EFFOPT || x.node == N_LTSOPT || x.node == N_FOPT) x.val = val;
     else if (x.node == N_FONT) x.val = env_font();   /* 10-28: the saved value; only the menu and a restore change it */
+    else if (x.node == N_OSICON) x.val = env_os_linux() ? 1u : 0u;   /* Manuel, 11-23 */
     else if (value_which(x.node) >= 0) {
         x.kind = RK_VALUE;
         x.val  = live_value(x.node);
@@ -1448,6 +1451,7 @@ static void row_text(const row_t *x, char *out) {
         value     = w && v == 0u ? "%" : w && v == 3u ? "Icon" : batt_short[v];
     }
     else if (x->node == N_FONT) value = (w ? font_short : font_name)[x->val % 3u];   /* 10-28 */
+    else if (x->node == N_OSICON) value = x->val ? "Linux" : (w ? "Win" : "Windows");   /* Manuel, 11-23 */
     else if (x->node == N_CONN) value = link_names[x->val % 5u];          /* P3 */
     else if (x->node >= N_BT0 && x->node <= N_BT2) value = link_words[x->val % 5u];
     else if (bv_row(x->node) >= 0) value = batt_preview((uint8_t)(bv_row(x->node) + 1), buf);   /* P4 */
@@ -2579,6 +2583,11 @@ static menu_result_t activate(uint32_t now) {
         case N_LOCKS:
         case N_CHGL:
             open_editor(node, now);
+            return MENU_NONE;
+        case N_OSICON:   /* Manuel, 11-23: Windows <-> Linux, saved at once, the row's value repainted */
+            env_os_linux_set(!env_os_linux());
+            flash(T_SAVED, now);
+            show(false, false, now);
             return MENU_NONE;
         case N_DIAG:
         case N_HELP:
