@@ -60,7 +60,7 @@ void power_wake_notice(void);
  * "Charge now" again. */
 void power_woke(void);
 
-/* The reserve's last stage, 2 h of use past the RGB cut or sooner by
+/* The reserve's last stage, 1 h of use past the RGB cut or sooner by
  * voltage (battery.c: under 3225 mV, or the zero rule): dark in every mode,
  * asleep 30 s after the last input, "Charge now" at entry and at every wake.
  * Latched; battery.c lifts it where it lifts the cut. */

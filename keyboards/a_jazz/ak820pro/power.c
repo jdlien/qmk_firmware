@@ -113,7 +113,9 @@ static const ladder_t ladders[POWER_MODE_COUNT] = {
  * without it and finds the floor again from the first three zero reports. */
 #define RESERVE_SLEEP_MS 30000u        /* the bench's floor too (power_set_bench_sleep_ms): physical
                                         * holds and short release deadlines finish before a sleep */
-#define RESERVE_AFTER_CUT_MS (2u * 3600u * 1000u)   /* awake time past the cut; RAM only, as the cut */
+#define RESERVE_AFTER_CUT_MS (1u * 3600u * 1000u)   /* awake time past the cut; RAM only, as the cut. On
+                                                    * 11-23 1 h of use past it left 154 of the reserve's
+                                                    * 199 mAh, 2 h 104 */
 #define CUT_STEP_MAX_MS  1000u         /* one pass's share at most: a sleep's gap is not use */
 #define RESERVE_MSG      "Charge now"  /* the band holds 12 characters (display.c, CONN_STATUS_MAX) */
 

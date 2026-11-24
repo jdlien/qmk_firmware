@@ -1247,7 +1247,7 @@ battery_state_t battery_state(void) {
  * cut at once, and start the reserve's last stage (power.c: dark in every
  * mode, asleep 30 s after the last input, "Charge now" at every wake), which
  * lifts with the cut. The stage also starts after WARN_HOLD_TICKS under
- * RESERVE_MV, and after 2 h of use past the cut (power.c), since the zero rule
+ * RESERVE_MV, and after 1 h of use past the cut (power.c), since the zero rule
  * alone may never fire: `5C` flattens above 0 near empty. The cut is a power CAP (power_set_lights_cut), so the user's own
  * RGB toggle cannot undo it -- rgb_matrix_disable_noeeprom() could -- and it
  * lifts only after EXT_RESTORE_TICKS of external power. A stale reading holds
@@ -1267,7 +1267,7 @@ battery_state_t battery_state(void) {
 #define WARN_HOLD_TICKS    300u    /* 30 s at 10 Hz */
 #define EXT_RESTORE_TICKS  50u     /* 5 s of external power */
 #define CRITICAL_ZEROES    3u
-/* The reserve's last stage by voltage (power.c also starts it after 2 h of use
+/* The reserve's last stage by voltage (power.c also starts it after 1 h of use
  * past the cut): the estimate under this for WARN_HOLD_TICKS. The bottom of
  * `5C`'s accurate range: within ~10 mV of a meter from 4.01 to 3.22 V, and
  * below it the count flattens. On the 11-05 drain's end (11-23) the module
