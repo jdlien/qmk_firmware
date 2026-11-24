@@ -2591,6 +2591,16 @@ void display_set_alert(const char *msg) {
     band_gen[BAND_ALERT]++;
 }
 
+/* The alert taken down early, only if it is still `msg`: the reserve's
+ * "Charge now" when the cable arrives (power.c), not whatever replaced it. */
+void display_clear_alert(const char *msg) {
+    if (alert_on && strncmp(alert_buf, msg, CONN_STATUS_MAX) == 0) {
+        alert_on   = false;
+        text_dirty = true;
+        band_gen[BAND_ALERT]++;
+    }
+}
+
 static bool alert_active(void) {
     if (alert_on && timer_elapsed32(alert_since) >= ALERT_HOLD_MS) {
         alert_on   = false;

@@ -116,7 +116,13 @@ static const ladder_t ladders[POWER_MODE_COUNT] = {
 #define RESERVE_AFTER_CUT_MS (1u * 3600u * 1000u)   /* awake time past the cut; RAM only, as the cut. On
                                                     * 11-23 1 h of use past it left 154 of the reserve's
                                                     * 199 mAh, 2 h 104 */
-#define CUT_STEP_MAX_MS  1000u         /* one pass's share at most: a sleep's gap is not use */
+#define CUT_STEP_MAX_MS  1000u         /* one pass's share at most: a safeguard (the SN32's system
+                                        * counter stops in deep sleep, so a sleep adds nothing) */
+/* After the reserve's alert is posted, no sleep for this long: the post paints
+ * a pass or more later, and the screen lights MESSAGE_WAKE_MS from the paint,
+ * so a board already idle past RESERVE_SLEEP_MS (the hour expiring between
+ * keys) would otherwise sleep before it lit (Astra, 11-23). */
+#define RESERVE_SHOW_MS  (MESSAGE_WAKE_MS + 1500u)
 #define RESERVE_MSG      "Charge now"  /* the band holds 12 characters (display.c, CONN_STATUS_MAX) */
 
 static power_stage_t stage      = POWER_STAGE_ACTIVE;
@@ -130,6 +136,8 @@ static bool          announce   = false;
 static bool          wake_owed  = false;   /* a long sleep's "6h use left", for a free band */
 static bool          reserve      = false; /* the reserve's last stage, latched */
 static bool          reserve_owed = false; /* ... and its message owed (entry, or a wake) */
+static bool          reserve_alert_up = false;   /* "Charge now" posted, not yet taken down */
+static uint32_t      reserve_posted_at = 0;      /* ... when */
 static uint32_t      cut_awake_ms = 0;     /* awake time on battery past the cut */
 static uint32_t      cut_last     = 0;     /* ... its last pass's timer */
 static bool          cut_counting = false;
@@ -324,8 +332,8 @@ void power_task(void) {
         display_set_param_status(mode_names[mode]);
     }
     /* The reserve's last stage by time: RESERVE_AFTER_CUT_MS of use past the
-     * cut. Counted by the pass, each step at most CUT_STEP_MAX_MS, so a deep
-     * sleep's gap (however the timer treats it) adds nothing. */
+     * cut. Counted by the pass, each step at most CUT_STEP_MAX_MS (the
+     * system counter stops in a deep sleep; the cap is the safeguard). */
     if (battery_on_battery() && lights_cut && !reserve) {
         uint32_t now = timer_read32();
         if (cut_counting) {
@@ -362,8 +370,24 @@ void power_task(void) {
      * one owed through the 5 s before external power lifts the latch is
      * dropped with it (power_set_reserve). */
     if (resv && reserve_owed) {
-        reserve_owed = false;
+        reserve_owed      = false;
+        reserve_alert_up  = true;
+        reserve_posted_at = timer_read32();
         display_set_alert(RESERVE_MSG);
+    }
+    /* On the cable (or lifted) the alert comes down at once, not at its 60 s:
+     * "Charge now" on a charging board, or posted by a key wake that met the
+     * charger's edge, is wrong (Astra, 11-23). */
+    if (reserve_alert_up && !resv) {
+        reserve_alert_up = false;
+        display_clear_alert(RESERVE_MSG);
+    }
+    /* Fn+D's page holds the screen lit, and a lit screen blocks the sleep
+     * (sleep.c, DSB_LIT); standalone it has no timeout. In the reserve it
+     * closes at the sleep time, as a Fn+D tap would (inside the menu it goes
+     * back to the menu, whose own idle close is bounded). */
+    if (resv && display_debug_active() && last_input_activity_elapsed() >= RESERVE_SLEEP_MS) {
+        display_debug_toggle();
     }
     /* The low cap's notice: once a discharge, and only where it can be read --
      * with the screen dark it waits for it to light, and it lapses if the cap
@@ -444,6 +468,7 @@ bool power_sleep_wanted(void) {
     if (!battery_on_battery()) return false;
     uint32_t t;
     if (reserve) {
+        if (reserve_alert_up && timer_elapsed32(reserve_posted_at) < RESERVE_SHOW_MS) return false;
         t = RESERVE_SLEEP_MS;
     } else {
         if (mode == POWER_MODE_FULL) return false;

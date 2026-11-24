@@ -384,7 +384,10 @@ static void ka_slept(uint32_t s, bool pcf) {
 static uint32_t ka_cap(bool *ka) {
     if (last_input_activity_time() != rc_input_t0) ka_asleep_s = 0;
     ka_notice_owed = false;
-    woke_owed      = false;
+    /* Not woke_owed: a sleep aborted after this (a late UART byte, a key at
+     * the final pin check) begins no recovery, and its first key is still
+     * owed the reserve's notice (Astra, 11-23). recovery_begin clears it
+     * after a real sleep. */
     *ka = ka_asleep_s + KA_REAL_S <= KA_FOR_S && !ch582_is_usb() && !ch582_is_24g() &&
           ch582_get_conn_state() == CH582_CONN_CONNECTED;
     return *ka ? (uint32_t)KA_REAL_S * ka_rate_pm / 1000u : DS_BACKSTOP_S;

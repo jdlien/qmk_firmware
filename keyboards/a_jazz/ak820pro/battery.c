@@ -224,6 +224,13 @@ static void supply_tick(uint16_t raw_mv) {
 
     bool ext_evidence  = chrg_hold || ext_run >= EXT_ENTER_TICKS;
     ext_evidence_ticks = ext_evidence ? (uint16_t)(ext_evidence_ticks < UINT16_MAX ? ext_evidence_ticks + 1u : ext_evidence_ticks) : 0u;
+    /* A battery-voltage sample with CHRG released is proof the cable is out:
+     * the restore's count (EXT_RESTORE_TICKS, the cut's and the reserve's
+     * lift) starts over, though chrg_hold's 1 s debounce still calls the
+     * supply external. Without it a ~4.4 s plug-in reached the 5 s on the
+     * hold's samples and lifted both latches after the cable was out
+     * (Astra, 11-23, P1). The supply's own classification is unchanged. */
+    if (raw_mv && raw_mv < BATT_ENTER_MV && !chrg_low) ext_evidence_ticks = 0;
 
     battery_supply_t was = supply;
     if (ext_evidence) {
@@ -1303,7 +1310,10 @@ static void protection_tick(void) {
     if (supply != BATTERY_SUPPLY_BATTERY) return;
 
     uint16_t m = battery_5c_x100();
-    if (m == C5_EST_NONE) return;
+    if (m == C5_EST_NONE) {
+        reserve_ticks = 0;   /* a continuous 30 s under RESERVE_MV: a lost estimate (a sleep, a stale radio) ends it */
+        return;
+    }
     if (c5_zero_run >= CRITICAL_ZEROES) {
         cut_lights();
         /* At or under 3.161 V: the panel says "Low" now, not after the
@@ -1696,7 +1706,7 @@ void battery_cfg(uint8_t op, uint16_t new_warn, uint16_t new_cut, uint8_t *out) 
     if (op == 1) {
         warn_mv    = new_warn;
         cut_mv     = new_cut;
-        warn_ticks = cut_ticks = reserve_ticks = 0;
+        warn_ticks = cut_ticks = 0;   /* not reserve_ticks: RESERVE_MV is not configurable */
         warned     = false;   /* a new threshold is a new warning to give */
     }
     out[0] = (uint8_t)(warn_mv & 0xFF); out[1] = (uint8_t)(warn_mv >> 8);

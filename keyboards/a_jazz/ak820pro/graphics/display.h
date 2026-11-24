@@ -206,7 +206,8 @@ void display_playback_key(void);
  * feature not working -- which reads as "the hold must be ~3s". */
 void display_set_pair_hint(int16_t pct);
 /* Boot alert: shown at near-top band priority for ~60 s (e.g. "WDT reset x1"). */
-void display_set_alert(const char *msg);   /* 0-100 = progress, <0 = off */
+void display_set_alert(const char *msg);
+void display_clear_alert(const char *msg);   /* only if the alert showing is still `msg` */   /* 0-100 = progress, <0 = off */
 
 #ifdef PARAM_OVERLAY
 /* Transient parameter readout for the info band. Pass a string to show it for

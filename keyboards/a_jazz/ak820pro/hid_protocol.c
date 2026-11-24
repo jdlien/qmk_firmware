@@ -511,9 +511,10 @@ enum {
     /* Low-battery thresholds, RAM only: [.., .., HC_BATTCFG, op, warn u16,
      * cut u16] with op 0 = read, 1 = set (0 mV disables either) ->
      * [.., .., HC_BATTCFG, op, warn u16, cut u16, lights_cut, warned,
-     * log period s u16, reserve]: reserve (11-23) is 1 in the reserve's
-     * last stage, at `5C`'s floor (power.c), and the byte the host sent
-     * (0) from a firmware before it. */
+     * log period s u16, reserve]: reserve (11-23) is the reserve's last
+     * stage's latch (power.c), whichever trigger set it (1 h of use past the
+     * cut, 3225 mV, three zeros), and the byte the host sent (0) from a
+     * firmware before it. */
     HC_BATTCFG     = 0x0B,
     /* Phase 1b diagnostics, protocol >= 8. Paged: [.., .., cmd, page] ->
      * [.., .., cmd, page, 28 bytes]; an unknown page answers RTC_UNHANDLED.
