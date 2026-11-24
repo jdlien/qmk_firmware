@@ -223,14 +223,22 @@ static void supply_tick(uint16_t raw_mv) {
     }
 
     bool ext_evidence  = chrg_hold || ext_run >= EXT_ENTER_TICKS;
-    ext_evidence_ticks = ext_evidence ? (uint16_t)(ext_evidence_ticks < UINT16_MAX ? ext_evidence_ticks + 1u : ext_evidence_ticks) : 0u;
-    /* A battery-voltage sample with CHRG released is proof the cable is out:
-     * the restore's count (EXT_RESTORE_TICKS, the cut's and the reserve's
-     * lift) starts over, though chrg_hold's 1 s debounce still calls the
-     * supply external. Without it a ~4.4 s plug-in reached the 5 s on the
-     * hold's samples and lifted both latches after the cable was out
-     * (Astra, 11-23, P1). The supply's own classification is unchanged. */
-    if (raw_mv && raw_mv < BATT_ENTER_MV && !chrg_low) ext_evidence_ticks = 0;
+    /* The restore's count (EXT_RESTORE_TICKS: the cut's and the reserve's
+     * lift) advances only on a current sign of the cable: CHRG low now
+     * (qualified), or a fresh reading in USB's range. chrg_hold's 1 s
+     * debounce, which keeps the supply EXTERNAL through CHRG's flicker, and
+     * ext_run held over failed conversions are not one: a ~4.4 s plug-in
+     * reached the 5 s on them and lifted both latches after the cable was
+     * out (Astra, 11-23, P1, twice). No information (a failed conversion, a
+     * reading between the two thresholds) holds the count; no evidence at
+     * all, or a battery reading with CHRG released, starts it over. The
+     * supply's own classification is unchanged. */
+    bool cable_now = chrg_run >= CHRG_QUALIFY_TICKS || (raw_mv && raw_mv >= EXT_ENTER_MV);
+    if (cable_now) {
+        if (ext_evidence_ticks < UINT16_MAX) ext_evidence_ticks++;
+    } else if (!ext_evidence || (raw_mv && raw_mv < BATT_ENTER_MV && !chrg_low)) {
+        ext_evidence_ticks = 0;
+    }
 
     battery_supply_t was = supply;
     if (ext_evidence) {
@@ -318,6 +326,7 @@ static bool     lg_c5_saturated = false;
  * its write position and the counts restart together: resuming at the old
  * c5_pos would evict forgotten reports' counts that are no longer there. */
 static uint8_t below_run;   /* the ratchet's run (defined below): an estimate forgotten ends it */
+static uint16_t reserve_ticks;   /* the reserve's RESERVE_MV dwell (defined below): so does it (Astra, 11-23) */
 static void c5_forget(void) {
     c5_count    = 0;
     c5_pos      = 0;
@@ -325,6 +334,7 @@ static void c5_forget(void) {
     c5_est      = C5_EST_NONE;
     c5_zero_run = 0;
     below_run   = 0;   /* the 10-31 audit, F-021: a run from before a sleep's wake held its old target */
+    reserve_ticks = 0; /* a continuous 30 s under RESERVE_MV: a sleep's wake or a stale radio ends it */
 }
 
 static bool c5_fresh(void) {
@@ -369,8 +379,13 @@ static uint16_t c5_trimmed_mean_x100(void) {
 }
 
 /* Called by the CH582F driver for every `5C` frame it parses (main loop). */
+static uint32_t c5_last_ms;   /* the last report's arrival, for the dwell's gap */
 void battery_5c_report(uint8_t v) {
     if (v > 100u) return;
+    /* A report after a stale gap that no 10 Hz tick saw (the tick forgets the
+     * ring at C5_STALE_MS): the dwell still restarts (Astra, 11-23). */
+    if (c5_count && timer_elapsed32(c5_last_ms) >= C5_STALE_MS) reserve_ticks = 0;
+    c5_last_ms = timer_read32();
     c5_new          = true;
     if (c5_count == C5_RING) c5_hist[c5_ring[c5_pos]]--;   /* the oldest report leaves */
     c5_ring[c5_pos] = v;

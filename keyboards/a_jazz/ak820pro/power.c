@@ -382,12 +382,14 @@ void power_task(void) {
         reserve_alert_up = false;
         display_clear_alert(RESERVE_MSG);
     }
-    /* Fn+D's page holds the screen lit, and a lit screen blocks the sleep
-     * (sleep.c, DSB_LIT); standalone it has no timeout. In the reserve it
-     * closes at the sleep time, as a Fn+D tap would (inside the menu it goes
-     * back to the menu, whose own idle close is bounded). */
-    if (resv && display_debug_active() && last_input_activity_elapsed() >= RESERVE_SLEEP_MS) {
-        display_debug_toggle();
+    /* The menu and Fn+D's page hold the screen lit, and a lit screen blocks
+     * the sleep (sleep.c, DSB_LIT); Fn+D's has no timeout, the menu's is 60 s
+     * or more, and a return from Fn+D's page to the menu counts as input
+     * there. In the reserve whichever it is closes at the sleep time, and
+     * "Charge now" is said again on the dashboard it returns to: its first
+     * post may have expired behind them (Astra, 11-23). */
+    if (resv && display_panel_lit_for_owner() && last_input_activity_elapsed() >= RESERVE_SLEEP_MS) {
+        if (display_owner_close()) reserve_owed = true;
     }
     /* The low cap's notice: once a discharge, and only where it can be read --
      * with the screen dark it waits for it to light, and it lapses if the cap

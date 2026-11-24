@@ -3867,6 +3867,18 @@ void display_anim_end(void) {
 }
 
 bool display_panel_lit_for_owner(void) { return po_panel_lit_for_owner(); }
+
+/* The reserve's (power.c): whatever holds the panel lit let go, as its own
+ * close would -- the menu's session (its Diagnostics page with it) by the
+ * close its 60 s idle sends, which rolls back an open edit, or the
+ * standalone Fn+D page by its tap. True if something closed. */
+bool display_owner_close(void) {
+    uint16_t a;
+    if (po_session() != SESSION_NONE)  a = display_po_event(PO_EV_CLOSE);
+    else if (OWNER_IS(PANEL_DEBUG))    a = display_po_event(PO_EV_DBG_PAGE);
+    else                               return false;
+    return !(a & PO_ACT_REFUSED);
+}
 bool display_anim_admissible(void) { return po_anim_admissible(); }
 
 #ifdef AK820_DEV_HOOKS
