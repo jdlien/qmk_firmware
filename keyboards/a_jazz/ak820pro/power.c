@@ -90,6 +90,26 @@ static const ladder_t ladders[POWER_MODE_COUNT] = {
  * boot, when the panel is up, or once the band is free (a boot alert holds it
  * 60 s, and behind it the announcement would expire unseen). */
 #define ANNOUNCE_AFTER_MS 3000u
+/* The reserve's last stage (plans/BACKLOG.md, "A day of typing after the LED
+ * cut"). The RGB cut (3400 mV) leaves the board as it was but for the lights;
+ * once `5C` reads its floor (~3.161 V: battery.c's zero rule, which cuts the
+ * lights too if they are not yet), the board is dark at once whatever the
+ * mode, typing included, sleeps RESERVE_SLEEP_MS after the last input --
+ * Always on too, whose purpose is moot with the pack this low -- and says
+ * RESERVE_MSG as an alert at entry and at every wake someone caused, the
+ * screen lit for it MESSAGE_WAKE_MS as Lights out lights a message. Without
+ * the message an owner sees a dark board and flips the slider. Keys type as
+ * ever; the BT keep-alive runs as ever (~0.1 mA). Measured on the 11-05
+ * drain (plans/current-status.md): the floor came 2 h 09 min of use after
+ * the cut, and 97 mAh were left past it, ~4 h 48 min at JD's use in Power
+ * saver before the pack's protector opened at 2.32 V.
+ *
+ * Latched as the cut is: it lifts only after battery.c's EXT_RESTORE_TICKS
+ * of external power. RAM only, so a reboot on battery (a slider flip) starts
+ * without it and finds the floor again from the first three zero reports. */
+#define RESERVE_SLEEP_MS 30000u        /* the bench's floor too (power_set_bench_sleep_ms): physical
+                                        * holds and short release deadlines finish before a sleep */
+#define RESERVE_MSG      "Charge now"  /* the band holds 12 characters (display.c, CONN_STATUS_MAX) */
 
 static power_stage_t stage      = POWER_STAGE_ACTIVE;
 static power_mode_t  mode       = POWER_MODE_DEFAULT;
@@ -100,6 +120,8 @@ static bool          low_owed   = false;   /* ... and waiting for a lit screen *
 static uint16_t      low_sessions = 0;     /* battery_session_count() when it was noted */
 static bool          announce   = false;
 static bool          wake_owed  = false;   /* a long sleep's "6h use left", for a free band */
+static bool          reserve      = false; /* `5C`'s floor: the reserve's last stage, latched */
+static bool          reserve_owed = false; /* ... and its message owed (entry, or a wake) */
 static uint8_t       want_val   = 255;     /* the ceiling ACTIVE takes: the mode's, Saver's when low */
 static uint8_t       val_cap    = 255;     /* the ceiling applied, the stage's */
 #ifdef AK820_DEV_HOOKS
@@ -246,6 +268,24 @@ bool power_lights_cut(void) {
     return lights_cut;
 }
 
+/* battery.c's: set at the zero rule, cleared where the cut lifts. The stage
+ * itself is power_task's, on battery only. */
+void power_set_reserve(bool on) {
+    if (on == reserve) return;
+    reserve      = on;
+    reserve_owed = on;
+}
+
+bool power_reserve(void) {
+    return reserve;
+}
+
+/* sleep.c's, at a wake someone caused (a key or the knob), or at the first
+ * input after one nobody did (a keep-alive's, the backstop's). */
+void power_woke(void) {
+    if (reserve) reserve_owed = true;
+}
+
 void power_init(void) {
     uint8_t m;
     if (kb_eeconfig_get_power_mode(&m) && m < POWER_MODE_COUNT) {
@@ -273,6 +313,7 @@ void power_task(void) {
     power_stage_t want  = POWER_STAGE_ACTIVE;
     uint8_t       wval  = 255;
     bool          low   = false;
+    bool          resv  = false;
     uint16_t      level = battery_level_permille();
     if (battery_on_battery()) {
         uint32_t idle = last_input_activity_elapsed();
@@ -284,8 +325,18 @@ void power_task(void) {
             if (saver > want) want = saver;
             if (wval > SAVER_VAL) wval = SAVER_VAL;
         }
+        resv = reserve;
+        if (resv) want = POWER_STAGE_SCREEN_OFF;   /* dark at once, typing too, as Lights out */
     }
     low_now = low;
+    /* The reserve's message: at once, as an alert (it is the one that matters
+     * now, and an alert does not wait for a free band), and only on battery:
+     * one owed through the 5 s before external power lifts the latch is
+     * dropped with it (power_set_reserve). */
+    if (resv && reserve_owed) {
+        reserve_owed = false;
+        display_set_alert(RESERVE_MSG);
+    }
     /* The low cap's notice: once a discharge, and only where it can be read --
      * with the screen dark it waits for it to light, and it lapses if the cap
      * does (USB). A real charge re-arms it. Never in Minimal, which has
@@ -306,7 +357,7 @@ void power_task(void) {
         if (!battery_on_battery()) wval = ladders[mode].active_val;
     }
 #endif
-    bool lit = mode == POWER_MODE_MINIMAL &&
+    bool lit = (mode == POWER_MODE_MINIMAL || resv) &&
                (display_message_recent(MESSAGE_WAKE_MS) || display_panel_lit_for_owner());
     /* The ceiling moves without a stage change too (Fn+B into or out of Saver,
      * the cable, the low cap), and apply() repaints only when what it applies
@@ -358,12 +409,19 @@ void power_wake_notice(void) {
 /* The ladder's last stage: asleep once the idle time passes the mode's sleep
  * time. Battery only, never in Full (at low battery too: there the low cap
  * stays a lighting cap, plan section 1), never under a stage the bench holds.
- * Low battery shortens Normal's sleep to Saver's. sleep.c sleeps at the first
- * pass where its preconditions hold, so this only says it is wanted. */
+ * Low battery shortens Normal's sleep to Saver's. The reserve's last stage
+ * sleeps at RESERVE_SLEEP_MS in every mode, Full too. sleep.c sleeps at the
+ * first pass where its preconditions hold, so this only says it is wanted. */
 bool power_sleep_wanted(void) {
-    if (!battery_on_battery() || mode == POWER_MODE_FULL) return false;
-    uint32_t t = ladders[mode].sleep_ms;
-    if (low_now && ladders[POWER_MODE_SAVER].sleep_ms < t) t = ladders[POWER_MODE_SAVER].sleep_ms;
+    if (!battery_on_battery()) return false;
+    uint32_t t;
+    if (reserve) {
+        t = RESERVE_SLEEP_MS;
+    } else {
+        if (mode == POWER_MODE_FULL) return false;
+        t = ladders[mode].sleep_ms;
+        if (low_now && ladders[POWER_MODE_SAVER].sleep_ms < t) t = ladders[POWER_MODE_SAVER].sleep_ms;
+    }
 #ifdef AK820_DEV_HOOKS
     if (forced != 0xFF) return false;
     if (bench_sleep) t = bench_sleep;
@@ -378,8 +436,10 @@ power_mode_t power_mode(void) {
 /* The battery row's bulb: Saver's while the low cap holds a lighter mode's
  * lights to Saver's stages (power_task), so the icon says what the board is
  * doing. Minimal is darker than those stages and keeps its own. low_now is
- * only ever set on battery. */
+ * only ever set on battery. In the reserve's last stage, Minimal's: every
+ * mode is dark there. */
 power_mode_t power_lights_mode(void) {
+    if (reserve && battery_on_battery()) return POWER_MODE_MINIMAL;
     return (low_now && mode < POWER_MODE_SAVER) ? POWER_MODE_SAVER : mode;
 }
 

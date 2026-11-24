@@ -1244,7 +1244,9 @@ battery_state_t battery_state(void) {
  *
  * Warn once after WARN_HOLD_TICKS under `warn_mv`; cut the RGB after the same
  * under `cut_mv`. A fresh 0 is "critically low", not "unknown": three in a row
- * cut at once. The cut is a power CAP (power_set_lights_cut), so the user's own
+ * cut at once, and start the reserve's last stage (power.c: dark in every
+ * mode, asleep 30 s after the last input, "Charge now" at every wake), which
+ * lifts with the cut. The cut is a power CAP (power_set_lights_cut), so the user's own
  * RGB toggle cannot undo it -- rgb_matrix_disable_noeeprom() could -- and it
  * lifts only after EXT_RESTORE_TICKS of external power. A stale reading holds
  * every timer and never clears the cut. This sheds load; it does not
@@ -1281,7 +1283,10 @@ static void protection_tick(void) {
     if (supply == BATTERY_SUPPLY_EXTERNAL) {
         warn_ticks = cut_ticks = 0;
         if (session) warned = false;
-        if (power_lights_cut() && ext_evidence_ticks >= EXT_RESTORE_TICKS) power_set_lights_cut(false);
+        if (ext_evidence_ticks >= EXT_RESTORE_TICKS) {
+            if (power_lights_cut()) power_set_lights_cut(false);
+            if (power_reserve()) power_set_reserve(false);   /* the reserve's last stage, latched with the cut */
+        }
         return;
     }
     if (supply != BATTERY_SUPPLY_BATTERY) return;
@@ -1293,6 +1298,9 @@ static void protection_tick(void) {
         /* At or under 3.161 V: the panel says "Low" now, not after the
          * ratchet's 1%-per-~15-s walk down from wherever the level was. */
         level = 0;
+        /* ... and the reserve's last stage: dark in every mode, a short
+         * sleep, "Charge now" (power.c, RESERVE_SLEEP_MS). */
+        power_set_reserve(true);
     }
     /* At the top clamp the pack is only known to be >= 4036 mV, which is not
      * "under" any threshold -- even one set above 4036. At the bottom clamp
@@ -1674,6 +1682,7 @@ void battery_cfg(uint8_t op, uint16_t new_warn, uint16_t new_cut, uint8_t *out) 
     out[5] = warned ? 1 : 0;
     out[6] = (uint8_t)((LOG_PERIOD_MS / 1000u) & 0xFF);
     out[7] = (uint8_t)((LOG_PERIOD_MS / 1000u) >> 8);
+    out[8] = power_reserve() ? 1 : 0;   /* the reserve's last stage (11-23; 0 from a firmware before it) */
 }
 
 /* --- 10 Hz --------------------------------------------------------------------- */

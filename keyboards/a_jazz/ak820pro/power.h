@@ -50,11 +50,22 @@ power_mode_t  power_lights_mode(void);
 void power_cycle_mode(void);
 
 /* The deep sleep is wanted: on battery, not Full, idle past the mode's sleep
- * time (Saver's when the battery is low). sleep.c decides when it can. */
+ * time (Saver's when the battery is low); in the reserve's last stage, every
+ * mode at 30 s. sleep.c decides when it can. */
 bool power_sleep_wanted(void);
 /* A wake after a long sleep (sleep.c): say the time left in hours of use, if
  * it matters (under 10 h), once the band is free. */
 void power_wake_notice(void);
+/* A wake someone caused (sleep.c): in the reserve's last stage, say
+ * "Charge now" again. */
+void power_woke(void);
+
+/* The reserve's last stage, at `5C`'s floor (battery.c's zero rule): dark in
+ * every mode, asleep 30 s after the last input, "Charge now" at entry and at
+ * every wake. Latched; battery.c lifts it where it lifts the cut. */
+#define POWER_HAS_RESERVE 1
+void power_set_reserve(bool on);
+bool power_reserve(void);
 
 /* The ceiling on the lighting's value now applied: 255, Power saver's 128
  * while typing (any mode's when the battery is low), or the dim's 64. */

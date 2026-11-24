@@ -352,6 +352,19 @@ static uint32_t rc_input_t0;
 /* A keep-alive's wake ended an absence long enough for "use left": given at
  * the first input before the board sleeps again (codex, P3). */
 static bool     ka_notice_owed;
+/* The reserve's "Charge now" (power.c) after a wake nobody caused (a
+ * keep-alive's, the backstop's, strays'): given at the first input before the
+ * board sleeps again, as ka_notice_owed is. */
+static bool     woke_owed;
+
+/* At the display's release after a wake (rc_woke): the reserve's message at
+ * once after a wake someone caused, a key or the knob; after any other at the
+ * first input (sleep_task); never after a charge's, whose cable lifts the
+ * reserve. power_woke() does nothing outside the reserve. */
+static void rc_woke(void) {
+    if (ds_reason == SLEEP_WAKE_KEY || ds_reason == SLEEP_WAKE_KNOB) power_woke();
+    else if (ds_reason != SLEEP_WAKE_CHARGE) woke_owed = true;
+}
 
 /* A wake's slept seconds (the PCF's, or the counted ones if it failed): the
  * absence and, from a PCF-timed sleep, the rate. ds_secs is at most the
@@ -371,6 +384,7 @@ static void ka_slept(uint32_t s, bool pcf) {
 static uint32_t ka_cap(bool *ka) {
     if (last_input_activity_time() != rc_input_t0) ka_asleep_s = 0;
     ka_notice_owed = false;
+    woke_owed      = false;
     *ka = ka_asleep_s + KA_REAL_S <= KA_FOR_S && !ch582_is_usb() && !ch582_is_24g() &&
           ch582_get_conn_state() == CH582_CONN_CONNECTED;
     return *ka ? (uint32_t)KA_REAL_S * ka_rate_pm / 1000u : DS_BACKSTOP_S;
@@ -747,6 +761,7 @@ enum { UR_NONE = 0, UR_WAIT, UR_OFF, UR_DONE };
 static void recovery_begin(uint8_t reason) {
     rc_input_t0    = last_input_activity_time();   /* before the triggers below */
     ka_notice_owed = false;
+    woke_owed      = false;
     rc_active    = true;
     rc_open      = SLEEP_RC_INPUT | SLEEP_RC_CLOCK | SLEEP_RC_GAUGE | SLEEP_RC_RADIO | SLEEP_RC_SUPPLY |
               SLEEP_RC_USB | SLEEP_RC_DISPLAY;
@@ -818,7 +833,10 @@ static void recovery_task(void) {
                 rtc_wake_gauge_taken();
             }
         }
-        if (!rc_done(SLEEP_RC_DISPLAY)) display_wake_release();
+        if (!rc_done(SLEEP_RC_DISPLAY)) {
+            display_wake_release();
+            rc_woke();
+        }
         ch582_battery_poll_release();
         if (ur_state == UR_OFF) {
             chSysLock();
@@ -924,6 +942,7 @@ static void recovery_task(void) {
             if (!painted) rc_timed_out |= SLEEP_RC_DISPLAY;
             display_wake_release();
             rc_close(SLEEP_RC_DISPLAY);
+            rc_woke();
             /* "6h use left", if it matters: after the whole absence; at a
              * keep-alive's wake only once someone types (sleep_task). */
             if (rc_absent_s >= RC_LONG_SLEEP_S) {
@@ -1052,6 +1071,10 @@ void sleep_task(void) {
     if (ka_notice_owed && last_input_activity_time() != rc_input_t0) {
         ka_notice_owed = false;
         power_wake_notice();
+    }
+    if (woke_owed && last_input_activity_time() != rc_input_t0) {
+        woke_owed = false;
+        power_woke();
     }
 #ifdef AK820_DEV_HOOKS
     arm_task();
