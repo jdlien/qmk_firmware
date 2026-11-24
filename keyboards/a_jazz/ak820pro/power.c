@@ -92,23 +92,29 @@ static const ladder_t ladders[POWER_MODE_COUNT] = {
 #define ANNOUNCE_AFTER_MS 3000u
 /* The reserve's last stage (plans/BACKLOG.md, "A day of typing after the LED
  * cut"). The RGB cut (3400 mV) leaves the board as it was but for the lights;
- * once `5C` reads its floor (~3.161 V: battery.c's zero rule, which cuts the
- * lights too if they are not yet), the board is dark at once whatever the
- * mode, typing included, sleeps RESERVE_SLEEP_MS after the last input --
+ * after RESERVE_AFTER_CUT_MS of use past it (awake time: asleep, the board
+ * draws ~4.5 mA and the count stands still), or sooner by voltage (battery.c:
+ * the estimate under RESERVE_MV, the bottom of `5C`'s accurate range, or the
+ * zero rule; either cuts the lights too if they are not yet), the board is
+ * dark at once whatever the mode, typing included, sleeps RESERVE_SLEEP_MS
+ * after the last input --
  * Always on too, whose purpose is moot with the pack this low -- and says
  * RESERVE_MSG as an alert at entry and at every wake someone caused, the
  * screen lit for it MESSAGE_WAKE_MS as Lights out lights a message. Without
  * the message an owner sees a dark board and flips the slider. Keys type as
  * ever; the BT keep-alive runs as ever (~0.1 mA). Measured on the 11-05
- * drain (plans/current-status.md): the floor came 2 h 09 min of use after
- * the cut, and 97 mAh were left past it, ~4 h 48 min at JD's use in Power
- * saver before the pack's protector opened at 2.32 V.
+ * drain (plans/current-status.md): the pack, by the logger, crossed ~3.16 V
+ * 2 h 09 min of use after the cut (the module's estimate reached 7 counts at
+ * about the same time), and 97 mAh were left past that, ~4 h 48 min at JD's
+ * use in Power saver before the pack's protector opened at 2.32 V.
  *
  * Latched as the cut is: it lifts only after battery.c's EXT_RESTORE_TICKS
  * of external power. RAM only, so a reboot on battery (a slider flip) starts
  * without it and finds the floor again from the first three zero reports. */
 #define RESERVE_SLEEP_MS 30000u        /* the bench's floor too (power_set_bench_sleep_ms): physical
                                         * holds and short release deadlines finish before a sleep */
+#define RESERVE_AFTER_CUT_MS (2u * 3600u * 1000u)   /* awake time past the cut; RAM only, as the cut */
+#define CUT_STEP_MAX_MS  1000u         /* one pass's share at most: a sleep's gap is not use */
 #define RESERVE_MSG      "Charge now"  /* the band holds 12 characters (display.c, CONN_STATUS_MAX) */
 
 static power_stage_t stage      = POWER_STAGE_ACTIVE;
@@ -120,8 +126,11 @@ static bool          low_owed   = false;   /* ... and waiting for a lit screen *
 static uint16_t      low_sessions = 0;     /* battery_session_count() when it was noted */
 static bool          announce   = false;
 static bool          wake_owed  = false;   /* a long sleep's "6h use left", for a free band */
-static bool          reserve      = false; /* `5C`'s floor: the reserve's last stage, latched */
+static bool          reserve      = false; /* the reserve's last stage, latched */
 static bool          reserve_owed = false; /* ... and its message owed (entry, or a wake) */
+static uint32_t      cut_awake_ms = 0;     /* awake time on battery past the cut */
+static uint32_t      cut_last     = 0;     /* ... its last pass's timer */
+static bool          cut_counting = false;
 static uint8_t       want_val   = 255;     /* the ceiling ACTIVE takes: the mode's, Saver's when low */
 static uint8_t       val_cap    = 255;     /* the ceiling applied, the stage's */
 #ifdef AK820_DEV_HOOKS
@@ -257,6 +266,7 @@ uint8_t power_val_cap(void) {
 void power_set_lights_cut(bool cut) {
     if (cut == lights_cut) return;
     lights_cut = cut;
+    if (!cut) cut_awake_ms = 0;   /* external power lifted it: a new discharge counts afresh */
     apply();
 }
 
@@ -268,8 +278,9 @@ bool power_lights_cut(void) {
     return lights_cut;
 }
 
-/* battery.c's: set at the zero rule, cleared where the cut lifts. The stage
- * itself is power_task's, on battery only. */
+/* battery.c's (the zero rule, RESERVE_MV) and power_task's (the time past
+ * the cut); cleared where the cut lifts. The stage itself is power_task's, on
+ * battery only. */
 void power_set_reserve(bool on) {
     if (on == reserve) return;
     reserve      = on;
@@ -309,6 +320,21 @@ void power_task(void) {
         announce = false;
         kb_eeconfig_set_power_mode((uint8_t)mode);
         display_set_param_status(mode_names[mode]);
+    }
+    /* The reserve's last stage by time: RESERVE_AFTER_CUT_MS of use past the
+     * cut. Counted by the pass, each step at most CUT_STEP_MAX_MS, so a deep
+     * sleep's gap (however the timer treats it) adds nothing. */
+    if (battery_on_battery() && lights_cut && !reserve) {
+        uint32_t now = timer_read32();
+        if (cut_counting) {
+            uint32_t dt = now - cut_last;
+            cut_awake_ms += dt > CUT_STEP_MAX_MS ? CUT_STEP_MAX_MS : dt;
+        }
+        cut_counting = true;
+        cut_last     = now;
+        if (cut_awake_ms >= RESERVE_AFTER_CUT_MS) power_set_reserve(true);
+    } else {
+        cut_counting = false;
     }
     power_stage_t want  = POWER_STAGE_ACTIVE;
     uint8_t       wval  = 255;

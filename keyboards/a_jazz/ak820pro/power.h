@@ -60,9 +60,10 @@ void power_wake_notice(void);
  * "Charge now" again. */
 void power_woke(void);
 
-/* The reserve's last stage, at `5C`'s floor (battery.c's zero rule): dark in
- * every mode, asleep 30 s after the last input, "Charge now" at entry and at
- * every wake. Latched; battery.c lifts it where it lifts the cut. */
+/* The reserve's last stage, 2 h of use past the RGB cut or sooner by
+ * voltage (battery.c: under 3225 mV, or the zero rule): dark in every mode,
+ * asleep 30 s after the last input, "Charge now" at entry and at every wake.
+ * Latched; battery.c lifts it where it lifts the cut. */
 #define POWER_HAS_RESERVE 1
 void power_set_reserve(bool on);
 bool power_reserve(void);

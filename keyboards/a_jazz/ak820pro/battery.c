@@ -1246,7 +1246,9 @@ battery_state_t battery_state(void) {
  * under `cut_mv`. A fresh 0 is "critically low", not "unknown": three in a row
  * cut at once, and start the reserve's last stage (power.c: dark in every
  * mode, asleep 30 s after the last input, "Charge now" at every wake), which
- * lifts with the cut. The cut is a power CAP (power_set_lights_cut), so the user's own
+ * lifts with the cut. The stage also starts after WARN_HOLD_TICKS under
+ * RESERVE_MV, and after 2 h of use past the cut (power.c), since the zero rule
+ * alone may never fire: `5C` flattens above 0 near empty. The cut is a power CAP (power_set_lights_cut), so the user's own
  * RGB toggle cannot undo it -- rgb_matrix_disable_noeeprom() could -- and it
  * lifts only after EXT_RESTORE_TICKS of external power. A stale reading holds
  * every timer and never clears the cut. This sheds load; it does not
@@ -1265,10 +1267,19 @@ battery_state_t battery_state(void) {
 #define WARN_HOLD_TICKS    300u    /* 30 s at 10 Hz */
 #define EXT_RESTORE_TICKS  50u     /* 5 s of external power */
 #define CRITICAL_ZEROES    3u
+/* The reserve's last stage by voltage (power.c also starts it after 2 h of use
+ * past the cut): the estimate under this for WARN_HOLD_TICKS. The bottom of
+ * `5C`'s accurate range: within ~10 mV of a meter from 4.01 to 3.22 V, and
+ * below it the count flattens. On the 11-05 drain's end (11-23) the module
+ * still read 3 counts, 3187 mV by the line, with the pack at 3.00 V by the
+ * logger, and three zeros in a row never came, so the zero rule alone would
+ * not have started the stage at all. The estimate reached 7 counts (3222 mV)
+ * at ~16:50, 2 h of use after the cut, as the logger's pack crossed ~3.16 V. */
+#define RESERVE_MV         3225u
 
 static uint16_t warn_mv    = 3680;
 static uint16_t cut_mv     = 3400;
-static uint16_t warn_ticks = 0, cut_ticks = 0;
+static uint16_t warn_ticks = 0, cut_ticks = 0, reserve_ticks = 0;
 static bool     warned     = false;
 
 static void cut_lights(void) {
@@ -1281,7 +1292,7 @@ static void cut_lights(void) {
 
 static void protection_tick(void) {
     if (supply == BATTERY_SUPPLY_EXTERNAL) {
-        warn_ticks = cut_ticks = 0;
+        warn_ticks = cut_ticks = reserve_ticks = 0;
         if (session) warned = false;
         if (ext_evidence_ticks >= EXT_RESTORE_TICKS) {
             if (power_lights_cut()) power_set_lights_cut(false);
@@ -1323,6 +1334,18 @@ static void protection_tick(void) {
         if (cut_ticks >= WARN_HOLD_TICKS) cut_lights();
     } else {
         cut_ticks = 0;
+    }
+
+    /* The reserve's last stage at the bottom of `5C`'s accurate range. It
+     * implies the cut, whatever `cut_mv` says. */
+    if (!top && mv < RESERVE_MV) {
+        if (reserve_ticks < WARN_HOLD_TICKS) reserve_ticks++;
+        if (reserve_ticks >= WARN_HOLD_TICKS) {
+            cut_lights();
+            power_set_reserve(true);
+        }
+    } else {
+        reserve_ticks = 0;
     }
 }
 
@@ -1673,7 +1696,7 @@ void battery_cfg(uint8_t op, uint16_t new_warn, uint16_t new_cut, uint8_t *out) 
     if (op == 1) {
         warn_mv    = new_warn;
         cut_mv     = new_cut;
-        warn_ticks = cut_ticks = 0;
+        warn_ticks = cut_ticks = reserve_ticks = 0;
         warned     = false;   /* a new threshold is a new warning to give */
     }
     out[0] = (uint8_t)(warn_mv & 0xFF); out[1] = (uint8_t)(warn_mv >> 8);
