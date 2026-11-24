@@ -1075,9 +1075,10 @@ void sleep_task(void) {
         ka_notice_owed = false;
         power_wake_notice();
     }
-    /* Retired on the cable: a passive wake's notice must not outlive its
-     * reserve into the next discharge's (Astra, 11-23). */
-    if (woke_owed && !battery_on_battery()) woke_owed = false;
+    /* Retired when the reserve lifts: a passive wake's notice must not
+     * outlive its reserve into the next discharge's (Astra, 11-23), nor be
+     * lost to a brief touch of the cable inside one (11-24). */
+    if (woke_owed && !power_reserve()) woke_owed = false;
     if (woke_owed && last_input_activity_time() != rc_input_t0) {
         woke_owed = false;
         power_woke();

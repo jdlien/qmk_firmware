@@ -229,14 +229,16 @@ static void supply_tick(uint16_t raw_mv) {
      * debounce, which keeps the supply EXTERNAL through CHRG's flicker, and
      * ext_run held over failed conversions are not one: a ~4.4 s plug-in
      * reached the 5 s on them and lifted both latches after the cable was
-     * out (Astra, 11-23, P1, twice). No information (a failed conversion, a
-     * reading between the two thresholds) holds the count; no evidence at
-     * all, or a battery reading with CHRG released, starts it over. The
-     * supply's own classification is unchanged. */
+     * out (Astra, 11-23, P1, twice). Only a battery reading with CHRG
+     * released starts it over; anything else (a failed conversion, a
+     * reading between the two thresholds, CHRG's flicker) holds it, so a
+     * real cable on a marginal rail, dipping into the band now and then,
+     * still lifts the latches (Astra, 11-24). The supply's own
+     * classification is unchanged. */
     bool cable_now = chrg_run >= CHRG_QUALIFY_TICKS || (raw_mv && raw_mv >= EXT_ENTER_MV);
     if (cable_now) {
         if (ext_evidence_ticks < UINT16_MAX) ext_evidence_ticks++;
-    } else if (!ext_evidence || (raw_mv && raw_mv < BATT_ENTER_MV && !chrg_low)) {
+    } else if (raw_mv && raw_mv < BATT_ENTER_MV && !chrg_low) {
         ext_evidence_ticks = 0;
     }
 
@@ -382,9 +384,12 @@ static uint16_t c5_trimmed_mean_x100(void) {
 static uint32_t c5_last_ms;   /* the last report's arrival, for the dwell's gap */
 void battery_5c_report(uint8_t v) {
     if (v > 100u) return;
-    /* A report after a stale gap that no 10 Hz tick saw (the tick forgets the
-     * ring at C5_STALE_MS): the dwell still restarts (Astra, 11-23). */
-    if (c5_count && timer_elapsed32(c5_last_ms) >= C5_STALE_MS) reserve_ticks = 0;
+    /* A report after a stale gap that no 10 Hz tick saw: the ring is
+     * forgotten here as the tick would have (C5_STALE_MS), the zero run and
+     * the reserve's dwell with it, so neither spans the gap (Astra, 11-23 and
+     * 11-24: a dwell reset alone kept the old ring, 157 s to latch, and two
+     * zeros before a gap and one after cut at once). */
+    if (c5_count && timer_elapsed32(c5_last_ms) >= C5_STALE_MS) c5_forget();
     c5_last_ms = timer_read32();
     c5_new          = true;
     if (c5_count == C5_RING) c5_hist[c5_ring[c5_pos]]--;   /* the oldest report leaves */

@@ -369,6 +369,16 @@ void power_task(void) {
      * now, and an alert does not wait for a free band), and only on battery:
      * one owed through the 5 s before external power lifts the latch is
      * dropped with it (power_set_reserve). */
+    /* The menu and Fn+D's page hold the screen lit, and a lit screen blocks
+     * the sleep (sleep.c, DSB_LIT); Fn+D's has no timeout, the menu's is 60 s
+     * or more, and a return from Fn+D's page to the menu counts as input
+     * there. In the reserve whichever it is closes at the sleep time, and
+     * "Charge now" is said again, in this pass, on the dashboard it returns
+     * to: its first post may have expired behind them, and the post's sleep
+     * hold must start before the next pass's sleep (Astra, 11-23, 11-24). */
+    if (resv && display_panel_lit_for_owner() && last_input_activity_elapsed() >= RESERVE_SLEEP_MS) {
+        if (display_owner_close()) reserve_owed = true;
+    }
     if (resv && reserve_owed) {
         reserve_owed      = false;
         reserve_alert_up  = true;
@@ -381,15 +391,6 @@ void power_task(void) {
     if (reserve_alert_up && !resv) {
         reserve_alert_up = false;
         display_clear_alert(RESERVE_MSG);
-    }
-    /* The menu and Fn+D's page hold the screen lit, and a lit screen blocks
-     * the sleep (sleep.c, DSB_LIT); Fn+D's has no timeout, the menu's is 60 s
-     * or more, and a return from Fn+D's page to the menu counts as input
-     * there. In the reserve whichever it is closes at the sleep time, and
-     * "Charge now" is said again on the dashboard it returns to: its first
-     * post may have expired behind them (Astra, 11-23). */
-    if (resv && display_panel_lit_for_owner() && last_input_activity_elapsed() >= RESERVE_SLEEP_MS) {
-        if (display_owner_close()) reserve_owed = true;
     }
     /* The low cap's notice: once a discharge, and only where it can be read --
      * with the screen dark it waits for it to light, and it lapses if the cap
