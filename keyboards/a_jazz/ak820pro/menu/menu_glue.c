@@ -96,6 +96,11 @@ _Static_assert(ENV_FONT_LARGE == KB_FONT_LARGE && ENV_FONT_SMALL == KB_FONT_SMAL
 uint8_t env_font(void) { return kb_eeconfig_get_font(); }
 void    env_font_set(uint8_t f) { kb_eeconfig_set_font(f); }
 void    env_text_refont(void) { display_text_refont(); }
+bool    env_os_linux(void) { return kb_eeconfig_get_os_linux(); }
+void    env_os_linux_set(bool linux_icon) {
+    kb_eeconfig_set_os_linux(linux_icon);
+    display_os_icon_changed();
+}
 void env_batt_facts(env_batt_t *b) {
     b->pct         = battery_level_pct();
     b->on_battery  = battery_state() == BATTERY_STATE_BATTERY;

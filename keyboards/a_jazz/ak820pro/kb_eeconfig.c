@@ -214,9 +214,10 @@ void kb_eeconfig_set_ind_level(uint8_t which, uint8_t level) {
 #define BV_REG   0x08u
 #define BV_FACE  (BV_SMALL | BV_REG)
 #define BV_ICON  0x10u
+#define BV_OS    0x20u   /* the Win side's icon: set Linux, clear Windows (Manuel, 11-23) */
 static uint8_t bv_norm(void) {
     uint8_t b   = kb_config.batt_view;
-    bool    bad = (b & (uint8_t)~(BV_VIEW | BV_FACE | BV_ICON)) || (b & BV_FACE) == BV_FACE || ((b & BV_ICON) && (b & BV_VIEW));
+    bool    bad = (b & (uint8_t)~(BV_VIEW | BV_FACE | BV_ICON | BV_OS)) || (b & BV_FACE) == BV_FACE || ((b & BV_ICON) && (b & BV_VIEW));
     return bad ? 0u : b;
 }
 /* The canonical byte, written when it isn't what is stored. A valid byte
@@ -236,7 +237,7 @@ uint8_t kb_eeconfig_get_batt_view(void) {
 
 void kb_eeconfig_set_batt_view(uint8_t v) {
     if (v < KB_BATT_VIEW_PERCENT || v > KB_BATT_VIEW_ICON) return;
-    bv_put((uint8_t)((bv_norm() & BV_FACE) | (v == KB_BATT_VIEW_ICON ? BV_ICON : v)));   /* the face kept */
+    bv_put((uint8_t)((bv_norm() & (BV_FACE | BV_OS)) | (v == KB_BATT_VIEW_ICON ? BV_ICON : v)));   /* the face and the OS icon kept */
 }
 
 uint8_t kb_eeconfig_get_font(void) {
@@ -246,7 +247,16 @@ uint8_t kb_eeconfig_get_font(void) {
 
 void kb_eeconfig_set_font(uint8_t font) {
     if (font != KB_FONT_LARGE && font != KB_FONT_SMALL && font != KB_FONT_REGULAR) return;
-    bv_put((uint8_t)((bv_norm() & (BV_VIEW | BV_ICON)) | (font == KB_FONT_SMALL ? BV_SMALL : font == KB_FONT_REGULAR ? BV_REG : 0u)));   /* the readout kept */
+    bv_put((uint8_t)((bv_norm() & (BV_VIEW | BV_ICON | BV_OS)) | (font == KB_FONT_SMALL ? BV_SMALL : font == KB_FONT_REGULAR ? BV_REG : 0u)));   /* the readout kept */
+}
+
+/* The Win side's icon (Manuel, 11-23): bit 5 of the readout's byte, set
+ * Linux. A firmware from before reads a byte with bit 5 set as garbage, so a
+ * downgrade resets the readout and the face to their defaults once. */
+bool kb_eeconfig_get_os_linux(void) { return (bv_norm() & BV_OS) != 0u; }
+
+void kb_eeconfig_set_os_linux(bool linux_icon) {
+    bv_put((uint8_t)((bv_norm() & (uint8_t)~BV_OS) | (linux_icon ? BV_OS : 0u)));
 }
 
 #ifdef WDT_TEST_HOOKS

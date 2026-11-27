@@ -168,6 +168,14 @@ static uint8_t debug_clear_band = 0;   // >0 while the entry clear is banding do
 static bool    locks_stage_first = true; // restore: the next lock-band pass forgets the (cleared) band
 static bool splash_cleared = false;
 static bool mac_mode = false;
+/* The Win/Mac logo's asset: Apple's, or on the Win side Windows' or (the
+ * menu's "Win icon", Manuel 11-23) Linux's, when the provisioned assets
+ * carry it; an older blob without it keeps the Windows logo. */
+static uint16_t os_logo_id(void) {
+    if (mac_mode) return ASSET_APPLE_ICON_24X24;
+    if (kb_eeconfig_get_os_linux() && flash_asset(ASSET_WINDOWS_LINUX_ICON_24X24)) return ASSET_WINDOWS_LINUX_ICON_24X24;
+    return ASSET_WINDOWS_ICON_24X24;
+}
 /* The two logo regions, the OS logo and the connection row: their state
  * changes at once, their paint waits for the dashboard (or the restore's
  * RESIDUAL). They used to paint at once, over the Fn+D page too. */
@@ -1368,7 +1376,7 @@ static void debug_restore_step(void) {
     switch (step - DBG_CLEAR_BANDS) {
         case 1:
             splash_cleared = true;
-            lcd_draw_flash_image(mac_mode ? ASSET_APPLE_ICON_24X24 : ASSET_WINDOWS_ICON_24X24, 0, 0);
+            lcd_draw_flash_image(os_logo_id(), 0, 0);
             logo_os_stale = false;
             break;
         case 2:
@@ -3036,7 +3044,7 @@ static void residual_step(bool *blocked, uint32_t *since) {
         case PO_RES_LOGO_OS:
             *blocked = false;
             logo_os_stale = false;
-            lcd_draw_flash_image(mac_mode ? ASSET_APPLE_ICON_24X24 : ASSET_WINDOWS_ICON_24X24, 0, 0);
+            lcd_draw_flash_image(os_logo_id(), 0, 0);
             return;
         case PO_RES_LOGO_CONN:
             *blocked = false;
@@ -3723,7 +3731,7 @@ void display_housekeeping_task(void) {
          * a tick, in this owner's turn, never over another owner's page. */
         if (logo_os_stale) {
             logo_os_stale = false;
-            lcd_draw_flash_image(mac_mode ? ASSET_APPLE_ICON_24X24 : ASSET_WINDOWS_ICON_24X24, 0, 0);
+            lcd_draw_flash_image(os_logo_id(), 0, 0);
         } else if (logo_conn_stale) {
             logo_conn_stale = false;
             draw_conn_row();
@@ -3780,6 +3788,9 @@ void display_draw_windows_logo(void) {
     mac_mode      = false;
     logo_os_stale = true;
 }
+
+/* The menu's "Win icon" changed: the logo repaints in the dashboard's turn. */
+void display_os_icon_changed(void) { logo_os_stale = true; }
 
 void display_draw_usb_logo(void) {
     connection_mode = CONN_MODE_WIRED;

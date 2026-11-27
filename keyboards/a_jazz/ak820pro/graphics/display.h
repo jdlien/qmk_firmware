@@ -227,6 +227,7 @@ uint8_t display_get_brightness_max(void);
 void display_toggle_play_icon(void);
 
 void display_draw_mac_logo(void);
+void display_os_icon_changed(void);   /* the menu's "Win icon" (Manuel, 11-23) */
 void display_draw_windows_logo(void);
 void display_draw_usb_logo(void);
 void display_draw_bluetooth_logo(void);
